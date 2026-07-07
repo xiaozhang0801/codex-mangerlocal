@@ -3,6 +3,7 @@ export interface RequestLog {
   traceId: string;
   keyId: string;
   accountId: string;
+  clientIp: string;
   initialAccountId: string;
   attemptedAccountIds: string[];
   initialAggregateApiId: string;
@@ -52,6 +53,25 @@ export interface RequestLogListResult {
   total: number;
   page: number;
   pageSize: number;
+}
+
+export interface ClientIpUsageSummary {
+  keyId: string;
+  clientIp: string;
+  requestCount: number;
+  successCount: number;
+  errorCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  lastSeenAt: number | null;
+}
+
+export interface ClientIpUsageListResult {
+  items: ClientIpUsageSummary[];
 }
 
 export interface RequestLogFilterSummary {

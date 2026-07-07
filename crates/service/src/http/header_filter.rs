@@ -38,6 +38,7 @@ pub(crate) fn should_skip_request_header(name: &HeaderName, value: &HeaderValue)
     if is_hop_by_hop_header(lower)
         || lower.eq_ignore_ascii_case("host")
         || lower.eq_ignore_ascii_case("content-length")
+        || lower.eq_ignore_ascii_case(crate::client_ip::FORWARDED_CLIENT_IP_HEADER)
     {
         return true;
     }

@@ -1,0 +1,14 @@
+{
+  "sessions": {
+    "019f3668-22a2-76b0-885c-c02003e26b87": {
+      "ordinary_no_progress_guard": {
+        "fingerprint": "ordinary|好的，大人。 我把这个问题按真实链路修了：同事请求先到 web/service 代理时，代理现在会用实际 socket peer 写入内部头 `x-codexmanager-client-ip`；gateway 只有在上游 peer 是本机 loopback 时才信任这个内部头，所以不会被外部用户伪造。 关键改动： - 新增真实 ip 解析与内部头工具：[client_ip.rs](c:/users/zhanghao/desktop/codex-manager/crates/service/src/client_ip.rs:5) - gateway 入口改为可信解析客户端 ip：[request_entry.rs](c:/users/zhanghao/desktop/codex-manager/crates/service/src/gateway/request/request_entry.rs:15) - service 前置代理注入真实 peer ip：[proxy_runtime.rs](c:/users/zhanghao/desktop/codex-manager/crates/service/src/http/proxy_runtime.rs:118) - web 入口代理也注入真实 peer ip：[service_gateway.rs](c:/users/zhanghao/desktop/codex-manager/crates/web/src/service_gateway.rs:546) - 本地 cargo 源切到 `rsproxy.cn`，解决 `static.crates.io` 下载失败：[config.toml](c:/users/zhanghao/desktop/codex-manager/.cargo/config.toml:5) 验证结果： - `cargo fmt --check` 通过 - `cargo test -p codexmanager-service client_ip -- --nocapture`：9 passed - `cargo test -p codexmanager-service proxy_runtime -- --nocapture`：14 passed - `cargo test -p codexmanager-web service_gateway -- --nocapture`：7 passed - `cargo test -p codexmanager-core client_ip_usage -- --nocapture`：3 passed - `cargo test -p codexmanager-web -- --nocapture` 有 4 个既有 `ui_assets` 测试失败，都是 embedded ui 静态资源 404，和这次 ip 链路无关。 注意：需要重启你的桌面端/服务进程后，新请求才会按同事内网 ip 记录；历史里已经写成 `127.0.0.1` 的旧日志不会自动回填。 问题原因：代理到本机 gateway 后，gateway 只能看到本机 tcp peer。 解决方案：代理层记录真实 peer，gateway 只信任本机代理传来的内部 ip 头。 预防措施：已加测试覆盖可信 loopback 代理、非 loopback 伪造头、web/service 代理过滤。 本次使用 skill：`superpowers:systematic-debugging`、`superpowers:test-driven-development`、`superpowers:verification-before-completion`。已检查并遵循当前工作区规则。",
+        "first_seen_at": "2026-07-07T02:40:13.043Z",
+        "last_seen_at": "2026-07-07T02:40:13.043Z",
+        "repeat_count": 1,
+        "last_turn_id": "019f3a64-f65c-77a1-97c8-1d31fc0b125e",
+        "last_thread_id": null
+      }
+    }
+  }
+}

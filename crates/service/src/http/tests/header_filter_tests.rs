@@ -61,6 +61,14 @@ fn request_header_keeps_normal_content_type() {
     assert!(!should_skip_request_header(&content_type, &json));
 }
 
+#[test]
+fn request_header_drops_forwarded_client_ip_spoofing() {
+    let client_ip = HeaderName::from_static(crate::client_ip::FORWARDED_CLIENT_IP_HEADER);
+    let spoofed = HeaderValue::from_static("10.0.0.99");
+
+    assert!(should_skip_request_header(&client_ip, &spoofed));
+}
+
 /// 函数 `response_header_filters_content_length_and_connection`
 ///
 /// 作者: gaohongshun

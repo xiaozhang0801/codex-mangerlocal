@@ -3,12 +3,13 @@ use super::{
     front_proxy_worker_threads, proxy_handler, ProxyState,
 };
 use axum::body::{to_bytes, Body};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{Request as HttpRequest, StatusCode};
 use codexmanager_core::storage::{Account, ApiKey, Storage, Token, UsageSnapshotRecord};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,6 +26,10 @@ struct EnvGuard {
 }
 
 static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn test_connect_info() -> ConnectInfo<SocketAddr> {
+    ConnectInfo("127.0.0.1:53000".parse().expect("test peer addr"))
+}
 
 impl EnvGuard {
     /// 函数 `set`
@@ -173,7 +178,7 @@ fn request_without_content_length_over_limit_returns_413() {
         .body(Body::from(vec![b'x'; 9]))
         .expect("request");
 
-    let response = runtime.block_on(proxy_handler(State(state), request));
+    let response = runtime.block_on(proxy_handler(State(state), test_connect_info(), request));
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let body = runtime
         .block_on(to_bytes(response.into_body(), usize::MAX))
@@ -202,7 +207,7 @@ fn zero_front_proxy_limit_disables_body_rejection() {
         .body(Body::from(vec![b'x'; 64]))
         .expect("request");
 
-    let response = runtime.block_on(proxy_handler(State(state), request));
+    let response = runtime.block_on(proxy_handler(State(state), test_connect_info(), request));
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
 
@@ -234,7 +239,7 @@ fn backend_send_failure_returns_502() {
         .body(Body::empty())
         .expect("request");
 
-    let response = runtime.block_on(proxy_handler(State(state), request));
+    let response = runtime.block_on(proxy_handler(State(state), test_connect_info(), request));
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let error_code = response
         .headers()
@@ -402,7 +407,11 @@ async fn start_front_proxy_test_server(
     let app = super::build_front_proxy_app(state);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let handle = tokio::spawn(async move {
-        let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let server = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
             let _ = shutdown_rx.await;
         });
         server.await.expect("serve front proxy");

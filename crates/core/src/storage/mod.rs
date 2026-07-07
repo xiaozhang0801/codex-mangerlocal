@@ -449,6 +449,7 @@ pub struct RequestLog {
     pub trace_id: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub client_ip: Option<String>,
     pub initial_account_id: Option<String>,
     pub attempted_account_ids_json: Option<String>,
     pub initial_aggregate_api_id: Option<String>,
@@ -497,6 +498,7 @@ pub struct RequestTokenStat {
     pub request_log_id: i64,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub client_ip: Option<String>,
     pub model: Option<String>,
     pub actual_source_kind: Option<String>,
     pub actual_source_id: Option<String>,
@@ -575,6 +577,14 @@ pub struct TokenUsageRollup {
     pub request_count: i64,
     pub success_count: i64,
     pub error_count: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ClientIpUsageSummary {
+    pub key_id: String,
+    pub client_ip: String,
+    pub usage: TokenUsageRollup,
+    pub last_seen_at: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1851,6 +1861,7 @@ impl Storage {
         self.ensure_aggregate_api_balance_secrets_table()?;
         self.ensure_api_key_quota_limits_table()?;
         self.ensure_model_price_rules_table()?;
+        self.ensure_request_logs_table()?;
         self.ensure_request_token_stats_table()?;
         self.ensure_request_log_request_type_and_service_tier_columns()?;
         self.ensure_request_log_effective_service_tier_column()?;

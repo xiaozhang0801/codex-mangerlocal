@@ -2,6 +2,7 @@ use tiny_http::{Request, Response};
 
 pub(super) struct LocalResponseContext<'a> {
     pub(super) trace_id: &'a str,
+    pub(super) client_ip: Option<&'a str>,
     pub(super) key_id: &'a str,
     pub(super) protocol_type: &'a str,
     pub(super) original_path: &'a str,
@@ -40,6 +41,7 @@ pub(super) fn record_local_result(
         ctx.storage,
         super::request_log::RequestLogTraceContext {
             trace_id: Some(ctx.trace_id),
+            client_ip: ctx.client_ip,
             original_path: Some(ctx.original_path),
             adapted_path: Some(ctx.path),
             response_adapter: Some(ctx.response_adapter),

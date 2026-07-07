@@ -36,6 +36,7 @@ function extractStaticInvokedCommands(source) {
 test("前端静态调用的 Tauri commands 都已注册", async () => {
   const sourceFiles = await listSourceFiles(path.join(appsRoot, "src"));
   const registrySource = await readSource("src-tauri/src/commands/registry.rs");
+  assert.match(registrySource, /service_requestlog_client_ip_usage/);
   const commands = [
     ...new Set(
       (

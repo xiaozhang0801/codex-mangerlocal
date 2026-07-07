@@ -1,5 +1,7 @@
 #[path = "requestlog_clear.rs"]
 pub(crate) mod clear;
+#[path = "requestlog_client_ip_usage.rs"]
+pub(crate) mod client_ip_usage;
 #[path = "requestlog_list.rs"]
 pub(crate) mod list;
 #[path = "requestlog_summary.rs"]

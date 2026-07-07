@@ -124,6 +124,7 @@ fn is_anthropic_count_tokens_request_path(path: &str) -> bool {
 pub(super) fn maybe_respond_local_count_tokens(
     request: tiny_http::Request,
     trace_id: &str,
+    client_ip: Option<&str>,
     key_id: &str,
     protocol_type: &str,
     original_path: &str,
@@ -155,6 +156,7 @@ pub(super) fn maybe_respond_local_count_tokens(
     };
     let context = super::local_response::LocalResponseContext {
         trace_id,
+        client_ip,
         key_id,
         protocol_type,
         original_path,

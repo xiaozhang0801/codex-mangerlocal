@@ -509,6 +509,7 @@ fn should_skip_gateway_request_header(name: &header::HeaderName, value: &HeaderV
     is_hop_by_hop_header(lower)
         || lower.eq_ignore_ascii_case("host")
         || lower.eq_ignore_ascii_case("content-length")
+        || lower.eq_ignore_ascii_case(codexmanager_service::FORWARDED_CLIENT_IP_HEADER)
         || value.to_str().is_err()
 }
 
@@ -542,6 +543,7 @@ fn should_skip_gateway_response_header(name: &header::HeaderName) -> bool {
 /// 返回 service 网关响应
 pub(super) async fn gateway_proxy(
     State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(peer_addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
@@ -573,6 +575,10 @@ pub(super) async fn gateway_proxy(
         }
         outbound = outbound.header(name, value);
     }
+    outbound = outbound.header(
+        codexmanager_service::FORWARDED_CLIENT_IP_HEADER,
+        peer_addr.ip().to_string(),
+    );
 
     let resp = match outbound.send().await {
         Ok(resp) => resp,

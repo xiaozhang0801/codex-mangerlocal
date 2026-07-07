@@ -11,6 +11,7 @@ mod request;
 
 pub(super) struct LocalValidationResult {
     pub(super) trace_id: String,
+    pub(super) client_ip: Option<String>,
     pub(super) incoming_headers: super::IncomingHeaderSnapshot,
     pub(super) storage: crate::storage_helpers::StorageHandle,
     pub(super) original_path: String,
@@ -88,6 +89,7 @@ pub(super) fn prepare_local_request(
     request: &mut Request,
     trace_id: String,
     debug: bool,
+    client_ip: Option<String>,
 ) -> Result<LocalValidationResult, LocalValidationError> {
     let body = io::read_request_body(request)?;
     let incoming_headers = super::IncomingHeaderSnapshot::from_request(request);
@@ -99,6 +101,7 @@ pub(super) fn prepare_local_request(
     request::build_local_validation_result(
         request,
         trace_id,
+        client_ip,
         incoming_headers,
         storage,
         body,

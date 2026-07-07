@@ -172,6 +172,7 @@ fn append_request_log_query_clause(
                 "IFNULL(r.route_strategy,'') LIKE ?",
                 "IFNULL(r.route_source,'') LIKE ?",
                 "IFNULL(r.account_id,'') LIKE ?",
+                "IFNULL(r.client_ip,'') LIKE ?",
                 "IFNULL(r.client_model,'') LIKE ?",
                 "IFNULL(r.model,'') LIKE ?",
                 "IFNULL(r.model_source,'') LIKE ?",

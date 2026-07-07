@@ -13,6 +13,7 @@ pub(crate) struct RequestLogUsage {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RequestLogTraceContext<'a> {
     pub trace_id: Option<&'a str>,
+    pub client_ip: Option<&'a str>,
     pub original_path: Option<&'a str>,
     pub adapted_path: Option<&'a str>,
     pub request_type: Option<&'a str>,
@@ -526,6 +527,7 @@ pub(crate) fn write_request_log_with_attempts(
             trace_id: trace_context.trace_id.map(|v| v.to_string()),
             key_id: key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
+            client_ip: trace_context.client_ip.map(str::to_string),
             initial_account_id: initial_account_id.map(str::to_string),
             attempted_account_ids_json,
             initial_aggregate_api_id: initial_aggregate_api_id.map(str::to_string),
@@ -577,6 +579,7 @@ pub(crate) fn write_request_log_with_attempts(
             request_log_id: 0,
             key_id: key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
+            client_ip: trace_context.client_ip.map(str::to_string),
             model: model.map(|v| v.to_string()),
             actual_source_kind,
             actual_source_id,

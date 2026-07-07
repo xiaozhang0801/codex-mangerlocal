@@ -116,6 +116,13 @@ test("createWebCommandMap 为批量账号排序提供 Web RPC 映射", () => {
   });
 });
 
+test("createWebCommandMap 为内网 IP 用量提供 Web RPC 映射", () => {
+  assert.equal(
+    commandMap.service_requestlog_client_ip_usage.rpcMethod,
+    "requestlog/client_ip_usage",
+  );
+});
+
 test("createWebCommandMap 为 Codex profile 管理提供 Web RPC 映射", () => {
   assert.deepEqual(commandMap.service_codex_profile_get, {
     rpcMethod: "codexProfile/get",

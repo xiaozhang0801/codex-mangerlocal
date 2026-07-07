@@ -1244,6 +1244,7 @@ pub struct RequestLogSummary {
     pub trace_id: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub client_ip: Option<String>,
     pub initial_account_id: Option<String>,
     #[serde(default)]
     pub attempted_account_ids: Vec<String>,
@@ -1393,6 +1394,37 @@ pub struct RequestLogTodaySummaryResult {
     pub reasoning_output_tokens: i64,
     pub today_tokens: i64,
     pub estimated_cost: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIpUsageSummaryResult {
+    pub key_id: String,
+    pub client_ip: String,
+    pub request_count: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub total_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub last_seen_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClientIpUsageListParams {
+    pub start_ts: Option<i64>,
+    pub end_ts: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIpUsageListResult {
+    pub items: Vec<ClientIpUsageSummaryResult>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

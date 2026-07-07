@@ -243,6 +243,26 @@ export function AccountKeyInfoCell({
   );
 }
 
+export function ClientIpCell({ clientIp }: { clientIp: string }) {
+  const { t } = useI18n();
+  const displayIp = String(clientIp || "").trim() || t("未知");
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<div />} className="block text-left">
+        <span className="block max-w-[132px] truncate font-mono text-[11px] text-muted-foreground">
+          {displayIp}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className={`${logTooltipContentClassName} max-w-sm`}>
+        <div className="space-y-0.5">
+          <div className={logTooltipLabelClassName}>{t("客户端 IP")}</div>
+          <div className="break-all font-mono text-[11px]">{displayIp}</div>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function RequestRouteInfoCell({ log }: { log: RequestLog }) {
   const { t } = useI18n();
   const displayPath = resolveDisplayRequestPath(log) || "-";

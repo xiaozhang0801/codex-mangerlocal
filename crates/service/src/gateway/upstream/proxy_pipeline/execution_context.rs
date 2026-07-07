@@ -3,6 +3,7 @@ use codexmanager_core::storage::Storage;
 
 pub(in super::super) struct GatewayUpstreamExecutionContext<'a> {
     trace_id: &'a str,
+    client_ip: Option<&'a str>,
     storage: &'a Storage,
     key_id: &'a str,
     original_path: &'a str,
@@ -41,6 +42,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(in super::super) fn new(
         trace_id: &'a str,
+        client_ip: Option<&'a str>,
         storage: &'a Storage,
         key_id: &'a str,
         original_path: &'a str,
@@ -65,6 +67,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
     ) -> Self {
         Self {
             trace_id,
+            client_ip,
             storage,
             key_id,
             original_path,
@@ -321,6 +324,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             self.storage,
             super::super::super::request_log::RequestLogTraceContext {
                 trace_id: Some(self.trace_id),
+                client_ip: self.client_ip,
                 original_path: Some(self.original_path),
                 adapted_path: Some(self.path),
                 gateway_mode: self.gateway_mode_for_log,

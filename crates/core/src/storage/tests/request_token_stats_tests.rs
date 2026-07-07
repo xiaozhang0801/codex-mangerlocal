@@ -108,6 +108,247 @@ fn assert_float_close(left: f64, right: f64) {
     );
 }
 
+#[test]
+fn summarizes_usage_by_key_and_client_ip() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    for (request_log_id, key_id, client_ip, total_tokens, status_code, error, created_at) in [
+        (
+            1_i64,
+            "key-a",
+            Some("192.168.1.23"),
+            100_i64,
+            Some(200_i64),
+            None,
+            1_000_i64,
+        ),
+        (
+            2_i64,
+            "key-a",
+            Some("192.168.1.23"),
+            50_i64,
+            Some(500_i64),
+            Some("upstream failed"),
+            1_010_i64,
+        ),
+        (
+            3_i64,
+            "key-a",
+            Some("192.168.1.24"),
+            25_i64,
+            Some(200_i64),
+            None,
+            1_020_i64,
+        ),
+        (
+            4_i64,
+            "key-b",
+            Some("192.168.1.23"),
+            200_i64,
+            Some(200_i64),
+            None,
+            1_030_i64,
+        ),
+        (
+            5_i64,
+            "key-a",
+            None,
+            999_i64,
+            Some(200_i64),
+            None,
+            1_040_i64,
+        ),
+    ] {
+        storage
+            .insert_request_log(&RequestLog {
+                trace_id: Some(format!("trace-{request_log_id}")),
+                key_id: Some(key_id.to_string()),
+                client_ip: client_ip.map(str::to_string),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                status_code,
+                error: error.map(str::to_string),
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert log");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id,
+                key_id: Some(key_id.to_string()),
+                client_ip: client_ip.map(str::to_string),
+                total_tokens: Some(total_tokens),
+                estimated_cost_usd: Some(total_tokens as f64 / 1000.0),
+                created_at,
+                ..Default::default()
+            })
+            .expect("insert stat");
+    }
+
+    let rows = storage
+        .summarize_request_token_stats_by_key_and_client_ip_between(900, 2_000, None)
+        .expect("summarize client ip usage");
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].key_id, "key-b");
+    assert_eq!(rows[0].client_ip, "192.168.1.23");
+    assert_eq!(rows[0].usage.total_tokens, 200);
+    assert_eq!(rows[0].usage.success_count, 1);
+
+    let key_a_23 = rows
+        .iter()
+        .find(|row| row.key_id == "key-a" && row.client_ip == "192.168.1.23")
+        .expect("key-a 192.168.1.23 row");
+    assert_eq!(key_a_23.usage.request_count, 2);
+    assert_eq!(key_a_23.usage.success_count, 1);
+    assert_eq!(key_a_23.usage.error_count, 1);
+    assert_eq!(key_a_23.usage.total_tokens, 150);
+    assert_eq!(key_a_23.last_seen_at, 1_010);
+}
+
+#[test]
+fn client_ip_usage_summary_includes_loopback_client_ip() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trace-loopback-client-ip".to_string()),
+            key_id: Some("key-loopback".to_string()),
+            client_ip: Some("127.0.0.1".to_string()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            status_code: Some(200),
+            created_at: 1_000,
+            ..Default::default()
+        })
+        .expect("insert loopback request log");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id,
+            key_id: Some("key-loopback".to_string()),
+            client_ip: Some("127.0.0.1".to_string()),
+            total_tokens: Some(42),
+            created_at: 1_000,
+            ..Default::default()
+        })
+        .expect("insert loopback token stat");
+
+    let rows = storage
+        .summarize_request_token_stats_by_key_and_client_ip_between(0, 2_000, None)
+        .expect("summarize loopback client ip usage");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key_id, "key-loopback");
+    assert_eq!(rows[0].client_ip, "127.0.0.1");
+    assert_eq!(rows[0].usage.request_count, 1);
+    assert_eq!(rows[0].usage.success_count, 1);
+    assert_eq!(rows[0].usage.total_tokens, 42);
+}
+
+#[test]
+fn client_ip_usage_summary_respects_key_filter() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    for (request_log_id, key_id, client_ip, total_tokens) in [
+        (11_i64, "member-key", "192.168.1.50", 40_i64),
+        (12_i64, "other-key", "192.168.1.51", 80_i64),
+    ] {
+        storage
+            .insert_request_log(&RequestLog {
+                trace_id: Some(format!("trace-filter-{request_log_id}")),
+                key_id: Some(key_id.to_string()),
+                client_ip: Some(client_ip.to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                status_code: Some(200),
+                created_at: request_log_id,
+                ..Default::default()
+            })
+            .expect("insert log");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id,
+                key_id: Some(key_id.to_string()),
+                client_ip: Some(client_ip.to_string()),
+                total_tokens: Some(total_tokens),
+                created_at: request_log_id,
+                ..Default::default()
+            })
+            .expect("insert stat");
+    }
+
+    let rows = storage
+        .summarize_request_token_stats_by_key_and_client_ip_between(
+            0,
+            100,
+            Some(&["member-key".to_string()]),
+        )
+        .expect("summarize filtered client ip usage");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key_id, "member-key");
+    assert_eq!(rows[0].client_ip, "192.168.1.50");
+    assert_eq!(rows[0].usage.total_tokens, 40);
+}
+
+#[test]
+fn client_ip_usage_summary_includes_hourly_rollups_after_raw_stats_pruned() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trace-ip-rollup".to_string()),
+            key_id: Some("key-rollup-ip".to_string()),
+            client_ip: Some("192.168.1.60".to_string()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            status_code: Some(200),
+            created_at: 1_200,
+            ..Default::default()
+        })
+        .expect("insert request log");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id,
+            key_id: Some("key-rollup-ip".to_string()),
+            client_ip: Some("192.168.1.60".to_string()),
+            total_tokens: Some(75),
+            estimated_cost_usd: Some(0.075),
+            created_at: 1_200,
+            ..Default::default()
+        })
+        .expect("insert request token stat");
+
+    let deleted = storage
+        .rollup_request_token_stats_before(3_600)
+        .expect("roll up old token stats");
+    assert_eq!(deleted, 1);
+
+    let raw_count: i64 = storage
+        .conn
+        .query_row("SELECT COUNT(1) FROM request_token_stats", [], |row| {
+            row.get(0)
+        })
+        .expect("count raw token stats");
+    assert_eq!(raw_count, 0);
+
+    let rows = storage
+        .summarize_request_token_stats_by_key_and_client_ip_between(0, 3_600, None)
+        .expect("summarize client ip usage after rollup");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key_id, "key-rollup-ip");
+    assert_eq!(rows[0].client_ip, "192.168.1.60");
+    assert_eq!(rows[0].usage.request_count, 1);
+    assert_eq!(rows[0].usage.success_count, 1);
+    assert_eq!(rows[0].usage.total_tokens, 75);
+    assert_eq!(rows[0].last_seen_at, 1_200);
+}
+
 fn seed_usage_log(
     storage: &Storage,
     user_id: &str,
@@ -1285,6 +1526,7 @@ fn dashboard_rollups_survive_cleared_request_logs() {
             reasoning_output_tokens: Some(2),
             estimated_cost_usd: Some(0.25),
             created_at: 3_700,
+            ..RequestTokenStat::default()
         })
         .expect("insert openai stat");
     storage

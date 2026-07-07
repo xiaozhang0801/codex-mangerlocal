@@ -1,10 +1,11 @@
 use axum::body::{to_bytes, Body};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{header, Request as HttpRequest, Response, StatusCode};
 use axum::routing::{any, get, post};
 use axum::Router;
 use reqwest::Client;
 use std::io;
+use std::net::SocketAddr;
 
 use crate::http::proxy_bridge::run_proxy_server;
 use crate::http::proxy_request::{build_target_url, filter_request_headers};
@@ -114,6 +115,7 @@ fn front_proxy_worker_threads() -> usize {
 /// 返回函数执行结果
 async fn proxy_handler(
     State(state): State<ProxyState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     request: HttpRequest<Body>,
 ) -> Response<Body> {
     let (parts, body) = request.into_parts();
@@ -144,7 +146,8 @@ async fn proxy_handler(
         }
     }
 
-    let outbound_headers = filter_request_headers(&parts.headers);
+    let mut outbound_headers = filter_request_headers(&parts.headers);
+    crate::client_ip::set_forwarded_client_ip_header(&mut outbound_headers, peer_addr);
     let read_limit = if max_body_bytes == 0 {
         usize::MAX
     } else {
@@ -223,14 +226,16 @@ async fn proxy_handler(
 
 async fn responses_handler(
     State(state): State<ProxyState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     request: HttpRequest<Body>,
 ) -> Response<Body> {
     if request.method() == axum::http::Method::GET
         && crate::http::responses_websocket::is_websocket_upgrade_request(request.headers())
     {
-        return crate::http::responses_websocket::upgrade_responses_websocket(request).await;
+        return crate::http::responses_websocket::upgrade_responses_websocket(request, peer_addr)
+            .await;
     }
-    proxy_handler(State(state), request).await
+    proxy_handler(State(state), ConnectInfo(peer_addr), request).await
 }
 
 /// 函数 `build_front_proxy_app`

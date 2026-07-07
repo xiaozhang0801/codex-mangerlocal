@@ -37,6 +37,8 @@ import {
   PluginCatalogTask,
   PluginRunLogSummary,
   PluginTaskSummary,
+  ClientIpUsageListResult,
+  ClientIpUsageSummary,
   RequestLog,
   RequestLogFilterSummary,
   RequestLogListResult,
@@ -1497,6 +1499,7 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     traceId,
     keyId,
     accountId,
+    clientIp: asString(source.clientIp ?? source.client_ip),
     initialAccountId: asString(source.initialAccountId ?? source.initial_account_id),
     attemptedAccountIds: asArray(source.attemptedAccountIds ?? source.attempted_account_ids)
       .map((value) => asString(value))
@@ -1623,6 +1626,48 @@ export function normalizeRequestLogListWithSummaryResult(
     ...normalizeRequestLogListResult(payload),
     summary: normalizeRequestLogFilterSummary(source.summary),
   };
+}
+
+function normalizeClientIpUsageSummary(item: unknown): ClientIpUsageSummary | null {
+  const source = asObject(item);
+  const keyId = asString(source.keyId ?? source.key_id);
+  const clientIp = asString(source.clientIp ?? source.client_ip);
+  if (!keyId || !clientIp) return null;
+  return {
+    keyId,
+    clientIp,
+    requestCount: asInteger(source.requestCount ?? source.request_count, 0, 0),
+    successCount: asInteger(source.successCount ?? source.success_count, 0, 0),
+    errorCount: asInteger(source.errorCount ?? source.error_count, 0, 0),
+    inputTokens: asInteger(source.inputTokens ?? source.input_tokens, 0, 0),
+    cachedInputTokens: asInteger(
+      source.cachedInputTokens ?? source.cached_input_tokens,
+      0,
+      0
+    ),
+    outputTokens: asInteger(source.outputTokens ?? source.output_tokens, 0, 0),
+    reasoningOutputTokens: asInteger(
+      source.reasoningOutputTokens ?? source.reasoning_output_tokens,
+      0,
+      0
+    ),
+    totalTokens: asInteger(source.totalTokens ?? source.total_tokens, 0, 0),
+    estimatedCostUsd: Math.max(
+      0,
+      toNullableNumber(source.estimatedCostUsd ?? source.estimated_cost_usd) ?? 0
+    ),
+    lastSeenAt: toNullableNumber(source.lastSeenAt ?? source.last_seen_at),
+  };
+}
+
+export function normalizeClientIpUsageListResult(
+  payload: unknown
+): ClientIpUsageListResult {
+  const source = asObject(payload);
+  const items = asArray(source.items ?? payload)
+    .map((item) => normalizeClientIpUsageSummary(item))
+    .filter((item): item is ClientIpUsageSummary => Boolean(item));
+  return { items };
 }
 
 /**

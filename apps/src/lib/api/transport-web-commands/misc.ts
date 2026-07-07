@@ -10,6 +10,7 @@ export function createMiscWebCommands(): Record<string, WebCommandDescriptor> {
     service_requestlog_list: { rpcMethod: "requestlog/list" },
     service_requestlog_list_with_summary: { rpcMethod: "requestlog/list_with_summary" },
     service_requestlog_summary: { rpcMethod: "requestlog/summary" },
+    service_requestlog_client_ip_usage: { rpcMethod: "requestlog/client_ip_usage" },
     service_requestlog_clear: { rpcMethod: "requestlog/clear" },
     service_requestlog_today_summary: { rpcMethod: "requestlog/today_summary" },
     service_plugin_catalog_list: { rpcMethod: "plugin/catalog/list" },

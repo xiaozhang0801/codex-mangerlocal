@@ -8,7 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -37,6 +37,7 @@ struct WsRequestContext {
     prompt_cache_key: Option<String>,
     effective_upstream_base: String,
     prefer_raw_errors: bool,
+    client_ip: Option<String>,
 }
 
 #[derive(Clone)]
@@ -204,10 +205,20 @@ pub(super) fn is_websocket_upgrade_request(headers: &HeaderMap) -> bool {
     upgrade_is_websocket && connection_has_upgrade
 }
 
-pub(super) async fn upgrade_responses_websocket(request: HttpRequest<Body>) -> Response<Body> {
+pub(super) async fn upgrade_responses_websocket(
+    request: HttpRequest<Body>,
+    peer_addr: SocketAddr,
+) -> Response<Body> {
     let (mut parts, _) = request.into_parts();
+    let client_ip = crate::client_ip::resolve_trusted_client_ip(
+        Some(&peer_addr),
+        parts
+            .headers
+            .get(crate::client_ip::FORWARDED_CLIENT_IP_HEADER)
+            .and_then(|value| value.to_str().ok()),
+    );
 
-    let context = match authorize_websocket_request(&parts.headers) {
+    let context = match authorize_websocket_request(&parts.headers, client_ip) {
         Ok(context) => context,
         Err(response) => return response,
     };
@@ -501,7 +512,10 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
     }
 }
 
-fn authorize_websocket_request(headers: &HeaderMap) -> Result<WsRequestContext, Response<Body>> {
+fn authorize_websocket_request(
+    headers: &HeaderMap,
+    client_ip: Option<String>,
+) -> Result<WsRequestContext, Response<Body>> {
     let prefer_raw_errors = crate::gateway::prefers_raw_errors_for_http_headers(headers);
     let incoming_headers = crate::gateway::IncomingHeaderSnapshot::from_http_headers(headers);
     let Some(platform_key) = incoming_headers.platform_key() else {
@@ -580,6 +594,7 @@ fn authorize_websocket_request(headers: &HeaderMap) -> Result<WsRequestContext, 
         incoming_headers,
         prompt_cache_key,
         prefer_raw_errors,
+        client_ip,
     })
 }
 
@@ -1559,22 +1574,7 @@ fn finalize_ws_request_log(
     }
     crate::gateway::write_request_log(
         &storage,
-        crate::gateway::RequestLogTraceContext {
-            trace_id: Some(pending.trace_id.as_str()),
-            original_path: Some(RESPONSES_ENDPOINT),
-            adapted_path: Some(RESPONSES_ENDPOINT),
-            request_type: Some("ws"),
-            route_strategy: pending.route_strategy.as_deref(),
-            route_source: pending.route_source.as_deref(),
-            client_model: pending.client_model.as_deref(),
-            model_source: pending.model_source.as_deref(),
-            client_reasoning_effort: pending.client_reasoning_effort.as_deref(),
-            reasoning_source: pending.reasoning_source.as_deref(),
-            service_tier: pending.service_tier.as_deref(),
-            effective_service_tier: pending.effective_service_tier.as_deref(),
-            service_tier_source: pending.service_tier_source.as_deref(),
-            ..Default::default()
-        },
+        ws_request_log_trace_context(context, pending),
         Some(context.api_key.id.as_str()),
         account_id,
         RESPONSES_ENDPOINT,
@@ -1595,6 +1595,29 @@ fn finalize_ws_request_log(
         error.as_deref(),
         pending.started_at.elapsed().as_millis(),
     );
+}
+
+fn ws_request_log_trace_context<'a>(
+    context: &'a WsRequestContext,
+    pending: &'a PendingWsRequestLog,
+) -> crate::gateway::RequestLogTraceContext<'a> {
+    crate::gateway::RequestLogTraceContext {
+        trace_id: Some(pending.trace_id.as_str()),
+        client_ip: context.client_ip.as_deref(),
+        original_path: Some(RESPONSES_ENDPOINT),
+        adapted_path: Some(RESPONSES_ENDPOINT),
+        request_type: Some("ws"),
+        route_strategy: pending.route_strategy.as_deref(),
+        route_source: pending.route_source.as_deref(),
+        client_model: pending.client_model.as_deref(),
+        model_source: pending.model_source.as_deref(),
+        client_reasoning_effort: pending.client_reasoning_effort.as_deref(),
+        reasoning_source: pending.reasoning_source.as_deref(),
+        service_tier: pending.service_tier.as_deref(),
+        effective_service_tier: pending.effective_service_tier.as_deref(),
+        service_tier_source: pending.service_tier_source.as_deref(),
+        ..Default::default()
+    }
 }
 
 struct WsTerminalEvent {

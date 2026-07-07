@@ -1,4 +1,6 @@
-use super::estimate_cost_usd;
+use codexmanager_core::storage::Storage;
+
+use super::{estimate_cost_usd, write_request_log, RequestLogTraceContext, RequestLogUsage};
 
 /// 函数 `assert_close`
 ///
@@ -17,6 +19,55 @@ fn assert_close(actual: f64, expected: f64) {
         (actual - expected).abs() < 1e-12,
         "actual={actual}, expected={expected}"
     );
+}
+
+#[test]
+fn write_request_log_persists_client_ip_to_log_and_token_stat() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    write_request_log(
+        &storage,
+        RequestLogTraceContext {
+            trace_id: Some("trace-client-ip"),
+            client_ip: Some("192.168.1.70"),
+            original_path: Some("/v1/responses"),
+            adapted_path: Some("/v1/responses"),
+            ..Default::default()
+        },
+        Some("key-client-ip"),
+        None,
+        "/v1/responses",
+        "POST",
+        Some("gpt-5"),
+        None,
+        None,
+        Some(200),
+        RequestLogUsage {
+            input_tokens: Some(10),
+            cached_input_tokens: Some(0),
+            output_tokens: Some(20),
+            total_tokens: Some(30),
+            reasoning_output_tokens: Some(0),
+            first_response_ms: Some(25),
+        },
+        None,
+        Some(40),
+    );
+
+    let logs = storage
+        .list_request_logs(Some("trace-client-ip"), 10)
+        .expect("list request logs");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].client_ip.as_deref(), Some("192.168.1.70"));
+
+    let usage = storage
+        .summarize_request_token_stats_by_key_and_client_ip_between(0, i64::MAX, None)
+        .expect("summarize client ip usage");
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].key_id, "key-client-ip");
+    assert_eq!(usage[0].client_ip, "192.168.1.70");
+    assert_eq!(usage[0].usage.total_tokens, 30);
 }
 
 /// 函数 `estimate_cost_matches_openai_gpt5_family_prices`

@@ -59,6 +59,7 @@ import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
 import { accountClient } from "@/lib/api/account-client";
 import { appClient } from "@/lib/api/app-client";
+import { serviceClient } from "@/lib/api/service-client";
 import {
   buildGeminiGatewayEndpoint,
   buildOpenAiGatewayEndpoint,
@@ -333,10 +334,21 @@ export default function ApiKeysPage() {
     enabled: isUsageQueryEnabled && isPageActive,
     retry: 1,
   });
+  const { data: clientIpUsage, isPending: isClientIpUsageLoading } = useQuery({
+    queryKey: ["requestlog", "client-ip-usage", serviceAddr || null],
+    queryFn: () => serviceClient.listClientIpUsage({ limit: 100 }),
+    enabled: isUsageQueryEnabled && isPageActive,
+    retry: 1,
+  });
   const usageByKey = usageOverview?.usageByKey || {};
   const costByKey = usageOverview?.costByKey || {};
   const todayUsageByKey = usageOverview?.todayUsageByKey || {};
   const todayCostByKey = usageOverview?.todayCostByKey || {};
+  const clientIpUsageItems = clientIpUsage?.items || [];
+  const apiKeyNameById = useMemo(
+    () => new Map(apiKeys.map((item) => [item.id, item.name || item.id])),
+    [apiKeys],
+  );
   const showOverviewLoading =
     isServiceReady && isPageActive && isUsageOverviewLoading;
 
@@ -644,6 +656,101 @@ export default function ApiKeysPage() {
           </>
         )}
       </div>
+
+      <WorkPanel>
+        <CardContent className="space-y-3 p-4">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold">{t("内网 IP 用量")}</div>
+              <div className="text-xs text-muted-foreground">
+                {t("按平台密钥和直接访问的内网 IP 汇总")}
+              </div>
+            </div>
+            <Badge variant="secondary" className="w-fit rounded-md px-2.5">
+              {t("按 Token 排序")}
+            </Badge>
+          </div>
+          <div className="overflow-x-auto">
+            <Table className="min-w-[920px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("客户端 IP")}</TableHead>
+                  <TableHead>{t("密钥")}</TableHead>
+                  <TableHead>{t("请求")}</TableHead>
+                  <TableHead>{t("成功 / 异常")}</TableHead>
+                  <TableHead>{t("Token")}</TableHead>
+                  <TableHead>{t("费用")}</TableHead>
+                  <TableHead>{t("最近出现")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isClientIpUsageLoading ? (
+                  Array.from({ length: 3 }).map((_, index) => (
+                    <TableRow key={index}>
+                      <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                    </TableRow>
+                  ))
+                ) : clientIpUsageItems.length === 0 ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={7}
+                      className="h-28 text-center text-sm text-muted-foreground"
+                    >
+                      {t("暂无内网 IP 用量记录")}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  clientIpUsageItems.map((item) => (
+                    <TableRow key={`${item.keyId}:${item.clientIp}`}>
+                      <TableCell>
+                        <code
+                          className="inline-block max-w-[180px] truncate rounded border border-border/60 bg-muted/50 px-2 py-1 font-mono text-[11px]"
+                          title={item.clientIp}
+                        >
+                          {item.clientIp || t("未知")}
+                        </code>
+                      </TableCell>
+                      <TableCell>
+                        <div
+                          className="max-w-[220px] truncate text-sm font-medium"
+                          title={apiKeyNameById.get(item.keyId) || item.keyId}
+                        >
+                          {apiKeyNameById.get(item.keyId) || item.keyId}
+                        </div>
+                        <div className="max-w-[220px] truncate font-mono text-[10px] text-muted-foreground">
+                          {item.keyId}
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {item.requestCount.toLocaleString("zh-CN")}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {item.successCount.toLocaleString("zh-CN")} /{" "}
+                        {item.errorCount.toLocaleString("zh-CN")}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {formatCompactTokenAmount(item.totalTokens)}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {formatUsd(item.estimatedCostUsd)}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {formatLocalMinuteFromSeconds(item.lastSeenAt, t("未知"))}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </WorkPanel>
 
       <WorkPanel>
         <CardContent className="p-0">

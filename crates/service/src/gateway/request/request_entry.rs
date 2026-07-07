@@ -1,5 +1,24 @@
 use tiny_http::{Request, Response};
 
+fn forwarded_client_ip_header(request: &Request) -> Option<&str> {
+    request
+        .headers()
+        .iter()
+        .find(|header| {
+            header
+                .field
+                .equiv(crate::client_ip::FORWARDED_CLIENT_IP_HEADER)
+        })
+        .map(|header| header.value.as_str())
+}
+
+fn resolve_request_client_ip(request: &Request) -> Option<String> {
+    crate::client_ip::resolve_trusted_client_ip(
+        request.remote_addr(),
+        forwarded_client_ip_header(request),
+    )
+}
+
 /// 函数 `handle_gateway_request`
 ///
 /// 作者: gaohongshun
@@ -30,72 +49,77 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
     let trace_id = super::trace_log::next_trace_id();
     let request_path_for_log = super::normalize_models_path(request.url());
     let request_method_for_log = request.method().as_str().to_string();
-    let validated =
-        match super::local_validation::prepare_local_request(&mut request, trace_id.clone(), debug)
-        {
-            Ok(v) => v,
-            Err(err) => {
-                super::trace_log::log_request_start(
-                    trace_id.as_str(),
-                    "-",
-                    request_method_for_log.as_str(),
-                    request_path_for_log.as_str(),
+    let client_ip = resolve_request_client_ip(&request);
+    let validated = match super::local_validation::prepare_local_request(
+        &mut request,
+        trace_id.clone(),
+        debug,
+        client_ip.clone(),
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            super::trace_log::log_request_start(
+                trace_id.as_str(),
+                "-",
+                request_method_for_log.as_str(),
+                request_path_for_log.as_str(),
+                None,
+                None,
+                None,
+                false,
+                "http",
+                "-",
+            );
+            super::trace_log::log_request_final(
+                trace_id.as_str(),
+                err.status_code,
+                None,
+                None,
+                Some(err.message.as_str()),
+                0,
+            );
+            super::record_gateway_request_outcome(
+                request_path_for_log.as_str(),
+                err.status_code,
+                None,
+            );
+            if let Some(storage) = super::open_storage() {
+                super::write_request_log(
+                    &storage,
+                    super::request_log::RequestLogTraceContext {
+                        trace_id: Some(trace_id.as_str()),
+                        client_ip: client_ip.as_deref(),
+                        original_path: Some(request_path_for_log.as_str()),
+                        adapted_path: Some(request_path_for_log.as_str()),
+                        response_adapter: None,
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                    &request_path_for_log,
+                    &request_method_for_log,
                     None,
                     None,
                     None,
-                    false,
-                    "http",
-                    "-",
-                );
-                super::trace_log::log_request_final(
-                    trace_id.as_str(),
-                    err.status_code,
-                    None,
-                    None,
+                    Some(err.status_code),
+                    super::request_log::RequestLogUsage::default(),
                     Some(err.message.as_str()),
-                    0,
-                );
-                super::record_gateway_request_outcome(
-                    request_path_for_log.as_str(),
-                    err.status_code,
                     None,
                 );
-                if let Some(storage) = super::open_storage() {
-                    super::write_request_log(
-                        &storage,
-                        super::request_log::RequestLogTraceContext {
-                            trace_id: Some(trace_id.as_str()),
-                            original_path: Some(request_path_for_log.as_str()),
-                            adapted_path: Some(request_path_for_log.as_str()),
-                            response_adapter: None,
-                            ..Default::default()
-                        },
-                        None,
-                        None,
-                        &request_path_for_log,
-                        &request_method_for_log,
-                        None,
-                        None,
-                        None,
-                        Some(err.status_code),
-                        super::request_log::RequestLogUsage::default(),
-                        Some(err.message.as_str()),
-                        None,
-                    );
-                }
-                let response_message = super::error_message_for_client(
-                    super::prefers_raw_errors_for_tiny_http_request(&request),
-                    err.message.as_str(),
-                );
-                let response = super::error_response::terminal_text_response(
-                    err.status_code,
-                    response_message,
-                    Some(trace_id.as_str()),
-                );
-                let _ = request.respond(response);
-                return Ok(());
             }
-        };
+            let response_message = super::error_message_for_client(
+                super::prefers_raw_errors_for_tiny_http_request(&request),
+                err.message.as_str(),
+            );
+            let response = super::error_response::terminal_text_response(
+                err.status_code,
+                response_message,
+                Some(trace_id.as_str()),
+            );
+            let _ = request.respond(response);
+            return Ok(());
+        }
+    };
 
     let request = if validated.rotation_strategy == crate::apikey_profile::ROTATION_AGGREGATE_API
         || validated.rotation_strategy == crate::apikey_profile::ROTATION_HYBRID
@@ -105,6 +129,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
         match super::maybe_respond_local_models(
             request,
             validated.trace_id.as_str(),
+            validated.client_ip.as_deref(),
             validated.key_id.as_str(),
             validated.protocol_type.as_str(),
             validated.original_path.as_str(),
@@ -133,6 +158,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
         match super::maybe_respond_local_count_tokens(
             request,
             trace_id_for_count_tokens.as_str(),
+            validated.client_ip.as_deref(),
             key_id_for_count_tokens.as_str(),
             protocol_type_for_count_tokens.as_str(),
             validated.original_path.as_str(),

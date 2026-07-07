@@ -403,16 +403,19 @@ async fn serve_on_listener(
     app: Router,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            while !*shutdown_rx.borrow() {
-                if shutdown_rx.changed().await.is_err() {
-                    break;
-                }
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        while !*shutdown_rx.borrow() {
+            if shutdown_rx.changed().await.is_err() {
+                break;
             }
-        })
-        .await
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+        }
+    })
+    .await
+    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
 }
 
 /// 函数 `run_web_server`

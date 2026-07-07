@@ -28,6 +28,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
     request: Request,
     storage: &Storage,
     trace_id: &str,
+    client_ip: Option<&str>,
     key_id: &str,
     original_path: &str,
     path: &str,
@@ -55,6 +56,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
                 storage,
                 super::super::super::request_log::RequestLogTraceContext {
                     trace_id: Some(trace_id),
+                    client_ip,
                     original_path: Some(original_path),
                     adapted_path: Some(path),
                     response_adapter: Some(response_adapter),
@@ -102,6 +104,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
             storage,
             super::super::super::request_log::RequestLogTraceContext {
                 trace_id: Some(trace_id),
+                client_ip,
                 original_path: Some(original_path),
                 adapted_path: Some(path),
                 response_adapter: Some(response_adapter),

@@ -7,6 +7,7 @@ use codexmanager_core::storage::{
     Account, Event, ModelCatalogModelRecord, ModelGroupModel, PluginInstall, PluginRunLog,
     PluginTask, RequestLog, RequestTokenStat, Token, UsageSnapshotRecord,
 };
+use std::net::SocketAddr;
 
 /// 函数 `response_result`
 ///
@@ -977,6 +978,81 @@ fn insert_test_request_log(
             },
         )
         .expect("insert request log");
+}
+
+#[test]
+fn trusted_loopback_proxy_client_ip_header_wins() {
+    let remote_addr: SocketAddr = "127.0.0.1:53000".parse().expect("loopback addr");
+
+    assert_eq!(
+        client_ip::resolve_trusted_client_ip(Some(&remote_addr), Some("192.168.1.55")),
+        Some("192.168.1.55".to_string())
+    );
+}
+
+#[test]
+fn non_loopback_peer_cannot_spoof_client_ip_header() {
+    let remote_addr: SocketAddr = "192.168.1.88:53000".parse().expect("lan addr");
+
+    assert_eq!(
+        client_ip::resolve_trusted_client_ip(Some(&remote_addr), Some("192.168.1.55")),
+        Some("192.168.1.88".to_string())
+    );
+}
+
+#[test]
+fn forwarded_client_ip_header_overwrites_spoofed_value() {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        client_ip::FORWARDED_CLIENT_IP_HEADER,
+        axum::http::HeaderValue::from_static("10.0.0.99"),
+    );
+    let peer_addr: SocketAddr = "192.168.1.55:53000".parse().expect("lan addr");
+
+    client_ip::set_forwarded_client_ip_header(&mut headers, peer_addr);
+
+    assert_eq!(
+        headers
+            .get(client_ip::FORWARDED_CLIENT_IP_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("192.168.1.55")
+    );
+}
+
+fn insert_test_request_log_with_client_ip(
+    key_id: &str,
+    trace_id: &str,
+    client_ip: &str,
+    total_tokens: i64,
+    created_at: i64,
+) {
+    let storage = storage_helpers::open_storage().expect("open storage");
+    storage
+        .insert_request_log_with_token_stat(
+            &RequestLog {
+                trace_id: Some(trace_id.to_string()),
+                key_id: Some(key_id.to_string()),
+                client_ip: Some(client_ip.to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                model: Some("gpt-5-mini".to_string()),
+                status_code: Some(200),
+                total_tokens: Some(total_tokens),
+                created_at,
+                ..RequestLog::default()
+            },
+            &RequestTokenStat {
+                key_id: Some(key_id.to_string()),
+                client_ip: Some(client_ip.to_string()),
+                model: Some("gpt-5-mini".to_string()),
+                input_tokens: Some(total_tokens),
+                total_tokens: Some(total_tokens),
+                estimated_cost_usd: Some(total_tokens as f64 / 1000.0),
+                created_at,
+                ..RequestTokenStat::default()
+            },
+        )
+        .expect("insert request log with client ip");
 }
 
 #[test]
@@ -2095,6 +2171,92 @@ fn member_requestlog_queries_filter_to_owned_keys() {
         "member must not clear global logs: {:?}",
         clear.result
     );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn member_requestlog_client_ip_usage_filters_to_owned_keys() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-member-client-ip-usage-filter");
+    let day_start = 1_700_000_000;
+    let day_end = day_start + 86_400;
+    let user_one = create_test_member("client-ip-usage-one", Some(2_000_000));
+    let user_two = create_test_member("client-ip-usage-two", Some(2_000_000));
+    let key_one = create_owned_test_api_key(&user_one.id, "client ip one key", "gpt-5-mini");
+    let key_two = create_owned_test_api_key(&user_two.id, "client ip two key", "gpt-5-mini");
+    let actor_one = RpcActor::from_parts(Some(ROLE_MEMBER), Some(&user_one.id));
+
+    insert_test_request_log_with_client_ip(
+        &key_one,
+        "trace-client-ip-one",
+        "192.168.1.23",
+        60,
+        day_start + 10,
+    );
+    insert_test_request_log_with_client_ip(
+        &key_two,
+        "trace-client-ip-two",
+        "192.168.1.24",
+        120,
+        day_start + 20,
+    );
+
+    let member_usage = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/client_ip_usage",
+            serde_json::json!({
+                "startTs": day_start,
+                "endTs": day_end,
+                "limit": 10
+            }),
+        ),
+        actor_one.clone(),
+    ));
+    assert!(
+        member_usage.result.get("error").is_none(),
+        "{:?}",
+        member_usage.result
+    );
+    let member_items = member_usage.result["items"].as_array().unwrap();
+    assert_eq!(member_items.len(), 1);
+    assert_eq!(member_items[0]["keyId"], key_one);
+    assert_eq!(member_items[0]["clientIp"], "192.168.1.23");
+    assert_eq!(member_items[0]["totalTokens"], 60);
+
+    let member_logs = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/list",
+            serde_json::json!({
+                "page": 1,
+                "pageSize": 20,
+                "query": "192.168.1.23",
+                "startTs": day_start,
+                "endTs": day_end
+            }),
+        ),
+        actor_one,
+    ));
+    assert!(
+        member_logs.result.get("error").is_none(),
+        "{:?}",
+        member_logs.result
+    );
+    assert_eq!(member_logs.result["total"], 1);
+    assert_eq!(member_logs.result["items"][0]["clientIp"], "192.168.1.23");
+
+    let admin_usage = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/client_ip_usage",
+            serde_json::json!({
+                "startTs": day_start,
+                "endTs": day_end,
+                "limit": 10
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert_eq!(admin_usage.result["items"].as_array().unwrap().len(), 2);
 
     let _ = std::fs::remove_file(db_path);
 }

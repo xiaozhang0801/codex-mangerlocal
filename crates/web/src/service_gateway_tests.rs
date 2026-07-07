@@ -3,7 +3,7 @@ use super::{
     service_probe_client, should_skip_gateway_request_header, should_skip_gateway_response_header,
     ENV_GATEWAY_PROXY_MAX_BODY_BYTES,
 };
-use axum::http::{header, HeaderValue, Uri};
+use axum::http::{header, HeaderName, HeaderValue, Uri};
 use std::sync::{Mutex, MutexGuard};
 
 static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -91,5 +91,13 @@ fn gateway_proxy_header_filters_skip_hop_by_hop_headers() {
     assert!(!should_skip_gateway_request_header(
         &header::AUTHORIZATION,
         &HeaderValue::from_static("Bearer key")
+    ));
+}
+
+#[test]
+fn gateway_proxy_header_filters_drop_forwarded_client_ip_spoofing() {
+    assert!(should_skip_gateway_request_header(
+        &HeaderName::from_static(codexmanager_service::FORWARDED_CLIENT_IP_HEADER),
+        &HeaderValue::from_static("10.0.0.99")
     ));
 }

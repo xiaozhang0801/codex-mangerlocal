@@ -7,6 +7,7 @@ use super::{
 use axum::http::{HeaderMap, HeaderValue};
 use codexmanager_core::storage::{Account, ApiKey};
 use serde_json::json;
+use std::time::Instant;
 
 fn sample_api_key() -> ApiKey {
     ApiKey {
@@ -129,6 +130,38 @@ fn websocket_connect_error_preserves_http_unauthorized_status() {
 }
 
 #[test]
+fn websocket_request_log_trace_context_includes_client_ip() {
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: sample_incoming_headers(None, None),
+        prompt_cache_key: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+        client_ip: Some("192.168.1.55".to_string()),
+    };
+    let pending = super::PendingWsRequestLog {
+        trace_id: "trace-ws-client-ip".to_string(),
+        route_strategy: None,
+        route_source: None,
+        client_model: None,
+        model: None,
+        model_source: None,
+        client_reasoning_effort: None,
+        reasoning_effort: None,
+        reasoning_source: None,
+        service_tier: None,
+        effective_service_tier: None,
+        service_tier_source: None,
+        started_at: Instant::now(),
+        first_response_ms: None,
+    };
+
+    let trace_context = super::ws_request_log_trace_context(&context, &pending);
+
+    assert_eq!(trace_context.client_ip, Some("192.168.1.55"));
+}
+
+#[test]
 fn inspect_ws_terminal_event_infers_usage_limit_status_without_explicit_status() {
     let event = inspect_ws_terminal_event(
         r#"{"type":"error","error":{"message":"You've hit your usage limit."}}"#,
@@ -200,6 +233,7 @@ fn websocket_frame_preserves_prompt_cache_key_when_native_conversation_anchor_ex
         prompt_cache_key: Some("sticky-thread".to_string()),
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
+        client_ip: None,
     };
     let prepared = rewrite_client_frame(
             r#"{"type":"response.create","model":"gpt-5.4","input":"hello","prompt_cache_key":"client-thread"}"#,
@@ -227,6 +261,7 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
         prompt_cache_key: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
+        client_ip: None,
     };
     let account = sample_account();
 
@@ -296,6 +331,7 @@ fn websocket_frame_merges_header_metadata_into_client_metadata() {
         prompt_cache_key: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
+        client_ip: None,
     };
     let prepared = rewrite_client_frame(
             r#"{"type":"response.create","model":"gpt-5.4","input":"hello","client_metadata":{"source":"client"}}"#,
@@ -327,6 +363,7 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
         prompt_cache_key: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
+        client_ip: None,
     };
     let prepared = rewrite_client_frame(
             json!({

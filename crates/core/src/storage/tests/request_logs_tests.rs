@@ -312,6 +312,46 @@ fn global_search_count_keeps_token_stats_join() {
         .any(|detail| detail.contains("request_token_stats")));
 }
 
+#[test]
+fn request_logs_persist_and_search_client_ip() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    let first_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trace-ip-1".to_string()),
+            key_id: Some("key-ip".to_string()),
+            client_ip: Some("192.168.1.23".to_string()),
+            request_path: "/v1/responses".to_string(),
+            method: "POST".to_string(),
+            status_code: Some(200),
+            created_at: 1_000,
+            ..Default::default()
+        })
+        .expect("insert request log");
+    assert!(first_id > 0);
+
+    storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trace-ip-2".to_string()),
+            key_id: Some("key-ip".to_string()),
+            client_ip: Some("192.168.1.24".to_string()),
+            request_path: "/v1/chat/completions".to_string(),
+            method: "POST".to_string(),
+            status_code: Some(200),
+            created_at: 1_001,
+            ..Default::default()
+        })
+        .expect("insert second request log");
+
+    let logs = storage
+        .list_request_logs(Some("192.168.1.23"), 10)
+        .expect("list request logs by ip");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].trace_id.as_deref(), Some("trace-ip-1"));
+    assert_eq!(logs[0].client_ip.as_deref(), Some("192.168.1.23"));
+}
+
 /// 函数 `insert_request_log_with_token_stat_is_visible_via_join`
 ///
 /// 作者: gaohongshun

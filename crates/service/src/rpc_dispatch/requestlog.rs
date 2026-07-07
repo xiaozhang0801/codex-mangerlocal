@@ -1,9 +1,14 @@
-use codexmanager_core::rpc::types::{JsonRpcRequest, JsonRpcResponse, RequestLogListParams};
+use codexmanager_core::rpc::types::{
+    ClientIpUsageListParams, JsonRpcRequest, JsonRpcResponse, RequestLogListParams,
+};
 use codexmanager_core::storage::Storage;
 
 use crate::storage_helpers::StorageHandle;
 use crate::RpcActor;
-use crate::{requestlog_clear, requestlog_list, requestlog_summary, requestlog_today_summary};
+use crate::{
+    requestlog_clear, requestlog_client_ip_usage, requestlog_list, requestlog_summary,
+    requestlog_today_summary,
+};
 
 fn actor_key_ids_with_storage(storage: &Storage, actor: &RpcActor) -> Result<Vec<String>, String> {
     if actor.is_admin() {
@@ -134,6 +139,27 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                     let (storage, key_ids) = member_requestlog_scope(actor)?;
                     requestlog_summary::read_request_log_filter_summary_for_key_ids_with_storage(
                         &storage, params, &key_ids,
+                    )
+                }
+            }))
+        }
+        "requestlog/client_ip_usage" => {
+            let params = req
+                .params
+                .clone()
+                .map(serde_json::from_value::<ClientIpUsageListParams>)
+                .transpose()
+                .map(|params| params.unwrap_or_default())
+                .map_err(|err| format!("invalid requestlog/client_ip_usage params: {err}"));
+            super::value_or_error(params.and_then(|params| {
+                if actor.is_admin() {
+                    requestlog_client_ip_usage::read_client_ip_usage(params, None)
+                } else {
+                    let (storage, key_ids) = member_requestlog_scope(actor)?;
+                    requestlog_client_ip_usage::read_client_ip_usage_with_storage(
+                        &storage,
+                        params,
+                        Some(&key_ids),
                     )
                 }
             }))

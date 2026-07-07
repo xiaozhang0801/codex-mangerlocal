@@ -6,6 +6,7 @@ mod aggregate_api;
 mod apikey;
 pub(crate) mod app_settings;
 mod auth;
+pub mod client_ip;
 mod codex_profile;
 mod dashboard;
 mod errors;
@@ -65,6 +66,7 @@ pub(crate) use model_groups::{
     upsert_model_group,
 };
 pub(crate) use requestlog::clear as requestlog_clear;
+pub(crate) use requestlog::client_ip_usage as requestlog_client_ip_usage;
 pub(crate) use requestlog::list as requestlog_list;
 pub(crate) use requestlog::summary as requestlog_summary;
 pub(crate) use requestlog::today_summary as requestlog_today_summary;
@@ -138,6 +140,7 @@ pub use auth::{
     AppUserUpdateInput, AppWalletResult, BillingModeLockResult,
 };
 pub use auth::{rpc_auth_token, rpc_auth_token_matches};
+pub use client_ip::FORWARDED_CLIENT_IP_HEADER;
 pub use lifecycle::bootstrap::{initialize_storage_if_needed, portable};
 pub use lifecycle::shutdown::{clear_shutdown_flag, request_shutdown, shutdown_requested};
 pub use lifecycle::startup::{start_one_shot_server, start_server, ServerHandle};
