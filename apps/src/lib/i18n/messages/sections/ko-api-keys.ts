@@ -2,13 +2,22 @@ import type { MessageCatalog } from "../types";
 
 export const KO_API_KEYS_MESSAGES: MessageCatalog = {
   "Gateway access": "게이트웨이 접근",
+  "内网 IP 用量": "LAN IP 사용량",
+  "客户端 IP": "클라이언트 IP",
   项目: "프로젝트",
+  请求: "요청",
   "Token / 金额": "Token / 금액",
+  "成功 / 异常": "성공 / 오류",
   已花费: "사용됨",
   不限额: "무제한",
   已达上限: "상한 도달",
   管理员视图: "관리자 보기",
   成员视图: "멤버 보기",
+  "按 Token 排序": "Token 기준 정렬",
+  "按平台密钥和直接访问的内网 IP 汇总":
+    "플랫폼 키와 직접 접속한 LAN IP 기준 집계",
+  "搜索路径、账号、密钥 ID 或客户端 IP...":
+    "경로, 계정, 키 ID 또는 클라이언트 IP 검색...",
   "请选择平台 Key 归属成员": "platform key의 소속 구성원을 선택하세요",
   账号组筛选: "계정 그룹 필터",
   "额度分发开启时，平台 Key 必须归属到一个成员钱包。":
@@ -23,4 +32,6 @@ export const KO_API_KEYS_MESSAGES: MessageCatalog = {
     "상한에 도달하면 이 platform key의 새 요청은 거부됩니다. 이미 진행 중인 요청은 완료 후 실제 사용량으로 계속 집계됩니다.",
   按: "기준",
   参考估算: "참고 추정",
+  "暂无内网 IP 用量记录": "LAN IP 사용량 기록 없음",
+  最近出现: "최근 표시",
 };

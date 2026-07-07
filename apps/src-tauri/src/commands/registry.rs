@@ -18,6 +18,7 @@ macro_rules! invoke_handler {
             crate::commands::startup::service_startup_snapshot,
             crate::commands::dashboard::service_dashboard_admin_usage_summary,
             crate::commands::dashboard::service_dashboard_member_summary,
+            crate::commands::dashboard::service_dashboard_active_requests,
             crate::commands::quota::service_quota_overview,
             crate::commands::quota::service_quota_model_usage,
             crate::commands::quota::service_quota_api_key_usage,

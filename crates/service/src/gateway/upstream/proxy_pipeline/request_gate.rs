@@ -19,6 +19,7 @@ pub(in super::super) fn acquire_request_gate(
     model_for_log: Option<&str>,
     request_deadline: Option<Instant>,
 ) -> Option<super::super::super::request_gate::RequestGateGuard> {
+    super::super::super::mark_request_activity_queued(trace_id, "account_pool");
     let request_gate_lock = super::super::super::request_gate_lock(key_id, path, model_for_log);
     let request_gate_wait_timeout = super::super::super::request_gate_wait_timeout();
     super::super::super::trace_log::log_request_gate_wait(trace_id, key_id, path, model_for_log);
@@ -26,6 +27,7 @@ pub(in super::super) fn acquire_request_gate(
 
     match request_gate_lock.try_acquire() {
         Ok(Some(guard)) => {
+            super::super::super::mark_request_activity_running(trace_id, "account_pool");
             super::super::super::trace_log::log_request_gate_acquired(
                 trace_id,
                 key_id,
@@ -50,6 +52,7 @@ pub(in super::super) fn acquire_request_gate(
                 },
             };
             if let Ok(Some(guard)) = wait_result {
+                super::super::super::mark_request_activity_running(trace_id, "account_pool");
                 super::super::super::trace_log::log_request_gate_acquired(
                     trace_id,
                     key_id,

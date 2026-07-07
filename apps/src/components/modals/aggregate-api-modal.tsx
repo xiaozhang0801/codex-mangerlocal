@@ -509,8 +509,8 @@ export function AggregateApiModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-card w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] overflow-hidden p-0 sm:max-w-[92vw] md:max-w-[640px] lg:max-w-[720px] xl:max-w-[760px]">
-        <div className="flex max-h-[92vh] flex-col">
+      <DialogContent className="app-centered-dialog glass-card w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] overflow-hidden p-0 sm:max-w-[92vw] md:max-w-[640px] lg:max-w-[720px] xl:max-w-[760px]">
+        <div className="flex max-h-[inherit] flex-col">
           <div className="border-b border-border/50 px-5 pt-5 pb-3">
             <DialogHeader>
               <div className="mb-2 flex items-center gap-3">
@@ -527,7 +527,7 @@ export function AggregateApiModal({
             </DialogHeader>
           </div>
 
-          <div className="overflow-y-auto px-5 py-3">
+          <div className="app-centered-dialog__body px-5 py-3">
             <div className="grid gap-4">
               {!isServiceReady ? (
                 <Alert>

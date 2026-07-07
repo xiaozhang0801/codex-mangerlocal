@@ -12,8 +12,9 @@ async function readSource(relativePath) {
 function readConstFunctionBody(source, functionName) {
   const start = source.indexOf(`const ${functionName} = async () => {`);
   assert.notEqual(start, -1, `${functionName} not found`);
-  const end = source.indexOf("\n  };\n", start);
-  assert.notEqual(end, -1, `${functionName} body end not found`);
+  const endMatch = /\r?\n  };\r?\n/.exec(source.slice(start));
+  assert.ok(endMatch, `${functionName} body end not found`);
+  const end = start + endMatch.index;
   return source.slice(start, end);
 }
 

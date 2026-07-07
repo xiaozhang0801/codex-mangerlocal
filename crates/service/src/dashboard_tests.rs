@@ -1,13 +1,39 @@
 use super::{
     build_dashboard_source_summaries, build_dashboard_user_summaries, daily_usage_bucket,
-    dashboard_source_ids, filter_source_usage, read_member_usage_breakdown, read_usage_trend_7d,
-    SourceMetadata,
+    dashboard_source_ids, filter_source_usage, read_active_requests, read_member_usage_breakdown,
+    read_usage_trend_7d, SourceMetadata,
 };
 use codexmanager_core::storage::{
     ApiKey, ApiKeyOwner, AppUser, DailyTokenUsageRollup, RequestTokenStat, SourceTokenUsageRollup,
     Storage, TokenUsageRollup, UserTokenUsageRollup,
 };
 use std::collections::HashMap;
+
+#[test]
+fn active_requests_require_admin_actor() {
+    let _guard = crate::test_env_guard();
+    crate::gateway::clear_request_activity_for_tests();
+
+    let member = crate::RpcActor::from_parts(Some(crate::ROLE_MEMBER), Some("member-user"));
+    let admin = crate::RpcActor::from_parts(Some(crate::ROLE_ADMIN), Some("admin-user"));
+    let activity = crate::gateway::begin_request_activity(crate::gateway::RequestActivityStart {
+        trace_id: "active-dashboard-trace",
+        client_ip: Some("192.168.1.20"),
+        key_id: "key-dashboard",
+        path: "/v1/responses",
+        method: "POST",
+        model: Some("gpt-5"),
+    });
+
+    assert!(read_active_requests(&member, Some(10)).is_err());
+
+    let snapshot = read_active_requests(&admin, Some(10)).expect("admin can read active requests");
+    assert_eq!(snapshot.total_count, 1);
+    assert_eq!(snapshot.items[0].trace_id, "active-dashboard-trace");
+
+    drop(activity);
+    crate::gateway::clear_request_activity_for_tests();
+}
 
 fn source_usage(source_id: &str, total_tokens: i64) -> SourceTokenUsageRollup {
     SourceTokenUsageRollup {

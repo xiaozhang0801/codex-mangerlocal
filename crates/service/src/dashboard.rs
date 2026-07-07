@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{apikey_list, requestlog_list, storage_helpers, time_bounds, RpcActor};
 use codexmanager_core::rpc::types::{
-    ApiKeySummary, DashboardAdminUsageSummaryResult, DashboardDailyUsagePoint,
-    DashboardSourceUsageSummary, DashboardTokenUsageResult, DashboardUserUsageSummary,
-    MemberDashboardAlert, MemberDashboardApiKeySummary, MemberDashboardKeyUsage,
-    MemberDashboardModelUsage, MemberDashboardSummaryResult, MemberDashboardUsagePoint,
-    MemberDashboardUsageToday, MemberDashboardWalletResult, RequestLogListParams,
+    ApiKeySummary, DashboardActiveRequestsResult, DashboardAdminUsageSummaryResult,
+    DashboardDailyUsagePoint, DashboardSourceUsageSummary, DashboardTokenUsageResult,
+    DashboardUserUsageSummary, MemberDashboardAlert, MemberDashboardApiKeySummary,
+    MemberDashboardKeyUsage, MemberDashboardModelUsage, MemberDashboardSummaryResult,
+    MemberDashboardUsagePoint, MemberDashboardUsageToday, MemberDashboardWalletResult,
+    RequestLogListParams,
 };
 use codexmanager_core::storage::{
     DailyTokenUsageRollup, SourceTokenUsageRollup, TokenUsageRollup, UserTokenUsageRollup,
@@ -20,6 +21,17 @@ const LOW_WALLET_CREDIT_MICROS: i64 = 1_000_000;
 const ADMIN_USAGE_RANGE_DAYS: i64 = 7;
 const ADMIN_TOP_USER_LIMIT: usize = 12;
 const ADMIN_TOP_SOURCE_LIMIT: usize = 12;
+
+pub(crate) fn read_active_requests(
+    actor: &RpcActor,
+    limit: Option<i64>,
+) -> Result<DashboardActiveRequestsResult, String> {
+    if !actor.is_admin() {
+        return Err("permission_denied: active requests require admin session".to_string());
+    }
+    let limit = limit.unwrap_or(50).clamp(1, 50) as usize;
+    Ok(crate::gateway::request_activity_snapshot(limit))
+}
 
 pub(crate) fn read_admin_usage_summary(
     actor: &RpcActor,

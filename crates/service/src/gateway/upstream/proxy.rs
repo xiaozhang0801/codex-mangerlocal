@@ -647,6 +647,15 @@ pub(in super::super) fn proxy_validated_request(
     } = validated;
     let started_at = Instant::now();
     let client_is_stream = is_stream;
+    let _activity_guard =
+        super::super::begin_request_activity(super::super::RequestActivityStart {
+            trace_id: trace_id.as_str(),
+            client_ip: client_ip.as_deref(),
+            key_id: key_id.as_str(),
+            path: path.as_str(),
+            method: request_method.as_str(),
+            model: model_for_log.as_deref(),
+        });
     // 中文注释：对齐 Codex 上游协议：/v1/responses 固定走 SSE。
     // 下游是否流式仍由客户端 `stream` 参数决定（在 response bridge 层聚合/透传）。
     let upstream_is_stream = resolve_upstream_is_stream(client_is_stream, path.as_str());

@@ -206,9 +206,9 @@ export function CodexCliOnboardingDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         initialFocus={introFocusRef}
-        className="glass-card mission-panel max-h-[min(82dvh,760px)] overflow-hidden p-0 sm:!max-w-[min(92vw,980px)]"
+        className="app-centered-dialog glass-card mission-panel overflow-hidden p-0 sm:!max-w-[min(92vw,980px)]"
       >
-        <div className="flex max-h-[min(82dvh,760px)] min-h-0 flex-col">
+        <div className="flex max-h-[inherit] min-h-0 flex-col">
           <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div
@@ -235,7 +235,7 @@ export function CodexCliOnboardingDialog({
 
           <div
             ref={scrollContainerRef}
-            className="grid min-h-0 flex-1 gap-3 overflow-y-auto px-5 py-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,0.86fr)]"
+            className="app-centered-dialog__body grid flex-1 gap-3 px-5 py-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,0.86fr)]"
           >
             <div className="min-h-0 space-y-3">
               <section className="rounded-md border border-border/60 bg-background/45 p-4 shadow-sm">

@@ -1508,6 +1508,36 @@ pub struct DashboardAdminUsageSummaryResult {
     pub aggregate_apis: Vec<DashboardSourceUsageSummary>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardActiveRequestItem {
+    pub id: String,
+    pub trace_id: String,
+    pub status: String,
+    pub client_ip: Option<String>,
+    pub key_id: String,
+    pub path: String,
+    pub method: String,
+    pub model: Option<String>,
+    pub route_kind: String,
+    pub source_kind: Option<String>,
+    pub source_id: Option<String>,
+    pub created_at_ms: i64,
+    pub queued_at_ms: Option<i64>,
+    pub running_at_ms: Option<i64>,
+    pub wait_ms: i64,
+    pub running_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardActiveRequestsResult {
+    pub total_count: i64,
+    pub queued_count: i64,
+    pub running_count: i64,
+    pub items: Vec<DashboardActiveRequestItem>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberDashboardWalletResult {

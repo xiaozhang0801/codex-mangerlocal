@@ -845,6 +845,7 @@ pub(in super::super) fn proxy_aggregate_request(
         request_deadline,
         started_at,
     } = params;
+    super::super::super::mark_request_activity_running(trace_id, "aggregate_api");
     if aggregate_api_candidates.is_empty() {
         let message = "aggregate api not found".to_string();
         super::super::super::record_gateway_request_outcome(path, 404, Some("aggregate_api"));
@@ -877,6 +878,11 @@ pub(in super::super) fn proxy_aggregate_request(
     for (candidate_idx, candidate) in aggregate_api_candidates.into_iter().enumerate() {
         attempted_aggregate_api_ids.push(candidate.id.clone());
         let candidate_id = candidate.id.clone();
+        super::super::super::update_request_activity_source(
+            trace_id,
+            Some("aggregate_api"),
+            Some(candidate_id.as_str()),
+        );
         let candidate_upstream_model =
             aggregate_upstream_model_for_log(&candidate, model_for_log).map(str::to_string);
         let candidate_supplier_name = candidate.supplier_name.clone();

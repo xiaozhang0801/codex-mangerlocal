@@ -1,6 +1,8 @@
 import { invoke, withAddr } from "./transport";
 import { normalizeModelCatalog, normalizeRequestLogs } from "./normalize";
 import type {
+  DashboardActiveRequestItem,
+  DashboardActiveRequestsResult,
   DashboardAdminUsageSummary,
   DashboardDailyUsagePoint,
   DashboardSourceUsageSummary,
@@ -130,6 +132,42 @@ function readAdminUsageSummary(value: unknown): DashboardAdminUsageSummary {
     aggregateApis: asArray(source.aggregateApis ?? source.aggregate_apis)
       .map(readSourceUsageSummary)
       .filter((item): item is DashboardSourceUsageSummary => Boolean(item)),
+  };
+}
+
+function readActiveRequestItem(value: unknown): DashboardActiveRequestItem | null {
+  const source = asRecord(value);
+  const traceId = asString(source.traceId ?? source.trace_id);
+  if (!traceId) return null;
+  return {
+    id: asString(source.id, traceId),
+    traceId,
+    status: asString(source.status) || "queued",
+    clientIp: nullableString(source.clientIp ?? source.client_ip),
+    keyId: asString(source.keyId ?? source.key_id),
+    path: asString(source.path),
+    method: asString(source.method),
+    model: nullableString(source.model),
+    routeKind: asString(source.routeKind ?? source.route_kind),
+    sourceKind: nullableString(source.sourceKind ?? source.source_kind),
+    sourceId: nullableString(source.sourceId ?? source.source_id),
+    createdAtMs: asNumber(source.createdAtMs ?? source.created_at_ms),
+    queuedAtMs: nullableNumber(source.queuedAtMs ?? source.queued_at_ms),
+    runningAtMs: nullableNumber(source.runningAtMs ?? source.running_at_ms),
+    waitMs: asNumber(source.waitMs ?? source.wait_ms),
+    runningMs: asNumber(source.runningMs ?? source.running_ms),
+  };
+}
+
+function readActiveRequestsResult(value: unknown): DashboardActiveRequestsResult {
+  const source = asRecord(value);
+  return {
+    totalCount: asNumber(source.totalCount ?? source.total_count),
+    queuedCount: asNumber(source.queuedCount ?? source.queued_count),
+    runningCount: asNumber(source.runningCount ?? source.running_count),
+    items: asArray(source.items)
+      .map(readActiveRequestItem)
+      .filter((item): item is DashboardActiveRequestItem => Boolean(item)),
   };
 }
 
@@ -273,6 +311,17 @@ function readMemberDashboardSummary(value: unknown): MemberDashboardSummary {
 }
 
 export const dashboardClient = {
+  async getActiveRequests(params?: {
+    limit?: number | null;
+  }): Promise<DashboardActiveRequestsResult> {
+    const result = await invoke<unknown>(
+      "service_dashboard_active_requests",
+      withAddr({
+        limit: params?.limit ?? null,
+      }),
+    );
+    return readActiveRequestsResult(result);
+  },
   async getAdminUsageSummary(params?: {
     startTs?: number | null;
     endTs?: number | null;

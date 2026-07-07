@@ -300,6 +300,12 @@ pub(in super::super) fn execute_candidate_sequence(
             }
             continue;
         }
+        super::super::super::mark_request_activity_running(trace_id, "account_pool");
+        super::super::super::update_request_activity_source(
+            trace_id,
+            Some("openai_account"),
+            Some(account.id.as_str()),
+        );
         attempted_account_ids.push(account.id.clone());
 
         let request_ref = request

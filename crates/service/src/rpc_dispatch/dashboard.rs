@@ -28,6 +28,10 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 include_details,
             ))
         }
+        "dashboard/activeRequests" => {
+            let limit = super::i64_param(req, "limit");
+            super::value_or_error(dashboard::read_active_requests(actor, limit))
+        }
         _ => return None,
     };
 

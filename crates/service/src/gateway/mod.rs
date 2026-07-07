@@ -90,6 +90,8 @@ mod official_responses_http;
 #[path = "auth/openai_fallback.rs"]
 mod openai_fallback;
 mod protocol_adapter;
+#[path = "observability/request_activity.rs"]
+mod request_activity;
 #[path = "request/request_entry.rs"]
 mod request_entry;
 #[path = "routing/request_gate.rs"]
@@ -132,6 +134,12 @@ pub(super) use official_responses_http::normalize_official_responses_http_body;
 use protocol_adapter::build_gemini_error_body;
 use protocol_adapter::{
     adapt_request_for_protocol, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap,
+};
+#[cfg(test)]
+pub(crate) use request_activity::clear_request_activity_for_tests;
+pub(crate) use request_activity::{
+    begin_request_activity, mark_request_activity_queued, mark_request_activity_running,
+    request_activity_snapshot, update_request_activity_source, RequestActivityStart,
 };
 pub(super) use request_helpers::{
     inspect_service_tier_for_log, inspect_service_tier_value, is_html_content_type,

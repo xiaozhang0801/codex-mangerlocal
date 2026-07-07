@@ -60,6 +60,7 @@ import {
 } from "@/components/ui/table";
 import { useDashboardStats } from "@/hooks/useDashboardStats";
 import { useDashboardAdminUsageSummary } from "@/hooks/useDashboardAdminUsageSummary";
+import { useDashboardActiveRequests } from "@/hooks/useDashboardActiveRequests";
 import { resolveSessionRole, useAppSession } from "@/hooks/useAppSession";
 import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { useMemberDashboardSummary } from "@/hooks/useMemberDashboardSummary";
@@ -85,6 +86,8 @@ import {
 } from "recharts";
 import type {
   DashboardAdminUsageSummary,
+  DashboardActiveRequestItem,
+  DashboardActiveRequestsResult,
   DashboardDailyUsagePoint,
   DashboardTokenUsage,
   MemberDashboardAlert,
@@ -796,6 +799,128 @@ function AdminUsageAnalyticsCard({
   );
 }
 
+function formatActiveRequestDuration(ms: number): string {
+  const normalized = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  if (normalized < 1000) return `${Math.round(normalized)}ms`;
+  if (normalized < 60_000) return `${(normalized / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(normalized / 60_000);
+  const seconds = Math.floor((normalized % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+function activeRequestStatusLabel(
+  status: string,
+  runningLabel: string,
+  queuedLabel: string,
+): string {
+  return status === "running" ? runningLabel : queuedLabel;
+}
+
+function activeRequestSourceLabel(item: DashboardActiveRequestItem): string {
+  if (item.sourceKind === "aggregate_api") return "Aggregate API";
+  if (item.sourceKind === "openai_account") return "OpenAI";
+  if (item.routeKind === "aggregate_api") return "Aggregate API";
+  if (item.routeKind === "account_pool") return "Account Pool";
+  return item.routeKind || "Gateway";
+}
+
+function AdminActiveRequestsCard({
+  summary,
+  isLoading,
+  runningLabel,
+  queuedLabel,
+  emptyLabel,
+}: {
+  summary: DashboardActiveRequestsResult | undefined;
+  isLoading: boolean;
+  runningLabel: string;
+  queuedLabel: string;
+  emptyLabel: string;
+}) {
+  const { t } = useI18n();
+  const items = summary?.items ?? [];
+  const runningCount = summary?.runningCount ?? 0;
+  const queuedCount = summary?.queuedCount ?? 0;
+
+  return (
+    <Card className="dashboard-analytics-card glass-card mission-panel shadow-sm">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 pb-3">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-base font-semibold">
+            <Activity className="h-4 w-4 text-primary" />
+            {t("实时请求")}
+          </CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {summary?.totalCount ?? 0} {t("个进行中")} · {runningLabel} {runningCount} · {queuedLabel} {queuedCount}
+          </p>
+        </div>
+        <Badge variant="outline" className="border-primary/20 bg-primary/8 text-primary">
+          LIVE
+        </Badge>
+      </CardHeader>
+      <CardContent>
+        {isLoading && items.length === 0 ? (
+          <div className="grid gap-2">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <Skeleton key={index} className="h-10 w-full rounded-md" />
+            ))}
+          </div>
+        ) : items.length === 0 ? (
+          <div className="mission-panel flex min-h-[96px] items-center justify-center rounded-lg border border-dashed border-border/60 bg-background/35 text-sm text-muted-foreground">
+            {emptyLabel}
+          </div>
+        ) : (
+          <div className="divide-y divide-border/45">
+            {items.map((item) => {
+              const duration =
+                item.status === "running" ? item.runningMs : item.waitMs;
+              return (
+                <div
+                  key={item.id}
+                  className="grid gap-2 py-3 text-xs md:grid-cols-[110px_minmax(0,1fr)_120px_80px]"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full",
+                        item.status === "running"
+                          ? "bg-emerald-500"
+                          : "bg-amber-500",
+                      )}
+                    />
+                    <span className="font-medium">
+                      {activeRequestStatusLabel(
+                        item.status,
+                        runningLabel,
+                        queuedLabel,
+                      )}
+                    </span>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-[11px] text-foreground">
+                      {item.model || "auto"} · {item.method} {item.path}
+                    </div>
+                    <div className="mt-1 truncate text-muted-foreground">
+                      {item.clientIp || "--"} · {item.keyId}
+                    </div>
+                  </div>
+                  <div className="truncate text-muted-foreground">
+                    {activeRequestSourceLabel(item)}
+                    {item.sourceId ? ` · ${item.sourceId}` : ""}
+                  </div>
+                  <div className="font-mono text-muted-foreground">
+                    {formatActiveRequestDuration(duration)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function AdminDashboard() {
   const { t } = useI18n();
   const { stats, isLoading, isServiceReady } = useDashboardStats({
@@ -862,6 +987,17 @@ function AdminDashboard() {
     },
     true,
   );
+  const {
+    data: activeRequests,
+    isLoading: isActiveRequestsLoading,
+  } = useDashboardActiveRequests({
+    limit: 8,
+    enabled: !isDirectAccountMode,
+    isAdmin: true,
+  });
+  const activeRequestRunningLabel = t("运行中");
+  const activeRequestQueuedLabel = t("排队中");
+  const activeRequestEmptyLabel = t("暂无进行中的请求");
   usePageTransitionReady("/", !isServiceReady || !isLoading);
 
   const poolPrimary = stats.poolRemain?.primary ?? 0;
@@ -998,6 +1134,14 @@ function AdminDashboard() {
           </>
         )}
       </div>
+
+      <AdminActiveRequestsCard
+        summary={activeRequests}
+        isLoading={isActiveRequestsLoading}
+        runningLabel={activeRequestRunningLabel}
+        queuedLabel={activeRequestQueuedLabel}
+        emptyLabel={activeRequestEmptyLabel}
+      />
 
       <DirectModeUnavailable active={isDirectAccountMode}>
         <AdminUsageAnalyticsCard
