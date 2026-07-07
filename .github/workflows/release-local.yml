@@ -109,7 +109,7 @@ jobs:
       - name: Build CodexManagerLocal Windows x64
         working-directory: apps
         shell: pwsh
-        run: pnpm dlx "@tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}" build --bundles nsis --config tauri.local.conf.json --ci
+        run: pnpm dlx "@tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}" build --bundles nsis --config src-tauri/tauri.local.conf.json --ci
 
       - name: Stage Windows setup
         shell: pwsh
@@ -180,7 +180,7 @@ jobs:
       - name: Build CodexManagerLocal macOS x64 app
         working-directory: apps
         shell: bash
-        run: pnpm dlx "@tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}" build --bundles app --target x86_64-apple-darwin --config tauri.local.conf.json --ci
+        run: pnpm dlx "@tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}" build --bundles app --target x86_64-apple-darwin --config src-tauri/tauri.local.conf.json --ci
 
       - name: Rebuild CodexManagerLocal macOS x64 dmg
         shell: bash

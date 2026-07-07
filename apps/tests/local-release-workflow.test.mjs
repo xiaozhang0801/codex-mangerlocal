@@ -36,13 +36,18 @@ assert.match(workflowSource, /codexmanagerlocal-windows-x64/);
 assert.match(workflowSource, /codexmanagerlocal-macos-x64/);
 assert.match(
   workflowSource,
-  /build\s+--bundles\s+nsis\s+--config\s+tauri\.local\.conf\.json\s+--ci/,
+  /build\s+--bundles\s+nsis\s+--config\s+src-tauri\/tauri\.local\.conf\.json\s+--ci/,
   "Windows build must pass the local Tauri config."
 );
 assert.match(
   workflowSource,
-  /build\s+--bundles\s+app\s+--target\s+x86_64-apple-darwin\s+--config\s+tauri\.local\.conf\.json\s+--ci/,
+  /build\s+--bundles\s+app\s+--target\s+x86_64-apple-darwin\s+--config\s+src-tauri\/tauri\.local\.conf\.json\s+--ci/,
   "macOS x64 build must pass the local Tauri config."
+);
+assert.doesNotMatch(
+  workflowSource,
+  /--config\s+tauri\.local\.conf\.json/,
+  "The local Tauri config path must be relative to the apps working directory."
 );
 assert.doesNotMatch(
   workflowSource,
