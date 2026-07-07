@@ -9,6 +9,10 @@ const aggregateApiSource = readFileSync(
   "src/components/modals/aggregate-api-modal.tsx",
   "utf8",
 );
+const apiKeySource = readFileSync(
+  "src/components/modals/api-key-modal.tsx",
+  "utf8",
+);
 const onboardingSource = readFileSync(
   "src/components/layout/codex-cli-onboarding-dialog.tsx",
   "utf8",
@@ -37,6 +41,18 @@ assert.match(
   aggregateApiSource,
   /app-centered-dialog__body/,
   "Aggregate API dialog should make only the body scroll.",
+);
+
+assert.match(
+  apiKeySource,
+  /<DialogContent[\s\S]*app-centered-dialog/,
+  "Platform key dialog should opt into centered desktop viewport constraints.",
+);
+
+assert.match(
+  apiKeySource,
+  /app-centered-dialog__body/,
+  "Platform key dialog should make only the body scroll.",
 );
 
 assert.match(

@@ -398,390 +398,398 @@ export function ApiKeyModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] sm:max-w-[680px] md:max-w-[760px] max-h-[90vh] overflow-y-auto glass-card">
-        <DialogHeader>
-          <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 rounded-full bg-primary/10">
-              <Key className="h-5 w-5 text-primary" />
-            </div>
-            <DialogTitle>
-              {apiKey?.id ? t("编辑平台密钥") : t("创建平台密钥")}
-            </DialogTitle>
-          </div>
-          <DialogDescription>
-            {t("配置网关访问凭据，您可以绑定特定模型、推理等级或自定义上游。")}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="grid gap-5 py-4">
-          {!isServiceReady ? (
-            <Alert>
-              <Info />
-              <AlertDescription>{unavailableMessage}</AlertDescription>
-            </Alert>
-          ) : null}
-          <div className="grid grid-cols-2 gap-4 items-start">
-            <div className="grid gap-2 content-start">
-              <Label htmlFor="name">{t("密钥名称 (可选)")}</Label>
-              <Input
-                id="name"
-                placeholder={t("例如：主机房 / 测试")}
-                value={name}
-                disabled={!isServiceReady}
-                onChange={(e) => setName(e.target.value)}
-              />
-            </div>
-            {isAdminMode ? (
-            <>
-            <div className="grid gap-2 content-start">
-              <Label>{t("轮转策略")}</Label>
-              <Select
-                value={rotationStrategy}
-                onValueChange={(val) => {
-                  if (!val) return;
-                  setRotationStrategy(val);
-                }}
-                disabled={!isServiceReady}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue>
-                    {(value) =>
-                      t(ROTATION_STRATEGY_LABELS[String(value || "")] || "账号轮转")
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent align="start">
-                    <SelectGroup>
-                  <SelectItem value="account_rotation">{t("账号轮转")}</SelectItem>
-                  <SelectItem value="aggregate_api_rotation">
-                    {t("聚合API轮转")}
-                  </SelectItem>
-                  <SelectItem value="hybrid_rotation">
-                    {t("混合轮转（账号优先）")}
-                  </SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-            <p className="col-span-2 -mt-1 text-[11px] text-muted-foreground">
-              {t(
-                "账号轮转只走账号池；聚合API轮转只走聚合API；混合轮转先走账号池，账号耗尽后使用聚合API兜底。",
-              )}
-            </p>
-            </>
-            ) : null}
-          </div>
-
-          {!apiKey?.id ? (
-            <div className="grid gap-2">
-              <Label htmlFor="customKey">{t("自定义 API Key (可选)")}</Label>
-              <Input
-                id="customKey"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder={t("留空则自动生成")}
-                value={customKey}
-                disabled={!isServiceReady}
-                onChange={(e) => setCustomKey(e.target.value)}
-              />
-              <p className="text-[11px] text-muted-foreground">
-                {t(
-                  "用于复用固定 OPENAI_API_KEY；填写后将按该值创建平台密钥，留空则继续随机生成。",
-                )}
-              </p>
-            </div>
-          ) : null}
-
-          {isAdminMode && usesAccountPlanFilter ? (
-            <div className="grid gap-2">
-              <Label>{t("账号组筛选")}</Label>
-              <Select
-                value={accountPlanFilter}
-                onValueChange={(val) => val && setAccountPlanFilter(val)}
-                disabled={!isServiceReady}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue>
-                    {(value) =>
-                      t(
-                        ACCOUNT_PLAN_FILTER_LABELS[String(value || "")] ||
-                          "全部账号",
-                      )
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent align="start">
-                    <SelectGroup>
-                  {Object.entries(ACCOUNT_PLAN_FILTER_LABELS).map(
-                    ([value, label]) => (
-                      <SelectItem key={value} value={value}>
-                        {t(label)}
-                      </SelectItem>
-                    ),
-                  )}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] text-muted-foreground">
-                {t(
-                  "仅对账号轮转和混合轮转生效，可限制这把平台密钥只从指定账号计划类型中选路由账号。",
-                )}
-              </p>
-            </div>
-          ) : null}
-
-          {memberOwnershipEnabled ? (
-          <div className="grid gap-2">
-            <Label>{t("归属成员")}</Label>
-            <Select
-              value={ownerUserId || "__none__"}
-              onValueChange={(val) =>
-                setOwnerUserId(val === "__none__" ? "" : String(val || ""))
-              }
-              disabled={!isServiceReady || billableUsers.length === 0}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder={t("选择可分发成员")}>
-                  {(value) => {
-                    const id = String(value || "");
-                    if (!id || id === "__none__") return t("未分配");
-                    return appUserLabel(billableUsersById.get(id));
-                  }}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent align="start">
-                    <SelectGroup>
-                <SelectItem value="__none__">{t("未分配")}</SelectItem>
-                {billableUsers.map((user) => (
-                  <SelectItem key={user.id} value={user.id}>
-                    {appUserLabel(user)}
-                  </SelectItem>
-                ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <p className="text-[11px] text-muted-foreground">
-              {distributionEnabled
-                ? t("额度分发开启时，平台 Key 必须归属到一个成员钱包。")
-                : t("未开启额度分发时可先不分配，开启后再补齐归属。")}
-            </p>
-          </div>
-          ) : null}
-
-          <div className="grid gap-2">
-            <Label htmlFor="quotaLimitTokens">{t("总额度限制 (Token，可选)")}</Label>
-            <div className="grid grid-cols-[minmax(0,1fr)_92px] gap-2">
-              <Input
-                id="quotaLimitTokens"
-                inputMode="decimal"
-                min={0}
-                placeholder={t("不填表示不限制")}
-                value={quotaLimitValue}
-                disabled={!isServiceReady}
-                onChange={(e) =>
-                  setQuotaLimitValue(sanitizeQuotaLimitValue(e.target.value))
-                }
-              />
-              <Select
-                value={quotaLimitUnit}
-                onValueChange={(value) =>
-                  handleQuotaLimitUnitChange(value as QuotaLimitUnit)
-                }
-                disabled={!isServiceReady}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end">
-                    <SelectGroup>
-                  <SelectItem value="k">{t("K")}</SelectItem>
-                  <SelectItem value="m">{t("M")}</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              {quotaLimitTokenPreview === null
-                ? t(
-                    "达到上限后，这把平台密钥的新请求会被拒绝；已在途请求会按完成后的真实用量继续统计。",
-                  )
-                : `${t("折算")} ${quotaLimitTokenPreview.toLocaleString(
-                    "zh-CN",
-                  )} Token ≈ ${formatQuotaLimitUsd(quotaLimitUsdPreview)} (${t(
-                    "按",
-                  )} $${QUOTA_LIMIT_REFERENCE_PRICE_USD_PER_1K_TOKENS.toFixed(
-                    2,
-                  )} / 1K Token ${t("参考估算")})`}
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2 content-start">
-              <Label>{t("协议类型")}</Label>
-              <Select
-                value={protocolType}
-                onValueChange={(val) => val && setProtocolType(val)}
-                disabled={!isServiceReady}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue>
-                    {(value) =>
-                      t(
-                        PROTOCOL_LABELS[String(value || "")] ||
-                          "通配兼容 (Codex / Claude Code / Gemini CLI)",
-                      )
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent align="start">
-                    <SelectGroup>
-                  <SelectItem value="openai_compat">
-                    {t("通配兼容 (Codex / Claude Code / Gemini CLI)")}
-                  </SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <p className="min-h-[32px] text-[11px] text-muted-foreground">
-                {t("默认按路径通配：")}<code>/v1/messages*</code> {t("走 Claude 语义，")}<code>/v1beta/models/*:generateContent</code> {t("这类路径走 Gemini 语义，其它标准路径走 Codex / OpenAI 语义。")}
-              </p>
-            </div>
-            <div className="grid gap-2 content-start">
-              <Label>{t("绑定模型 (可选)")}</Label>
-              <Select
-                value={modelSlug}
-                onValueChange={(val) => val && setModelSlug(val)}
-                disabled={!isServiceReady}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder={t("跟随请求")}>
-                    {(value) => {
-                      const nextValue = String(value || "").trim();
-                      if (!nextValue || nextValue === "auto") return t("跟随请求");
-                      const resolvedModel = findBestMatchingModel(
-                        models?.models || [],
-                        nextValue,
-                      );
-                      return resolvedModel?.displayName || modelLabelMap[nextValue] || nextValue;
-                    }}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent align="start">
-                    <SelectGroup>
-                  <SelectItem value="auto">{t("跟随请求")}</SelectItem>
-                  {visibleModels.map((model) => (
-                    <SelectItem key={model.slug} value={model.slug}>
-                      {model.displayName || model.slug}
-                    </SelectItem>
-                  ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] text-muted-foreground">
-                {t("选择“跟随请求”时，会使用请求体里的实际模型；请求日志展示的是最终生效模型。")}
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2 content-start">
-              <Label>{t("推理等级 (可选)")}</Label>
-              <Select
-                value={reasoningEffort}
-                onValueChange={(val) => val && setReasoningEffort(val)}
-                disabled={!isServiceReady}
-              >
-                <SelectTrigger className="w-full">
-                    <SelectValue placeholder={t("跟随请求等级")}>
-                    {(value) => {
-                      const nextValue = String(value || "").trim();
-                      if (!nextValue) return t("跟随请求等级");
-                      return t(REASONING_LABELS[nextValue] || nextValue);
-                    }}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent align="start">
-                    <SelectGroup>
-                  <SelectItem value="auto">{t("跟随请求")}</SelectItem>
-                  <SelectItem value="low">{t("低 (low)")}</SelectItem>
-                  <SelectItem value="medium">{t("中 (medium)")}</SelectItem>
-                  <SelectItem value="high">{t("高 (high)")}</SelectItem>
-                  <SelectItem value="xhigh">{t("极高 (xhigh)")}</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <p className="min-h-[32px] text-[11px] text-muted-foreground">
-                {t("会覆盖请求里的 reasoning effort。")}
-              </p>
-            </div>
-            <div className="grid gap-2 content-start">
-              <Label>{t("服务等级 (可选)")}</Label>
-              <Select
-                value={serviceTier}
-                onValueChange={(val) => val && setServiceTier(val)}
-                disabled={!isServiceReady}
-              >
-                <SelectTrigger className="w-full">
-                    <SelectValue placeholder={t("跟随请求")}>
-                    {(value) => {
-                      const nextValue = String(value || "").trim();
-                      if (!nextValue) return t("跟随请求");
-                      return t(SERVICE_TIER_LABELS[nextValue] || nextValue);
-                    }}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent align="start">
-                    <SelectGroup>
-                  <SelectItem value="auto">{t("跟随请求")}</SelectItem>
-                  <SelectItem value="fast">Fast</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] text-muted-foreground">
-                {t("Fast 会映射为上游 priority；未设置时跟随请求。")}
-              </p>
-            </div>
-          </div>
-
-          {generatedKey && (
-            <div className="space-y-2 pt-4 border-t">
-              <Label className="text-xs text-primary flex items-center gap-1.5">
-                <ShieldCheck className="h-3.5 w-3.5" /> {t("平台密钥已生成")}
-              </Label>
-              <div className="flex gap-2">
-                <Input
-                  value={generatedKey}
-                  readOnly
-                  className="font-mono text-sm bg-primary/5"
-                />
-                <Button
-                  variant="outline"
-                  onClick={() => void copyKey()}
-                  disabled={!generatedKey}
-                >
-                  <Clipboard className="h-4 w-4" />
-                </Button>
+      <DialogContent className="app-centered-dialog glass-card w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] overflow-hidden p-0 sm:max-w-[680px] md:max-w-[760px]">
+        <div className="flex max-h-[inherit] flex-col">
+          <div className="border-b border-border/50 px-5 pt-5 pb-3">
+            <DialogHeader>
+              <div className="mb-2 flex items-center gap-3">
+                <div className="rounded-full bg-primary/10 p-2">
+                  <Key className="h-5 w-5 text-primary" />
+                </div>
+                <DialogTitle>
+                  {apiKey?.id ? t("编辑平台密钥") : t("创建平台密钥")}
+                </DialogTitle>
               </div>
-            </div>
-          )}
-        </div>
+              <DialogDescription>
+                {t("配置网关访问凭据，您可以绑定特定模型、推理等级或自定义上游。")}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
 
-        <DialogFooter>
-          <DialogClose
-            className={buttonVariants({ variant: "ghost" })}
-            type="button"
-          >
-            {generatedKey ? t("关闭") : t("取消")}
-          </DialogClose>
-          {!generatedKey && (
-            <Button
-              onClick={handleSave}
-              disabled={!isServiceReady || isLoading}
-            >
-              {isLoading ? t("保存中...") : t("完成")}
-            </Button>
-          )}
-        </DialogFooter>
+          <div className="app-centered-dialog__body px-5 py-4">
+            <div className="grid gap-5">
+              {!isServiceReady ? (
+                <Alert>
+                  <Info />
+                  <AlertDescription>{unavailableMessage}</AlertDescription>
+                </Alert>
+              ) : null}
+              <div className="grid grid-cols-2 gap-4 items-start">
+                <div className="grid gap-2 content-start">
+                  <Label htmlFor="name">{t("密钥名称 (可选)")}</Label>
+                  <Input
+                    id="name"
+                    placeholder={t("例如：主机房 / 测试")}
+                    value={name}
+                    disabled={!isServiceReady}
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                </div>
+                {isAdminMode ? (
+                <>
+                <div className="grid gap-2 content-start">
+                  <Label>{t("轮转策略")}</Label>
+                  <Select
+                    value={rotationStrategy}
+                    onValueChange={(val) => {
+                      if (!val) return;
+                      setRotationStrategy(val);
+                    }}
+                    disabled={!isServiceReady}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue>
+                        {(value) =>
+                          t(ROTATION_STRATEGY_LABELS[String(value || "")] || "账号轮转")
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                        <SelectGroup>
+                      <SelectItem value="account_rotation">{t("账号轮转")}</SelectItem>
+                      <SelectItem value="aggregate_api_rotation">
+                        {t("聚合API轮转")}
+                      </SelectItem>
+                      <SelectItem value="hybrid_rotation">
+                        {t("混合轮转（账号优先）")}
+                      </SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className="col-span-2 -mt-1 text-[11px] text-muted-foreground">
+                  {t(
+                    "账号轮转只走账号池；聚合API轮转只走聚合API；混合轮转先走账号池，账号耗尽后使用聚合API兜底。",
+                  )}
+                </p>
+                </>
+                ) : null}
+              </div>
+
+              {!apiKey?.id ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="customKey">{t("自定义 API Key (可选)")}</Label>
+                  <Input
+                    id="customKey"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={t("留空则自动生成")}
+                    value={customKey}
+                    disabled={!isServiceReady}
+                    onChange={(e) => setCustomKey(e.target.value)}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    {t(
+                      "用于复用固定 OPENAI_API_KEY；填写后将按该值创建平台密钥，留空则继续随机生成。",
+                    )}
+                  </p>
+                </div>
+              ) : null}
+
+              {isAdminMode && usesAccountPlanFilter ? (
+                <div className="grid gap-2">
+                  <Label>{t("账号组筛选")}</Label>
+                  <Select
+                    value={accountPlanFilter}
+                    onValueChange={(val) => val && setAccountPlanFilter(val)}
+                    disabled={!isServiceReady}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue>
+                        {(value) =>
+                          t(
+                            ACCOUNT_PLAN_FILTER_LABELS[String(value || "")] ||
+                              "全部账号",
+                          )
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                        <SelectGroup>
+                      {Object.entries(ACCOUNT_PLAN_FILTER_LABELS).map(
+                        ([value, label]) => (
+                          <SelectItem key={value} value={value}>
+                            {t(label)}
+                          </SelectItem>
+                        ),
+                      )}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground">
+                    {t(
+                      "仅对账号轮转和混合轮转生效，可限制这把平台密钥只从指定账号计划类型中选路由账号。",
+                    )}
+                  </p>
+                </div>
+              ) : null}
+
+              {memberOwnershipEnabled ? (
+              <div className="grid gap-2">
+                <Label>{t("归属成员")}</Label>
+                <Select
+                  value={ownerUserId || "__none__"}
+                  onValueChange={(val) =>
+                    setOwnerUserId(val === "__none__" ? "" : String(val || ""))
+                  }
+                  disabled={!isServiceReady || billableUsers.length === 0}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder={t("选择可分发成员")}>
+                      {(value) => {
+                        const id = String(value || "");
+                        if (!id || id === "__none__") return t("未分配");
+                        return appUserLabel(billableUsersById.get(id));
+                      }}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                        <SelectGroup>
+                    <SelectItem value="__none__">{t("未分配")}</SelectItem>
+                    {billableUsers.map((user) => (
+                      <SelectItem key={user.id} value={user.id}>
+                        {appUserLabel(user)}
+                      </SelectItem>
+                    ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  {distributionEnabled
+                    ? t("额度分发开启时，平台 Key 必须归属到一个成员钱包。")
+                    : t("未开启额度分发时可先不分配，开启后再补齐归属。")}
+                </p>
+              </div>
+              ) : null}
+
+              <div className="grid gap-2">
+                <Label htmlFor="quotaLimitTokens">{t("总额度限制 (Token，可选)")}</Label>
+                <div className="grid grid-cols-[minmax(0,1fr)_92px] gap-2">
+                  <Input
+                    id="quotaLimitTokens"
+                    inputMode="decimal"
+                    min={0}
+                    placeholder={t("不填表示不限制")}
+                    value={quotaLimitValue}
+                    disabled={!isServiceReady}
+                    onChange={(e) =>
+                      setQuotaLimitValue(sanitizeQuotaLimitValue(e.target.value))
+                    }
+                  />
+                  <Select
+                    value={quotaLimitUnit}
+                    onValueChange={(value) =>
+                      handleQuotaLimitUnitChange(value as QuotaLimitUnit)
+                    }
+                    disabled={!isServiceReady}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                        <SelectGroup>
+                      <SelectItem value="k">{t("K")}</SelectItem>
+                      <SelectItem value="m">{t("M")}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {quotaLimitTokenPreview === null
+                    ? t(
+                        "达到上限后，这把平台密钥的新请求会被拒绝；已在途请求会按完成后的真实用量继续统计。",
+                      )
+                    : `${t("折算")} ${quotaLimitTokenPreview.toLocaleString(
+                        "zh-CN",
+                      )} Token ≈ ${formatQuotaLimitUsd(quotaLimitUsdPreview)} (${t(
+                        "按",
+                      )} $${QUOTA_LIMIT_REFERENCE_PRICE_USD_PER_1K_TOKENS.toFixed(
+                        2,
+                      )} / 1K Token ${t("参考估算")})`}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-2 content-start">
+                  <Label>{t("协议类型")}</Label>
+                  <Select
+                    value={protocolType}
+                    onValueChange={(val) => val && setProtocolType(val)}
+                    disabled={!isServiceReady}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue>
+                        {(value) =>
+                          t(
+                            PROTOCOL_LABELS[String(value || "")] ||
+                              "通配兼容 (Codex / Claude Code / Gemini CLI)",
+                          )
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                        <SelectGroup>
+                      <SelectItem value="openai_compat">
+                        {t("通配兼容 (Codex / Claude Code / Gemini CLI)")}
+                      </SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <p className="min-h-[32px] text-[11px] text-muted-foreground">
+                    {t("默认按路径通配：")}<code>/v1/messages*</code> {t("走 Claude 语义，")}<code>/v1beta/models/*:generateContent</code> {t("这类路径走 Gemini 语义，其它标准路径走 Codex / OpenAI 语义。")}
+                  </p>
+                </div>
+                <div className="grid gap-2 content-start">
+                  <Label>{t("绑定模型 (可选)")}</Label>
+                  <Select
+                    value={modelSlug}
+                    onValueChange={(val) => val && setModelSlug(val)}
+                    disabled={!isServiceReady}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder={t("跟随请求")}>
+                        {(value) => {
+                          const nextValue = String(value || "").trim();
+                          if (!nextValue || nextValue === "auto") return t("跟随请求");
+                          const resolvedModel = findBestMatchingModel(
+                            models?.models || [],
+                            nextValue,
+                          );
+                          return resolvedModel?.displayName || modelLabelMap[nextValue] || nextValue;
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                        <SelectGroup>
+                      <SelectItem value="auto">{t("跟随请求")}</SelectItem>
+                      {visibleModels.map((model) => (
+                        <SelectItem key={model.slug} value={model.slug}>
+                          {model.displayName || model.slug}
+                        </SelectItem>
+                      ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground">
+                    {t("选择“跟随请求”时，会使用请求体里的实际模型；请求日志展示的是最终生效模型。")}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-2 content-start">
+                  <Label>{t("推理等级 (可选)")}</Label>
+                  <Select
+                    value={reasoningEffort}
+                    onValueChange={(val) => val && setReasoningEffort(val)}
+                    disabled={!isServiceReady}
+                  >
+                    <SelectTrigger className="w-full">
+                        <SelectValue placeholder={t("跟随请求等级")}>
+                        {(value) => {
+                          const nextValue = String(value || "").trim();
+                          if (!nextValue) return t("跟随请求等级");
+                          return t(REASONING_LABELS[nextValue] || nextValue);
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                        <SelectGroup>
+                      <SelectItem value="auto">{t("跟随请求")}</SelectItem>
+                      <SelectItem value="low">{t("低 (low)")}</SelectItem>
+                      <SelectItem value="medium">{t("中 (medium)")}</SelectItem>
+                      <SelectItem value="high">{t("高 (high)")}</SelectItem>
+                      <SelectItem value="xhigh">{t("极高 (xhigh)")}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <p className="min-h-[32px] text-[11px] text-muted-foreground">
+                    {t("会覆盖请求里的 reasoning effort。")}
+                  </p>
+                </div>
+                <div className="grid gap-2 content-start">
+                  <Label>{t("服务等级 (可选)")}</Label>
+                  <Select
+                    value={serviceTier}
+                    onValueChange={(val) => val && setServiceTier(val)}
+                    disabled={!isServiceReady}
+                  >
+                    <SelectTrigger className="w-full">
+                        <SelectValue placeholder={t("跟随请求")}>
+                        {(value) => {
+                          const nextValue = String(value || "").trim();
+                          if (!nextValue) return t("跟随请求");
+                          return t(SERVICE_TIER_LABELS[nextValue] || nextValue);
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                        <SelectGroup>
+                      <SelectItem value="auto">{t("跟随请求")}</SelectItem>
+                      <SelectItem value="fast">Fast</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground">
+                    {t("Fast 会映射为上游 priority；未设置时跟随请求。")}
+                  </p>
+                </div>
+              </div>
+
+              {generatedKey && (
+                <div className="space-y-2 pt-4 border-t">
+                  <Label className="text-xs text-primary flex items-center gap-1.5">
+                    <ShieldCheck className="h-3.5 w-3.5" /> {t("平台密钥已生成")}
+                  </Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={generatedKey}
+                      readOnly
+                      className="font-mono text-sm bg-primary/5"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={() => void copyKey()}
+                      disabled={!generatedKey}
+                    >
+                      <Clipboard className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-border/50 px-5 py-3">
+            <DialogFooter>
+              <DialogClose
+                className={buttonVariants({ variant: "ghost" })}
+                type="button"
+              >
+                {generatedKey ? t("关闭") : t("取消")}
+              </DialogClose>
+              {!generatedKey && (
+                <Button
+                  onClick={handleSave}
+                  disabled={!isServiceReady || isLoading}
+                >
+                  {isLoading ? t("保存中...") : t("完成")}
+                </Button>
+              )}
+            </DialogFooter>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );
