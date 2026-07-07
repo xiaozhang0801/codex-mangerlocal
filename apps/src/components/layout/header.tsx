@@ -169,11 +169,11 @@ export function Header() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 flex min-h-[72px] items-center gap-3 glass-header px-4 xl:px-5">
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
+      <header className="sticky top-0 z-30 flex min-h-[70px] items-center gap-3 glass-header px-4 xl:px-5">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/20 to-transparent" />
         <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
-          <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/80 text-primary shadow-sm">
-            <span className="absolute inset-x-2 top-1 h-px bg-primary/25" />
+          <div className="console-control-surface relative flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-primary">
+            <span className="absolute inset-x-2 top-1 h-px bg-primary/20" />
             <span className="absolute inset-x-2 bottom-1 h-px bg-primary/10" />
             <span className="font-mono text-xs font-semibold">CM</span>
           </div>
@@ -186,7 +186,7 @@ export function Header() {
           </div>
           <Badge
             variant={serviceStatus.connected ? "default" : "secondary"}
-            className="h-7 shrink-0 rounded-md border-primary/20 bg-primary/10 px-2.5 font-mono text-[11px] text-primary shadow-sm"
+            className="h-7 shrink-0 rounded-md border-primary/15 bg-primary/10 px-2.5 font-mono text-[11px] text-primary shadow-sm"
           >
             <span
               className={`mr-1.5 h-1.5 w-1.5 rounded-full ${
@@ -201,7 +201,7 @@ export function Header() {
         </div>
 
         <div className="hidden min-w-[180px] max-w-[360px] flex-[0_1_360px] items-center justify-center xl:flex 2xl:max-w-[420px] 2xl:flex-[0_1_420px]">
-          <div className="grid h-9 w-full grid-cols-[minmax(0,1fr)] items-center gap-2 rounded-md border border-border/60 bg-background/55 px-1.5 shadow-[inset_0_1px_0_rgb(255_255_255/0.16)] 2xl:grid-cols-[auto_minmax(0,1fr)_auto] 2xl:px-2.5">
+          <div className="console-control-surface grid h-9 w-full grid-cols-[minmax(0,1fr)] items-center gap-2 rounded-md px-1.5 2xl:grid-cols-[auto_minmax(0,1fr)_auto] 2xl:px-2.5">
             <div className="hidden items-center gap-1.5 font-mono text-[10px] uppercase text-muted-foreground 2xl:flex">
               <RadioTower className="h-3.5 w-3.5 text-primary" />
               System notice
@@ -218,7 +218,7 @@ export function Header() {
           <LanguageSwitcher compact triggerClassName="w-[112px] 2xl:w-[124px]" />
 
           {canManageService ? (
-            <div className="flex h-9 items-center gap-2 rounded-md border border-border/60 bg-background/55 px-2.5 shadow-[inset_0_1px_0_rgb(255_255_255/0.16)]">
+            <div className="console-control-surface flex h-9 items-center gap-2 rounded-md px-2.5">
               <span className="flex items-center gap-1.5 font-mono text-[10px] font-medium uppercase text-muted-foreground">
                 <Gauge className="h-3.5 w-3.5 text-primary" />
                 <span className="hidden 2xl:inline">{t("监听端口")}</span>
@@ -236,7 +236,7 @@ export function Header() {
                 }}
                 onBlur={() => void handlePortBlur()}
               />
-              <div className="mx-1 h-4 w-px bg-primary/25" />
+              <div className="mx-1 h-4 w-px bg-primary/20" />
               <Switch
                 checked={serviceStatus.connected}
                 disabled={isToggling}

@@ -265,9 +265,9 @@ function MetricCard({
   return (
     <Card
       size="sm"
-      className="glass-card console-metric mission-panel overflow-hidden py-0 shadow-sm transition-colors"
+      className="dashboard-metric-card glass-card console-metric mission-panel overflow-hidden py-0 shadow-sm transition-colors"
     >
-      <CardContent className="flex min-h-[52px] items-center justify-between gap-2 px-3 py-2">
+      <CardContent className="flex min-h-[86px] items-center justify-between gap-3 px-4 py-3">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <CardTitle className="min-w-0 truncate text-xs font-semibold text-muted-foreground">
@@ -284,14 +284,20 @@ function MetricCard({
             ) : null}
           </div>
           <div
-            className="mt-1 truncate font-mono text-xl font-semibold leading-none tracking-normal text-foreground tabular-nums"
+            className="mt-2 truncate font-mono text-2xl font-semibold leading-none tracking-normal text-foreground tabular-nums"
             title={detail ? `${sub} · ${detail}` : sub}
           >
             {value}
           </div>
+          <div className="mt-2 grid gap-1 text-[11px] leading-4 text-muted-foreground">
+            <span className="truncate">{sub}</span>
+            {detail ? (
+              <span className="truncate text-foreground/70">{detail}</span>
+            ) : null}
+          </div>
         </div>
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/65 text-primary shadow-sm">
-          <Icon className={cn("h-3 w-3", color)} />
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-primary/15 bg-background/70 text-primary shadow-sm">
+          <Icon className={cn("h-4 w-4", color)} />
         </div>
       </CardContent>
     </Card>
@@ -665,7 +671,7 @@ function AdminUsageAnalyticsCard({
   const rangeBadgeLabel = isTodayOnlyRange ? t("今日") : t("所选区间");
 
   return (
-    <Card className="glass-card mission-panel overflow-hidden shadow-sm">
+    <Card className="dashboard-analytics-card glass-card mission-panel overflow-hidden shadow-sm">
       <CardHeader className="flex flex-col gap-4">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
@@ -742,14 +748,14 @@ function AdminUsageAnalyticsCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-3 px-4 pb-4">
         <DailyTokenLineChart
           points={summary.dailyUsage}
           zoomWindow={zoomWindow}
           onZoomWindowChange={setZoomWindow}
         />
         <div className="grid gap-3 text-xs sm:grid-cols-2 xl:grid-cols-4">
-          <div className="mission-panel rounded-md border border-primary/20 bg-primary/10 px-3 py-2">
+          <div className="mission-panel rounded-md border border-primary/15 bg-primary/10 px-3 py-2">
             <div className="text-muted-foreground">{rangeBadgeLabel}</div>
             <div className="mt-1 font-mono font-semibold text-primary">
               {formatCompactTokenAmount(rangeUsage.totalTokens)}
@@ -758,7 +764,7 @@ function AdminUsageAnalyticsCard({
               {formatUsd(rangeUsage.estimatedCostUsd)}
             </div>
           </div>
-          <div className="mission-panel rounded-md border border-primary/20 bg-primary/10 px-3 py-2">
+          <div className="mission-panel rounded-md border border-primary/15 bg-primary/10 px-3 py-2">
             <div className="text-muted-foreground">
               {isTodayOnlyRange ? t("今日请求") : t("区间请求")}
             </div>
@@ -766,7 +772,7 @@ function AdminUsageAnalyticsCard({
               {rangeUsage.requestCount} · {t("成功")} {rangeUsage.successCount}
             </div>
           </div>
-          <div className="mission-panel rounded-md border border-primary/20 bg-primary/10 px-3 py-2">
+          <div className="mission-panel rounded-md border border-primary/15 bg-primary/10 px-3 py-2">
             <div className="text-muted-foreground">
               {isTodayOnlyRange ? t("输入 / 输出") : t("区间输入 / 输出")}
             </div>
@@ -775,7 +781,7 @@ function AdminUsageAnalyticsCard({
               {formatCompactTokenAmount(rangeUsage.outputTokens)}
             </div>
           </div>
-          <div className="mission-panel rounded-md border border-primary/20 bg-primary/10 px-3 py-2">
+          <div className="mission-panel rounded-md border border-primary/15 bg-primary/10 px-3 py-2">
             <div className="text-muted-foreground">
               {isTodayOnlyRange ? t("缓存 / 推理") : t("区间缓存 / 推理")}
             </div>
@@ -888,7 +894,7 @@ function AdminDashboard() {
         </Alert>
       ) : null}
 
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {isLoading ? (
           Array.from({ length: 5 }).map((_, index) => (
             <Skeleton key={index} className="h-24 w-full rounded-xl" />
@@ -941,19 +947,19 @@ function AdminDashboard() {
 
             <Card
               size="sm"
-              className="glass-card console-metric mission-panel col-span-full overflow-hidden py-0 shadow-sm transition-colors"
+              className="dashboard-pool-card glass-card console-metric mission-panel col-span-full overflow-hidden py-0 shadow-sm transition-colors"
             >
-              <CardContent className="grid min-h-[52px] items-center gap-2 px-3 py-2 xl:grid-cols-[140px_minmax(0,1fr)]">
+              <CardContent className="grid min-h-[76px] items-center gap-4 px-4 py-3 xl:grid-cols-[160px_minmax(0,1fr)]">
                 <div className="flex min-w-0 items-center justify-between gap-2">
                   <CardTitle className="flex min-w-0 items-center gap-2 text-xs font-semibold">
-                    <PieChart className="h-3.5 w-3.5 shrink-0 text-primary" />
+                    <PieChart className="h-4 w-4 shrink-0 text-primary" />
                     <span className="truncate">{t("账号池剩余")}</span>
                   </CardTitle>
                   <Badge variant="secondary" className="h-5 shrink-0 border-primary/20 bg-primary/8 px-1.5 text-[10px] text-primary">
                     POOL
                   </Badge>
                 </div>
-                <div className="grid gap-2 lg:grid-cols-2">
+                <div className="grid gap-3 lg:grid-cols-2">
                   <div className="min-w-0">
                     <div className="mb-1 flex items-center justify-between gap-3 text-[11px]">
                       <span className="font-medium text-muted-foreground">{t("5小时内")}</span>

@@ -8,6 +8,7 @@ import {
   ShieldAlert,
   type LucideIcon,
   RefreshCw,
+  XIcon,
   Zap,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -175,14 +176,21 @@ export default function UsageModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="glass-card grid-rows-[auto_minmax(0,1fr)_auto] p-6"
-        style={{
-          height: "min(680px, calc(100vh - 2rem))",
-          maxWidth: "none",
-          width: "min(700px, calc(100vw - 2rem))",
-        }}
+        showCloseButton={false}
+        className="usage-detail-dialog glass-card grid grid-rows-[auto_minmax(0,1fr)_auto] !w-[min(700px,calc(100vw-2rem))] !max-w-[calc(100vw-2rem)] !overflow-hidden !p-0 sm:!max-w-[700px]"
       >
-        <DialogHeader>
+        <DialogHeader className="relative border-b border-border/60 px-6 py-5 pr-16">
+          <DialogClose
+            aria-label={t("关闭")}
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "icon-sm" }),
+              "absolute right-4 top-4 z-20"
+            )}
+            type="button"
+          >
+            <XIcon className="h-4 w-4" />
+            <span className="sr-only">{t("关闭")}</span>
+          </DialogClose>
           <div className="mb-2 flex items-center gap-3">
             <div className="rounded-full bg-primary/10 p-2 text-primary">
               <Database className="h-5 w-5" />
@@ -194,7 +202,7 @@ export default function UsageModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid min-h-0 gap-4 overflow-y-auto py-4 pr-1">
+        <div className="usage-detail-dialog__body grid gap-4 px-6 py-4">
           {!account.hasToken ? (
             <Alert variant="destructive">
               <ShieldAlert className="h-4 w-4" />
@@ -303,7 +311,7 @@ export default function UsageModal({
           </div>
         </div>
 
-        <DialogFooter className="-mx-6 -mb-6 min-h-16 px-10 py-3 sm:items-center sm:justify-between">
+        <DialogFooter className="!m-0 min-h-16 rounded-none px-6 py-4 sm:items-center sm:justify-between">
           <DialogClose
             className={buttonVariants({ variant: "ghost" })}
             type="button"

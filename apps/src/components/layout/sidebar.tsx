@@ -78,11 +78,12 @@ const NavItem = memo(({
     aria-current={isActive ? "page" : undefined}
     aria-label={itemName}
     title={itemName}
+    data-active={isActive ? "true" : undefined}
     className={cn(
-      "group/nav relative flex min-h-10 items-center gap-3 overflow-hidden rounded-md border border-transparent px-3 py-2 text-[13px] transition-all duration-200 hover:border-primary/20 hover:bg-primary/5 hover:text-primary",
+      "console-nav-item group/nav relative flex min-h-10 items-center gap-3 overflow-hidden rounded-md border border-transparent px-3 py-2 text-[13px] transition-all duration-200 hover:text-primary",
       !isSidebarOpen && "justify-center px-0",
       isActive
-        ? "border-primary/25 bg-primary/10 text-primary shadow-[inset_3px_0_0_rgb(var(--primary-rgb)/0.8),0_10px_22px_-20px_rgb(var(--primary-rgb)/0.34)]"
+        ? "text-primary"
         : "text-muted-foreground",
     )}
   >
@@ -92,7 +93,7 @@ const NavItem = memo(({
         <span className="absolute inset-x-3 top-0 h-px bg-gradient-to-r from-primary/35 via-primary/10 to-transparent" />
       </>
     ) : null}
-    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/35">
+    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/45 text-current">
       <item.icon className="h-3.5 w-3.5" />
     </div>
     {isSidebarOpen && (
@@ -225,11 +226,11 @@ export function Sidebar() {
           title={brandTitle}
           aria-label={brandTitle}
           className={cn(
-            "flex h-auto w-full items-center gap-2 overflow-hidden rounded-md border border-border/70 bg-background/65 px-2 py-2 transition-colors duration-200 hover:border-primary/25 hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+            "console-brand-surface flex h-auto w-full items-center gap-2 overflow-hidden rounded-md border px-2 py-2 transition-colors duration-200 hover:border-primary/20 hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35",
             isSidebarOpen ? "text-left" : "justify-center"
           )}
         >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-primary/20 bg-white text-primary shadow-sm">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-primary/15 bg-white text-primary shadow-sm">
             {logoFailed ? (
               <span className="text-sm font-bold">CM</span>
             ) : (
@@ -243,8 +244,8 @@ export function Sidebar() {
           </div>
           {isSidebarOpen && (
             <div className="flex flex-col overflow-hidden animate-in fade-in duration-300">
-              <span className="truncate text-sm font-semibold text-foreground">CodexManager</span>
-              <span className="truncate font-mono text-[10px] uppercase text-primary/70">
+              <span className="truncate text-sm font-semibold tracking-normal text-foreground">CodexManager</span>
+              <span className="truncate font-mono text-[10px] uppercase text-primary/60">
                 Admin Console
               </span>
             </div>
@@ -262,7 +263,7 @@ export function Sidebar() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-full justify-start gap-3 rounded-md border border-transparent px-3 text-muted-foreground hover:border-primary/20 hover:text-primary"
+          className="h-9 w-full justify-start gap-3 rounded-md border border-transparent px-3 text-muted-foreground hover:border-primary/16 hover:bg-primary/5 hover:text-primary"
           title={toggleTitle}
           aria-label={toggleTitle}
           onClick={toggleSidebar}
