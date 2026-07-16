@@ -508,8 +508,9 @@ export default function ModelGroupsPage() {
       </Card>
 
       <Dialog open={groupDialogOpen} onOpenChange={setGroupDialogOpen}>
-        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-hidden md:max-w-5xl">
-          <DialogHeader>
+        <DialogContent className="app-centered-dialog glass-card mission-panel overflow-hidden p-0 md:!max-w-[min(92vw,1024px)]">
+          <div className="flex max-h-[inherit] flex-col">
+          <DialogHeader className="border-b border-border/50 px-6 py-5">
             <DialogTitle>{editingGroup ? t("管理模型组") : t("新建模型组")}</DialogTitle>
             <p className="text-sm text-muted-foreground">
               {editingGroup
@@ -521,7 +522,7 @@ export default function ModelGroupsPage() {
           <Tabs
             value={manageTab}
             onValueChange={(value) => setManageTab(value as ManageTab)}
-            className="min-h-0"
+            className="app-centered-dialog__body min-h-0 px-6 py-4"
           >
             <TabsList className="grid w-full grid-cols-3 sm:w-[360px]">
               <TabsTrigger value="base">{t("基础信息")}</TabsTrigger>
@@ -783,6 +784,7 @@ export default function ModelGroupsPage() {
               </div>
             </TabsContent>
           </Tabs>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

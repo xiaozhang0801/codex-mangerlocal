@@ -1244,37 +1244,40 @@ export default function AccountManagerPage() {
           }
         }}
       >
-        <DialogContent className="glass-card mission-panel max-h-[85vh] overflow-y-auto sm:max-w-[760px]">
-          <DialogHeader>
+        <DialogContent className="app-centered-dialog glass-card mission-panel overflow-hidden p-0 sm:max-w-[760px]">
+          <div className="flex max-h-[inherit] flex-col">
+          <DialogHeader className="border-b border-border/50 px-6 py-5">
             <DialogTitle>{t("成员用量详情")}</DialogTitle>
             <DialogDescription>
               {usageUser ? userSelectLabel(usageUser, t) : t("选择登录账号")}
             </DialogDescription>
           </DialogHeader>
-          {!usageUser ? (
-            <div className="rounded-xl bg-background/35 p-4 text-sm text-muted-foreground">
-              {t("未找到登录账号")}
-            </div>
-          ) : usageDetailQuery.isLoading ? (
-            <div className="grid gap-3">
-              <Skeleton className="h-20 w-full rounded-xl" />
-              <Skeleton className="h-44 w-full rounded-xl" />
-              <Skeleton className="h-28 w-full rounded-xl" />
-            </div>
-          ) : usageDetailQuery.isError ? (
-            <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-              {t("用量详情读取失败")}
-            </div>
-          ) : usageDetailQuery.data ? (
-            <UserUsageDetail user={usageUser} summary={usageDetailQuery.data} />
-          ) : (
-            <Empty className="min-h-28 border bg-background/35">
-              <EmptyHeader>
-                <EmptyTitle>{t("暂无用量详情")}</EmptyTitle>
-              </EmptyHeader>
-            </Empty>
-          )}
-          <DialogFooter>
+          <div className="app-centered-dialog__body px-6 py-4">
+            {!usageUser ? (
+              <div className="rounded-xl bg-background/35 p-4 text-sm text-muted-foreground">
+                {t("未找到登录账号")}
+              </div>
+            ) : usageDetailQuery.isLoading ? (
+              <div className="grid gap-3">
+                <Skeleton className="h-20 w-full rounded-xl" />
+                <Skeleton className="h-44 w-full rounded-xl" />
+                <Skeleton className="h-28 w-full rounded-xl" />
+              </div>
+            ) : usageDetailQuery.isError ? (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+                {t("用量详情读取失败")}
+              </div>
+            ) : usageDetailQuery.data ? (
+              <UserUsageDetail user={usageUser} summary={usageDetailQuery.data} />
+            ) : (
+              <Empty className="min-h-28 border bg-background/35">
+                <EmptyHeader>
+                  <EmptyTitle>{t("暂无用量详情")}</EmptyTitle>
+                </EmptyHeader>
+              </Empty>
+            )}
+          </div>
+          <DialogFooter className="border-t border-border/50 px-6 py-4">
             <Button
               type="button"
               variant="outline"
@@ -1283,6 +1286,7 @@ export default function AccountManagerPage() {
               {t("关闭")}
             </Button>
           </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
 

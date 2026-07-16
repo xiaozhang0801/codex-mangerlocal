@@ -977,8 +977,9 @@ export default function ModelsPage() {
             }
           }}
         >
-          <DialogContent className="glass-card mission-panel max-h-[calc(100vh-2rem)] overflow-y-auto p-0 shadow-sm  md:max-w-[980px] xl:max-w-[1180px]">
-            <div className="p-5 sm:p-6">
+          <DialogContent className="app-centered-dialog glass-card mission-panel overflow-hidden p-0 shadow-sm md:!max-w-[min(92vw,980px)] xl:!max-w-[min(92vw,1180px)]">
+            <div className="flex max-h-[inherit] flex-col">
+            <div className="app-centered-dialog__body p-5 sm:p-6">
           <DialogHeader className="pb-3 pr-8">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
@@ -1447,6 +1448,7 @@ export default function ModelsPage() {
               </>
             )}
           </div>
+            </div>
             </div>
           </DialogContent>
         </Dialog>

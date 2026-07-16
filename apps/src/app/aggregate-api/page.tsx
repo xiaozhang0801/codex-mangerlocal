@@ -1510,17 +1510,18 @@ export default function AggregateApiPage() {
         }}
       >
         {modelPoolApi ? (
-          <DialogContent className="max-h-[86vh] max-w-5xl overflow-hidden p-0">
-            <DialogHeader className="border-b px-6 py-5">
-              <DialogTitle>{t("模型池配置")}</DialogTitle>
-              <DialogDescription>
-                {modelPoolApi.supplierName || modelPoolApi.url} ·{" "}
-                {AGGREGATE_API_PROVIDER_LABELS[modelPoolProviderType] ||
-                  modelPoolProviderType}
-              </DialogDescription>
-            </DialogHeader>
+          <DialogContent className="app-centered-dialog glass-card mission-panel w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] overflow-hidden p-0 sm:!max-w-[min(92vw,1024px)]">
+            <div className="flex max-h-[inherit] flex-col">
+              <DialogHeader className="border-b px-6 py-5">
+                <DialogTitle>{t("模型池配置")}</DialogTitle>
+                <DialogDescription>
+                  {modelPoolApi.supplierName || modelPoolApi.url} ·{" "}
+                  {AGGREGATE_API_PROVIDER_LABELS[modelPoolProviderType] ||
+                    modelPoolProviderType}
+                </DialogDescription>
+              </DialogHeader>
 
-            <div className="max-h-[calc(86vh-92px)] overflow-y-auto px-6 py-5">
+              <div className="app-centered-dialog__body px-6 py-5">
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-lg border bg-muted/20 p-3">
                   <p className="text-xs text-muted-foreground">{t("供应商标识")}</p>
@@ -1857,6 +1858,7 @@ export default function AggregateApiPage() {
                   </div>
                 </TabsContent>
               </Tabs>
+              </div>
             </div>
           </DialogContent>
         ) : null}

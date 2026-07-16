@@ -305,14 +305,15 @@ export function TasksTabContent({
         open={workerAdvancedDialogOpen}
         onOpenChange={setWorkerAdvancedDialogOpen}
       >
-        <DialogContent className="glass-card mission-panel sm:max-w-2xl">
-          <DialogHeader>
+        <DialogContent className="app-centered-dialog glass-card mission-panel overflow-hidden p-0 sm:max-w-2xl">
+          <div className="flex max-h-[inherit] flex-col">
+          <DialogHeader className="border-b border-border/50 px-5 pt-5 pb-3">
             <DialogTitle>{t("高级参数")}</DialogTitle>
             <DialogDescription>
               {t("只有在你明确知道这些参数含义时再调整。改动会直接影响并发和资源占用。")}
             </DialogDescription>
           </DialogHeader>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="app-centered-dialog__body grid grid-cols-1 gap-4 px-5 py-4 md:grid-cols-2">
             {[
               {
                 label: "后台巡检并发",
@@ -375,11 +376,12 @@ export function TasksTabContent({
               </div>
             ))}
           </div>
-          <DialogFooter className="gap-2 sm:gap-2">
+          <DialogFooter className="gap-2 border-t border-border/50 px-5 py-3 sm:gap-2">
             <Button type="button" variant="ghost" onClick={() => setWorkerAdvancedDialogOpen(false)}>
               {t("关闭")}
             </Button>
           </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </>

@@ -1187,16 +1187,17 @@ export function AccountsPageView(props: AccountsPageViewProps) {
           }
         }}
       >
-        <DialogContent className="glass-card mission-panel max-h-[calc(100vh-2rem)] overflow-hidden p-0 sm:max-w-[560px]">
-          <DialogHeader className="px-6 pt-6">
-            <DialogTitle>{t("编辑账号信息")}</DialogTitle>
-            <DialogDescription>
-              {accountEditorState
-                ? `${t("修改")} ${accountEditorState.accountName} ${t("的名称、标签、备注、排序与额度池配置。")}`
-                : t("修改账号的基础资料。")}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid max-h-[calc(100vh-13rem)] gap-4 overflow-y-auto px-6 py-4">
+        <DialogContent className="app-centered-dialog glass-card mission-panel overflow-hidden p-0 sm:max-w-[560px]">
+          <div className="flex max-h-[inherit] flex-col">
+            <DialogHeader className="px-6 pt-6">
+              <DialogTitle>{t("编辑账号信息")}</DialogTitle>
+              <DialogDescription>
+                {accountEditorState
+                  ? `${t("修改")} ${accountEditorState.accountName} ${t("的名称、标签、备注、排序与额度池配置。")}`
+                  : t("修改账号的基础资料。")}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="app-centered-dialog__body grid gap-4 px-6 py-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label htmlFor="account-label-input">{t("账号名称")}</Label>
@@ -1318,22 +1319,23 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                 </div>
               </div>
             </div>
+            </div>
+            <DialogFooter className="mx-0 mb-0 gap-2 rounded-b-xl border-t bg-muted/40 px-6 py-4 sm:gap-2">
+              <DialogClose
+                className={buttonVariants({ variant: "outline" })}
+                type="button"
+                disabled={Boolean(isUpdatingProfileAccountId)}
+              >
+                {t("取消")}
+              </DialogClose>
+              <Button
+                disabled={Boolean(isUpdatingProfileAccountId)}
+                onClick={() => void handleConfirmAccountEditor()}
+              >
+                {t("保存")}
+              </Button>
+            </DialogFooter>
           </div>
-          <DialogFooter className="mx-0 mb-0 gap-2 rounded-b-xl border-t bg-muted/40 px-6 py-4 sm:gap-2">
-            <DialogClose
-              className={buttonVariants({ variant: "outline" })}
-              type="button"
-              disabled={Boolean(isUpdatingProfileAccountId)}
-            >
-              {t("取消")}
-            </DialogClose>
-            <Button
-              disabled={Boolean(isUpdatingProfileAccountId)}
-              onClick={() => void handleConfirmAccountEditor()}
-            >
-              {t("保存")}
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

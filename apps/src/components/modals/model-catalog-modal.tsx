@@ -429,8 +429,9 @@ export function ModelCatalogModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-card p-0 md:max-w-[750px] xl:max-w-[1360px]">
-        <div className="max-h-[84vh] overflow-y-auto p-6">
+      <DialogContent className="app-centered-dialog glass-card overflow-hidden p-0 md:!max-w-[750px] xl:!max-w-[min(92vw,1360px)]">
+        <div className="flex max-h-[inherit] flex-col">
+        <div className="app-centered-dialog__body p-6">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
             <DialogDescription>
@@ -694,6 +695,7 @@ export function ModelCatalogModal({
               {isSaving ? t("保存中...") : t("保存模型")}
             </Button>
           </DialogFooter>
+        </div>
         </div>
       </DialogContent>
     </Dialog>
