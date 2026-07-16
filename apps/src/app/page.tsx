@@ -824,6 +824,8 @@ function activeRequestSourceLabel(item: DashboardActiveRequestItem): string {
   return item.routeKind || "Gateway";
 }
 
+type ActiveRequestStatusFilter = "all" | "running" | "queued";
+
 function AdminActiveRequestsCard({
   summary,
   isLoading,
@@ -841,6 +843,24 @@ function AdminActiveRequestsCard({
   const items = summary?.items ?? [];
   const runningCount = summary?.runningCount ?? 0;
   const queuedCount = summary?.queuedCount ?? 0;
+  const [activeRequestStatusFilter, setActiveRequestStatusFilter] =
+    useState<ActiveRequestStatusFilter>("all");
+  const visibleActiveRequestItems = useMemo(
+    () =>
+      activeRequestStatusFilter === "all"
+        ? items
+        : items.filter((item) => item.status === activeRequestStatusFilter),
+    [activeRequestStatusFilter, items],
+  );
+  const statusFilters: Array<{
+    value: ActiveRequestStatusFilter;
+    label: string;
+    count: number;
+  }> = [
+    { value: "all", label: t("全部"), count: summary?.totalCount ?? 0 },
+    { value: "running", label: runningLabel, count: runningCount },
+    { value: "queued", label: queuedLabel, count: queuedCount },
+  ];
 
   return (
     <Card className="dashboard-analytics-card glass-card mission-panel shadow-sm">
@@ -854,9 +874,24 @@ function AdminActiveRequestsCard({
             {summary?.totalCount ?? 0} {t("个进行中")} · {runningLabel} {runningCount} · {queuedLabel} {queuedCount}
           </p>
         </div>
-        <Badge variant="outline" className="border-primary/20 bg-primary/8 text-primary">
-          LIVE
-        </Badge>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {statusFilters.map((filter) => (
+            <Button
+              key={filter.value}
+              type="button"
+              variant={
+                activeRequestStatusFilter === filter.value ? "default" : "outline"
+              }
+              className="h-7 rounded-md px-2 text-xs"
+              onClick={() => setActiveRequestStatusFilter(filter.value)}
+            >
+              {filter.label} {filter.count}
+            </Button>
+          ))}
+          <Badge variant="outline" className="border-primary/20 bg-primary/8 text-primary">
+            LIVE
+          </Badge>
+        </div>
       </CardHeader>
       <CardContent>
         {isLoading && items.length === 0 ? (
@@ -865,13 +900,13 @@ function AdminActiveRequestsCard({
               <Skeleton key={index} className="h-10 w-full rounded-md" />
             ))}
           </div>
-        ) : items.length === 0 ? (
+        ) : visibleActiveRequestItems.length === 0 ? (
           <div className="mission-panel flex min-h-[96px] items-center justify-center rounded-lg border border-dashed border-border/60 bg-background/35 text-sm text-muted-foreground">
             {emptyLabel}
           </div>
         ) : (
           <div className="divide-y divide-border/45">
-            {items.map((item) => {
+            {visibleActiveRequestItems.map((item) => {
               const duration =
                 item.status === "running" ? item.runningMs : item.waitMs;
               return (

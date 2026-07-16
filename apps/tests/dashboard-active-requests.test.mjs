@@ -9,6 +9,10 @@ const adminDashboardSource = pageSource.slice(
   pageSource.indexOf("function AdminDashboard()"),
   pageSource.indexOf("function MemberDashboard()"),
 );
+const activeRequestsCardSource = pageSource.slice(
+  pageSource.indexOf("function AdminActiveRequestsCard"),
+  pageSource.indexOf("function AdminDashboard()"),
+);
 const memberDashboardSource = pageSource.slice(
   pageSource.indexOf("function MemberDashboard()"),
   pageSource.indexOf("function DashboardPage()"),
@@ -54,6 +58,30 @@ assert.match(
   adminDashboardSource,
   /排队中/,
   "Admin dashboard should show queued request text.",
+);
+
+assert.match(
+  activeRequestsCardSource,
+  /activeRequestStatusFilter/,
+  "Admin dashboard should keep a status filter for active requests.",
+);
+
+assert.match(
+  activeRequestsCardSource,
+  /visibleActiveRequestItems/,
+  "Admin dashboard should render the filtered active request list.",
+);
+
+assert.match(
+  activeRequestsCardSource,
+  /全部/,
+  "Admin dashboard should expose an all-requests filter.",
+);
+
+assert.match(
+  activeRequestsCardSource,
+  /item\.status === activeRequestStatusFilter/,
+  "Admin dashboard should filter active requests by queued/running status.",
 );
 
 assert.match(

@@ -389,7 +389,7 @@ use local_models::maybe_respond_local_models;
 pub(crate) use model_picker::fetch_models_for_picker;
 use openai_fallback::try_openai_fallback;
 pub(crate) use request_entry::handle_gateway_request;
-use request_gate::{request_gate_lock, RequestGateAcquireError};
+use request_gate::{client_ip_gate_lock, request_gate_lock, RequestGateAcquireError};
 pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;

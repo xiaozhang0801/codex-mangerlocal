@@ -6,6 +6,7 @@ use codexmanager_core::storage::now_ts;
 
 const REQUEST_GATE_LOCK_TTL_SECS: i64 = 30 * 60;
 const REQUEST_GATE_LOCK_CLEANUP_INTERVAL_SECS: i64 = 60;
+pub(crate) const CLIENT_IP_GATE_MAX_RUNNING: usize = 4;
 
 struct RequestGateLockEntry {
     lock: Arc<RequestGateLock>,
@@ -27,12 +28,13 @@ pub(crate) enum RequestGateAcquireError {
 
 #[derive(Default)]
 struct RequestGateState {
-    held: bool,
+    running: usize,
 }
 
 pub(crate) struct RequestGateLock {
     state: Mutex<RequestGateState>,
     available: Condvar,
+    max_running: usize,
 }
 
 impl RequestGateLock {
@@ -48,9 +50,14 @@ impl RequestGateLock {
     /// # 返回
     /// 返回函数执行结果
     fn new() -> Self {
+        Self::with_max_running(1)
+    }
+
+    fn with_max_running(max_running: usize) -> Self {
         Self {
             state: Mutex::new(RequestGateState::default()),
             available: Condvar::new(),
+            max_running: max_running.max(1),
         }
     }
 
@@ -75,10 +82,10 @@ impl RequestGateLock {
                 return Err(RequestGateAcquireError::Poisoned);
             }
         };
-        if state.held {
+        if state.running >= self.max_running {
             return Ok(None);
         }
-        state.held = true;
+        state.running += 1;
         drop(state);
         Ok(Some(RequestGateGuard {
             lock: Arc::clone(self),
@@ -93,11 +100,15 @@ impl RequestGateLock {
                 return Err(RequestGateAcquireError::Poisoned);
             }
         };
-        let Ok(mut state) = self.available.wait_while(state, |state| state.held) else {
+        let max_running = self.max_running;
+        let Ok(mut state) = self
+            .available
+            .wait_while(state, |state| state.running >= max_running)
+        else {
             log::warn!("event=lock_poisoned lock=request_gate_state action=skip_wait_while");
             return Err(RequestGateAcquireError::Poisoned);
         };
-        state.held = true;
+        state.running += 1;
         drop(state);
         Ok(RequestGateGuard {
             lock: Arc::clone(self),
@@ -128,15 +139,15 @@ impl RequestGateLock {
         };
         let wait_result = self
             .available
-            .wait_timeout_while(state, timeout, |state| state.held);
+            .wait_timeout_while(state, timeout, |state| state.running >= self.max_running);
         let Ok((mut state, _)) = wait_result else {
             log::warn!("event=lock_poisoned lock=request_gate_state action=skip_wait_timeout");
             return Err(RequestGateAcquireError::Poisoned);
         };
-        if state.held {
+        if state.running >= self.max_running {
             return Ok(None);
         }
-        state.held = true;
+        state.running += 1;
         drop(state);
         Ok(Some(RequestGateGuard {
             lock: Arc::clone(self),
@@ -168,7 +179,7 @@ impl Drop for RequestGateGuard {
                 poisoned.into_inner()
             }
         };
-        state.held = false;
+        state.running = state.running.saturating_sub(1);
         self.lock.available.notify_one();
     }
 }
@@ -196,6 +207,14 @@ fn gate_key(key_id: &str, path: &str, model: Option<&str>) -> String {
             .filter(|v| !v.is_empty())
             .unwrap_or("-")
     )
+}
+
+fn client_ip_gate_key(client_ip: &str) -> Option<String> {
+    let client_ip = client_ip.trim();
+    if client_ip.is_empty() {
+        return None;
+    }
+    Some(format!("client_ip|{client_ip}"))
 }
 
 /// 函数 `request_gate_lock`
@@ -227,6 +246,25 @@ pub(crate) fn request_gate_lock(
         });
     entry.last_seen_at = now;
     entry.lock.clone()
+}
+
+pub(crate) fn client_ip_gate_lock(client_ip: Option<&str>) -> Option<Arc<RequestGateLock>> {
+    let key = client_ip.and_then(client_ip_gate_key)?;
+    let lock = REQUEST_GATE_LOCKS.get_or_init(|| Mutex::new(RequestGateLockTable::default()));
+    let mut table = crate::lock_utils::lock_recover(lock, "request_gate_locks");
+    let now = now_ts();
+    maybe_cleanup_request_gate_locks(&mut table, now);
+    let entry = table
+        .entries
+        .entry(key)
+        .or_insert_with(|| RequestGateLockEntry {
+            lock: Arc::new(RequestGateLock::with_max_running(
+                CLIENT_IP_GATE_MAX_RUNNING,
+            )),
+            last_seen_at: now,
+        });
+    entry.last_seen_at = now;
+    Some(entry.lock.clone())
 }
 
 /// 函数 `maybe_cleanup_request_gate_locks`

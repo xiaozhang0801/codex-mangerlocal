@@ -138,3 +138,53 @@ fn acquire_waits_until_previous_guard_released() {
         "expected waiter to block, actual wait: {waited:?}"
     );
 }
+
+#[test]
+fn client_ip_gate_allows_four_running_per_ip() {
+    let _guard = crate::test_env_guard();
+    clear_request_gate_locks_for_tests();
+    let lock = client_ip_gate_lock(Some("192.168.1.20")).expect("client ip gate");
+    let guards = (0..CLIENT_IP_GATE_MAX_RUNNING)
+        .map(|_| {
+            lock.try_acquire()
+                .expect("client ip gate should not be poisoned")
+                .expect("slot should be available")
+        })
+        .collect::<Vec<_>>();
+
+    let fifth = lock
+        .try_acquire()
+        .expect("client ip gate should not be poisoned");
+
+    drop(guards);
+    assert!(
+        fifth.is_none(),
+        "fifth same-IP request should stay queued until a slot is released"
+    );
+}
+
+#[test]
+fn client_ip_gate_isolated_by_ip() {
+    let _guard = crate::test_env_guard();
+    clear_request_gate_locks_for_tests();
+    let first_ip = client_ip_gate_lock(Some("192.168.1.20")).expect("first ip gate");
+    let second_ip = client_ip_gate_lock(Some("192.168.1.21")).expect("second ip gate");
+    let guards = (0..CLIENT_IP_GATE_MAX_RUNNING)
+        .map(|_| {
+            first_ip
+                .try_acquire()
+                .expect("client ip gate should not be poisoned")
+                .expect("first ip slot should be available")
+        })
+        .collect::<Vec<_>>();
+
+    let other_ip_guard = second_ip
+        .try_acquire()
+        .expect("second client ip gate should not be poisoned");
+
+    drop(guards);
+    assert!(
+        other_ip_guard.is_some(),
+        "a saturated IP should not block a different client IP"
+    );
+}

@@ -86,6 +86,75 @@ fn request_deadline_for_path(
     super::support::deadline::request_deadline(started_at, upstream_is_stream)
 }
 
+fn acquire_client_ip_request_gate(
+    trace_id: &str,
+    client_ip: Option<&str>,
+    request_deadline: Option<Instant>,
+) -> Result<Option<super::super::request_gate::RequestGateGuard>, (u16, String)> {
+    let Some(request_gate_lock) = super::super::client_ip_gate_lock(client_ip) else {
+        super::super::mark_request_activity_running(trace_id, "gateway");
+        return Ok(None);
+    };
+    let client_ip_for_log = client_ip.unwrap_or("unknown");
+    super::super::mark_request_activity_queued(trace_id, "client_ip_gate");
+    super::super::trace_log::log_request_gate_wait(
+        trace_id,
+        client_ip_for_log,
+        "client_ip_gate",
+        None,
+    );
+    let gate_wait_started_at = Instant::now();
+
+    match request_gate_lock.try_acquire() {
+        Ok(Some(guard)) => {
+            super::super::mark_request_activity_running(trace_id, "gateway");
+            super::super::trace_log::log_request_gate_acquired(
+                trace_id,
+                client_ip_for_log,
+                "client_ip_gate",
+                None,
+                0,
+            );
+            Ok(Some(guard))
+        }
+        Ok(None) => {
+            let wait_result = match super::support::deadline::remaining(request_deadline) {
+                Some(remaining) if remaining.is_zero() => Ok(None),
+                Some(remaining) => request_gate_lock.acquire_with_timeout(remaining),
+                None => request_gate_lock.acquire().map(Some),
+            };
+            if let Ok(Some(guard)) = wait_result {
+                super::super::mark_request_activity_running(trace_id, "gateway");
+                super::super::trace_log::log_request_gate_acquired(
+                    trace_id,
+                    client_ip_for_log,
+                    "client_ip_gate",
+                    None,
+                    gate_wait_started_at.elapsed().as_millis(),
+                );
+                Ok(Some(guard))
+            } else {
+                let (status_code, message) = match wait_result {
+                    Err(super::super::RequestGateAcquireError::Poisoned) => {
+                        (503, "client IP request gate unavailable".to_string())
+                    }
+                    _ => (504, "client IP request queue wait timeout".to_string()),
+                };
+                super::super::trace_log::log_request_gate_skip(
+                    trace_id,
+                    "client_ip_gate",
+                    gate_wait_started_at.elapsed().as_millis(),
+                );
+                Err((status_code, message))
+            }
+        }
+        Err(super::super::RequestGateAcquireError::Poisoned) => {
+            super::super::trace_log::log_request_gate_skip(trace_id, "client_ip_gate", 0);
+            Err((503, "client IP request gate unavailable".to_string()))
+        }
+    }
+}
+
 fn should_try_provider_executor_aggregate_route(
     execution_plan: super::executor::GatewayUpstreamExecutionPlan,
 ) -> bool {
@@ -729,6 +798,30 @@ pub(in super::super) fn proxy_validated_request(
             message,
         );
     }
+
+    let _client_ip_gate_guard = match acquire_client_ip_request_gate(
+        trace_id.as_str(),
+        client_ip.as_deref(),
+        request_deadline,
+    ) {
+        Ok(guard) => guard,
+        Err((status_code, message)) => {
+            super::super::record_gateway_request_outcome(
+                path.as_str(),
+                status_code,
+                Some("client_ip_gate"),
+            );
+            super::super::trace_log::log_request_final(
+                trace_id.as_str(),
+                status_code,
+                Some(key_id.as_str()),
+                None,
+                Some(message.as_str()),
+                started_at.elapsed().as_millis(),
+            );
+            return respond_terminal(request, status_code, message, Some(trace_id.as_str()));
+        }
+    };
 
     if should_try_provider_executor_aggregate_route(execution_plan) {
         match resolve_aggregate_candidates_for_route(
