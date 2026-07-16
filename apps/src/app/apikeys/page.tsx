@@ -157,6 +157,20 @@ function formatCompactTokenAmount(value: number | null | undefined): string {
   return formatCompactNumber(normalized, "0.00", 2, true);
 }
 
+function resolveLocalDayRangeSeconds(now = new Date()): {
+  startTs: number;
+  endTs: number;
+} {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return {
+    startTs: Math.floor(start.getTime() / 1000),
+    endTs: Math.floor(end.getTime() / 1000),
+  };
+}
+
 export default function ApiKeysPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -340,11 +354,43 @@ export default function ApiKeysPage() {
     enabled: isUsageQueryEnabled && isPageActive,
     retry: 1,
   });
+  const clientIpTodayRange = useMemo(() => resolveLocalDayRangeSeconds(), []);
+  const { data: todayClientIpUsage, isPending: isTodayClientIpUsageLoading } =
+    useQuery({
+      queryKey: [
+        "requestlog",
+        "client-ip-usage",
+        "today",
+        serviceAddr || null,
+        clientIpTodayRange.startTs,
+        clientIpTodayRange.endTs,
+      ],
+      queryFn: () =>
+        serviceClient.listClientIpUsage({
+          startTs: clientIpTodayRange.startTs,
+          endTs: clientIpTodayRange.endTs,
+          limit: 100,
+        }),
+      enabled: isUsageQueryEnabled && isPageActive,
+      retry: 1,
+    });
   const usageByKey = usageOverview?.usageByKey || {};
   const costByKey = usageOverview?.costByKey || {};
   const todayUsageByKey = usageOverview?.todayUsageByKey || {};
   const todayCostByKey = usageOverview?.todayCostByKey || {};
   const clientIpUsageItems = clientIpUsage?.items || [];
+  const todayClientIpUsageByPair = useMemo(
+    () =>
+      new Map(
+        (todayClientIpUsage?.items || []).map((item) => [
+          `${item.keyId}:${item.clientIp}`,
+          item,
+        ]),
+      ),
+    [todayClientIpUsage?.items],
+  );
+  const isClientIpUsageTableLoading =
+    isClientIpUsageLoading || isTodayClientIpUsageLoading;
   const apiKeyNameById = useMemo(
     () => new Map(apiKeys.map((item) => [item.id, item.name || item.id])),
     [apiKeys],
@@ -679,17 +725,19 @@ export default function ApiKeysPage() {
                   <TableHead>{t("请求")}</TableHead>
                   <TableHead>{t("成功 / 异常")}</TableHead>
                   <TableHead>{t("Token")}</TableHead>
+                  <TableHead>{t("今日 Token")}</TableHead>
                   <TableHead>{t("费用")}</TableHead>
                   <TableHead>{t("最近出现")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isClientIpUsageLoading ? (
+                {isClientIpUsageTableLoading ? (
                   Array.from({ length: 3 }).map((_, index) => (
                     <TableRow key={index}>
                       <TableCell><Skeleton className="h-4 w-28" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-32" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-16" /></TableCell>
@@ -699,52 +747,60 @@ export default function ApiKeysPage() {
                 ) : clientIpUsageItems.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={7}
+                      colSpan={8}
                       className="h-28 text-center text-sm text-muted-foreground"
                     >
                       {t("暂无内网 IP 用量记录")}
                     </TableCell>
                   </TableRow>
                 ) : (
-                  clientIpUsageItems.map((item) => (
-                    <TableRow key={`${item.keyId}:${item.clientIp}`}>
-                      <TableCell>
-                        <code
-                          className="inline-block max-w-[180px] truncate rounded border border-border/60 bg-muted/50 px-2 py-1 font-mono text-[11px]"
-                          title={item.clientIp}
-                        >
-                          {item.clientIp || t("未知")}
-                        </code>
-                      </TableCell>
-                      <TableCell>
-                        <div
-                          className="max-w-[220px] truncate text-sm font-medium"
-                          title={apiKeyNameById.get(item.keyId) || item.keyId}
-                        >
-                          {apiKeyNameById.get(item.keyId) || item.keyId}
-                        </div>
-                        <div className="max-w-[220px] truncate font-mono text-[10px] text-muted-foreground">
-                          {item.keyId}
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {item.requestCount.toLocaleString("zh-CN")}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {item.successCount.toLocaleString("zh-CN")} /{" "}
-                        {item.errorCount.toLocaleString("zh-CN")}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {formatCompactTokenAmount(item.totalTokens)}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {formatUsd(item.estimatedCostUsd)}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {formatLocalMinuteFromSeconds(item.lastSeenAt, t("未知"))}
-                      </TableCell>
-                    </TableRow>
-                  ))
+                  clientIpUsageItems.map((item) => {
+                    const todayItem = todayClientIpUsageByPair.get(
+                      `${item.keyId}:${item.clientIp}`,
+                    );
+                    return (
+                      <TableRow key={`${item.keyId}:${item.clientIp}`}>
+                        <TableCell>
+                          <code
+                            className="inline-block max-w-[180px] truncate rounded border border-border/60 bg-muted/50 px-2 py-1 font-mono text-[11px]"
+                            title={item.clientIp}
+                          >
+                            {item.clientIp || t("未知")}
+                          </code>
+                        </TableCell>
+                        <TableCell>
+                          <div
+                            className="max-w-[220px] truncate text-sm font-medium"
+                            title={apiKeyNameById.get(item.keyId) || item.keyId}
+                          >
+                            {apiKeyNameById.get(item.keyId) || item.keyId}
+                          </div>
+                          <div className="max-w-[220px] truncate font-mono text-[10px] text-muted-foreground">
+                            {item.keyId}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {item.requestCount.toLocaleString("zh-CN")}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {item.successCount.toLocaleString("zh-CN")} /{" "}
+                          {item.errorCount.toLocaleString("zh-CN")}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {formatCompactTokenAmount(item.totalTokens)}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {formatCompactTokenAmount(todayItem?.totalTokens || 0)}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {formatUsd(item.estimatedCostUsd)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {formatLocalMinuteFromSeconds(item.lastSeenAt, t("未知"))}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 )}
               </TableBody>
             </Table>
