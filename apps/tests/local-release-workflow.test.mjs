@@ -5,6 +5,8 @@ import test from "node:test";
 
 const appsRoot = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(appsRoot, "..");
+const defaultConfigPath = path.join(appsRoot, "src-tauri", "tauri.conf.json");
+const desktopCargoPath = path.join(appsRoot, "src-tauri", "Cargo.toml");
 const localConfigPath = path.join(appsRoot, "src-tauri", "tauri.local.conf.json");
 const workflowPath = path.join(repoRoot, ".github", "workflows", "release-local.yml");
 const macosHelperPath = path.join(
@@ -21,6 +23,16 @@ const macosReadmePath = path.join(
 );
 
 test("CodexManagerLocal has isolated Tauri identity and local release workflow", () => {
+  assert.equal(existsSync(defaultConfigPath), true);
+  const defaultConfig = JSON.parse(readFileSync(defaultConfigPath, "utf8"));
+  assert.equal(defaultConfig.productName, "CodexManagerLocal");
+  assert.equal(defaultConfig.identifier, "com.codexmanager.local");
+  assert.equal(defaultConfig.app?.windows?.[0]?.title, "CodexManager Local");
+
+  assert.equal(existsSync(desktopCargoPath), true);
+  const desktopCargoSource = readFileSync(desktopCargoPath, "utf8");
+  assert.match(desktopCargoSource, /^name\s*=\s*"CodexManagerLocal"/m);
+
   assert.equal(existsSync(localConfigPath), true);
   const localConfig = JSON.parse(readFileSync(localConfigPath, "utf8"));
   assert.equal(localConfig.productName, "CodexManagerLocal");

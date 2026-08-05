@@ -1,5 +1,5 @@
 [package]
-name = "CodexManager"
+name = "CodexManagerLocal"
 version = "0.5.2"
 description = "A Tauri App"
 authors = ["you"]

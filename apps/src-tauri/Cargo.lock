@@ -3,7 +3,7 @@
 version = 3
 
 [[package]]
-name = "CodexManager"
+name = "CodexManagerLocal"
 version = "0.5.2"
 dependencies = [
  "chrono",
