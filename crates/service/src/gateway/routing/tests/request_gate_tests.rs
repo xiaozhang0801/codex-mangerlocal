@@ -169,37 +169,54 @@ fn lock_with_max_running_allows_configured_parallel_guards() {
 }
 
 #[test]
-fn client_ip_gate_lock_limits_same_ip_to_four_running() {
+fn client_ip_gate_lock_allows_more_than_four_running_when_only_one_ip_is_active() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
     let lock = client_ip_gate_lock("192.168.1.20");
     let mut guards = Vec::new();
 
-    for _ in 0..CLIENT_IP_GATE_MAX_RUNNING {
+    for _ in 0..CLIENT_IP_GATE_MAX_RUNNING + 2 {
         guards.push(
             lock.try_acquire()
                 .expect("lock should not be poisoned")
                 .expect("ip slot"),
         );
     }
+}
+
+#[test]
+fn client_ip_gate_lock_limits_same_ip_only_when_multiple_ips_are_active() {
+    let _guard = crate::test_env_guard();
+    clear_request_gate_locks_for_tests();
+    let lock = client_ip_gate_lock("192.168.1.20");
+    let mut guards = Vec::new();
+
+    for _ in 0..CLIENT_IP_GATE_MAX_RUNNING + 1 {
+        guards.push(
+            lock.try_acquire()
+                .expect("lock should not be poisoned")
+                .expect("single IP should not be limited"),
+        );
+    }
+
+    let second_ip_lock = client_ip_gate_lock("192.168.1.21");
+    let second_ip_guard = second_ip_lock
+        .try_acquire()
+        .expect("lock should not be poisoned")
+        .expect("second IP should enter when below per-IP limit");
+
     assert!(
         lock.try_acquire()
             .expect("lock should not be poisoned")
             .is_none(),
-        "same IP should be queued after max running slots"
+        "same IP should queue while multiple IPs are active and this IP is above the limit"
     );
 
-    let other_ip_lock = client_ip_gate_lock("192.168.1.21");
-    let other_ip_guard = other_ip_lock
+    drop(second_ip_guard);
+    let unlimited_again = lock
         .try_acquire()
         .expect("lock should not be poisoned")
-        .expect("different IP has independent slots");
+        .expect("single remaining IP should become unlimited again");
 
-    drop(guards.pop());
-    let released_slot = lock
-        .try_acquire()
-        .expect("lock should not be poisoned")
-        .expect("released IP slot");
-    drop(released_slot);
-    drop(other_ip_guard);
+    drop(unlimited_again);
 }

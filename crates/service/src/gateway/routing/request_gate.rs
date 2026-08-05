@@ -20,6 +20,7 @@ struct RequestGateLockTable {
 }
 
 static REQUEST_GATE_LOCKS: OnceLock<Mutex<RequestGateLockTable>> = OnceLock::new();
+static CLIENT_IP_GATE_STATE: OnceLock<ClientIpGateTable> = OnceLock::new();
 
 #[derive(Debug)]
 pub(crate) enum RequestGateAcquireError {
@@ -31,10 +32,27 @@ struct RequestGateState {
     running: usize,
 }
 
+#[derive(Default)]
+struct ClientIpGateState {
+    running_by_ip: HashMap<String, usize>,
+}
+
+#[derive(Default)]
+struct ClientIpGateTable {
+    state: Mutex<ClientIpGateState>,
+    available: Condvar,
+}
+
+enum RequestGateMode {
+    Fixed,
+    ClientIp { client_ip: String },
+}
+
 pub(crate) struct RequestGateLock {
     state: Mutex<RequestGateState>,
     available: Condvar,
     max_running: usize,
+    mode: RequestGateMode,
 }
 
 impl RequestGateLock {
@@ -54,7 +72,16 @@ impl RequestGateLock {
             state: Mutex::new(RequestGateState::default()),
             available: Condvar::new(),
             max_running: 1,
+            mode: RequestGateMode::Fixed,
         }
+    }
+
+    fn for_client_ip(client_ip: &str) -> Self {
+        let mut lock = Self::new().with_max_running(CLIENT_IP_GATE_MAX_RUNNING);
+        lock.mode = RequestGateMode::ClientIp {
+            client_ip: client_ip.trim().to_string(),
+        };
+        lock
     }
 
     fn with_max_running(mut self, max_running: usize) -> Self {
@@ -76,6 +103,13 @@ impl RequestGateLock {
     pub(crate) fn try_acquire(
         self: &Arc<Self>,
     ) -> Result<Option<RequestGateGuard>, RequestGateAcquireError> {
+        if let RequestGateMode::ClientIp { client_ip } = &self.mode {
+            return try_acquire_client_ip_slot(client_ip, self.max_running).map(|slot| {
+                slot.map(|_| RequestGateGuard {
+                    lock: Arc::clone(self),
+                })
+            });
+        }
         let mut state = match self.state.lock() {
             Ok(guard) => guard,
             Err(_) => {
@@ -94,6 +128,12 @@ impl RequestGateLock {
     }
 
     pub(crate) fn acquire(self: &Arc<Self>) -> Result<RequestGateGuard, RequestGateAcquireError> {
+        if let RequestGateMode::ClientIp { client_ip } = &self.mode {
+            acquire_client_ip_slot(client_ip, self.max_running)?;
+            return Ok(RequestGateGuard {
+                lock: Arc::clone(self),
+            });
+        }
         let state = match self.state.lock() {
             Ok(guard) => guard,
             Err(_) => {
@@ -131,6 +171,15 @@ impl RequestGateLock {
         self: &Arc<Self>,
         timeout: Duration,
     ) -> Result<Option<RequestGateGuard>, RequestGateAcquireError> {
+        if let RequestGateMode::ClientIp { client_ip } = &self.mode {
+            return acquire_client_ip_slot_with_timeout(client_ip, self.max_running, timeout).map(
+                |slot| {
+                    slot.map(|_| RequestGateGuard {
+                        lock: Arc::clone(self),
+                    })
+                },
+            );
+        }
         let state = match self.state.lock() {
             Ok(guard) => guard,
             Err(_) => {
@@ -154,6 +203,22 @@ impl RequestGateLock {
             lock: Arc::clone(self),
         }))
     }
+
+    fn release(&self) {
+        if let RequestGateMode::ClientIp { client_ip } = &self.mode {
+            release_client_ip_slot(client_ip);
+            return;
+        }
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                log::warn!("event=lock_poisoned lock=request_gate_state action=recover_release");
+                poisoned.into_inner()
+            }
+        };
+        state.running = state.running.saturating_sub(1);
+        self.available.notify_one();
+    }
 }
 
 pub(crate) struct RequestGateGuard {
@@ -173,15 +238,7 @@ impl Drop for RequestGateGuard {
     /// # 返回
     /// 无
     fn drop(&mut self) {
-        let mut state = match self.lock.state.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                log::warn!("event=lock_poisoned lock=request_gate_state action=recover_release");
-                poisoned.into_inner()
-            }
-        };
-        state.running = state.running.saturating_sub(1);
-        self.lock.available.notify_one();
+        self.lock.release();
     }
 }
 
@@ -214,7 +271,140 @@ fn client_ip_gate_key(client_ip: &str) -> String {
     format!("client_ip|{}", client_ip.trim())
 }
 
-fn gate_lock_for_key(key: String, max_running: usize) -> Arc<RequestGateLock> {
+fn client_ip_gate_table() -> &'static ClientIpGateTable {
+    CLIENT_IP_GATE_STATE.get_or_init(ClientIpGateTable::default)
+}
+
+fn client_ip_gate_can_acquire(
+    state: &ClientIpGateState,
+    client_ip: &str,
+    max_running: usize,
+) -> bool {
+    let running_for_ip = state.running_by_ip.get(client_ip).copied().unwrap_or(0);
+    let active_ip_count = state
+        .running_by_ip
+        .values()
+        .filter(|running| **running > 0)
+        .count();
+    let active_ip_count_after = if running_for_ip > 0 {
+        active_ip_count
+    } else {
+        active_ip_count.saturating_add(1)
+    };
+    active_ip_count_after <= 1 || running_for_ip < max_running.max(1)
+}
+
+fn record_client_ip_acquire(state: &mut ClientIpGateState, client_ip: &str) {
+    *state
+        .running_by_ip
+        .entry(client_ip.to_string())
+        .or_default() += 1;
+}
+
+fn try_acquire_client_ip_slot(
+    client_ip: &str,
+    max_running: usize,
+) -> Result<Option<()>, RequestGateAcquireError> {
+    let table = client_ip_gate_table();
+    let mut state = match table.state.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::warn!("event=lock_poisoned lock=client_ip_gate_state action=skip");
+            return Err(RequestGateAcquireError::Poisoned);
+        }
+    };
+    if !client_ip_gate_can_acquire(&state, client_ip, max_running) {
+        return Ok(None);
+    }
+    record_client_ip_acquire(&mut state, client_ip);
+    Ok(Some(()))
+}
+
+fn acquire_client_ip_slot(
+    client_ip: &str,
+    max_running: usize,
+) -> Result<(), RequestGateAcquireError> {
+    let table = client_ip_gate_table();
+    let state = match table.state.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::warn!("event=lock_poisoned lock=client_ip_gate_state action=skip_wait");
+            return Err(RequestGateAcquireError::Poisoned);
+        }
+    };
+    let max_running = max_running.max(1);
+    let Ok(mut state) = table.available.wait_while(state, |state| {
+        !client_ip_gate_can_acquire(state, client_ip, max_running)
+    }) else {
+        log::warn!("event=lock_poisoned lock=client_ip_gate_state action=skip_wait_while");
+        return Err(RequestGateAcquireError::Poisoned);
+    };
+    record_client_ip_acquire(&mut state, client_ip);
+    Ok(())
+}
+
+fn acquire_client_ip_slot_with_timeout(
+    client_ip: &str,
+    max_running: usize,
+    timeout: Duration,
+) -> Result<Option<()>, RequestGateAcquireError> {
+    let table = client_ip_gate_table();
+    let state = match table.state.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::warn!("event=lock_poisoned lock=client_ip_gate_state action=skip_wait");
+            return Err(RequestGateAcquireError::Poisoned);
+        }
+    };
+    let max_running = max_running.max(1);
+    let wait_result = table.available.wait_timeout_while(state, timeout, |state| {
+        !client_ip_gate_can_acquire(state, client_ip, max_running)
+    });
+    let Ok((mut state, _)) = wait_result else {
+        log::warn!("event=lock_poisoned lock=client_ip_gate_state action=skip_wait_timeout");
+        return Err(RequestGateAcquireError::Poisoned);
+    };
+    if !client_ip_gate_can_acquire(&state, client_ip, max_running) {
+        return Ok(None);
+    }
+    record_client_ip_acquire(&mut state, client_ip);
+    Ok(Some(()))
+}
+
+fn release_client_ip_slot(client_ip: &str) {
+    let table = client_ip_gate_table();
+    let mut state = match table.state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log::warn!("event=lock_poisoned lock=client_ip_gate_state action=recover_release");
+            poisoned.into_inner()
+        }
+    };
+    let should_remove = if let Some(running) = state.running_by_ip.get_mut(client_ip) {
+        *running = running.saturating_sub(1);
+        *running == 0
+    } else {
+        false
+    };
+    if should_remove {
+        state.running_by_ip.remove(client_ip);
+    }
+    table.available.notify_all();
+}
+
+fn clear_client_ip_gate_state() {
+    let Some(table) = CLIENT_IP_GATE_STATE.get() else {
+        return;
+    };
+    let mut state = crate::lock_utils::lock_recover(&table.state, "client_ip_gate_state");
+    state.running_by_ip.clear();
+    table.available.notify_all();
+}
+
+fn gate_lock_for_key<F>(key: String, create_lock: F) -> Arc<RequestGateLock>
+where
+    F: FnOnce() -> RequestGateLock,
+{
     let lock = REQUEST_GATE_LOCKS.get_or_init(|| Mutex::new(RequestGateLockTable::default()));
     let mut table = crate::lock_utils::lock_recover(lock, "request_gate_locks");
     let now = now_ts();
@@ -223,7 +413,7 @@ fn gate_lock_for_key(key: String, max_running: usize) -> Arc<RequestGateLock> {
         .entries
         .entry(key)
         .or_insert_with(|| RequestGateLockEntry {
-            lock: Arc::new(RequestGateLock::new().with_max_running(max_running)),
+            lock: Arc::new(create_lock()),
             last_seen_at: now,
         });
     entry.last_seen_at = now;
@@ -246,11 +436,13 @@ pub(crate) fn request_gate_lock(
     path: &str,
     model: Option<&str>,
 ) -> Arc<RequestGateLock> {
-    gate_lock_for_key(gate_key(key_id, path, model), 1)
+    gate_lock_for_key(gate_key(key_id, path, model), || RequestGateLock::new())
 }
 
 pub(crate) fn client_ip_gate_lock(client_ip: &str) -> Arc<RequestGateLock> {
-    gate_lock_for_key(client_ip_gate_key(client_ip), CLIENT_IP_GATE_MAX_RUNNING)
+    gate_lock_for_key(client_ip_gate_key(client_ip), || {
+        RequestGateLock::for_client_ip(client_ip)
+    })
 }
 
 /// 函数 `maybe_cleanup_request_gate_locks`
@@ -294,6 +486,8 @@ pub(super) fn clear_runtime_state() {
     let mut table = crate::lock_utils::lock_recover(lock, "request_gate_locks");
     table.entries.clear();
     table.last_cleanup_at = 0;
+    drop(table);
+    clear_client_ip_gate_state();
 }
 
 /// 函数 `clear_request_gate_locks_for_tests`
