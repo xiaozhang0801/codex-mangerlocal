@@ -10,6 +10,7 @@ pub struct RequestTokenStatRecord {
     pub request_log_id: i64,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub client_ip: Option<String>,
     pub model: Option<String>,
     pub actual_source_kind: Option<String>,
     pub actual_source_id: Option<String>,
@@ -33,6 +34,7 @@ pub struct Model {
     id: Option<i64>,
     key_id: Option<String>,
     account_id: Option<String>,
+    client_ip: Option<String>,
     model: Option<String>,
     actual_source_kind: Option<String>,
     actual_source_id: Option<String>,
@@ -88,6 +90,7 @@ impl RequestTokenStatsRepository {
             id: Set(None),
             key_id: Set(stat.key_id),
             account_id: Set(stat.account_id),
+            client_ip: Set(stat.client_ip),
             model: Set(stat.model),
             actual_source_kind: Set(stat.actual_source_kind),
             actual_source_id: Set(stat.actual_source_id),
@@ -106,6 +109,7 @@ impl RequestTokenStatsRepository {
                     .update_columns([
                         Column::KeyId,
                         Column::AccountId,
+                        Column::ClientIp,
                         Column::Model,
                         Column::ActualSourceKind,
                         Column::ActualSourceId,
@@ -132,6 +136,7 @@ impl From<Model> for RequestTokenStatRecord {
             request_log_id: m.request_log_id,
             key_id: m.key_id,
             account_id: m.account_id,
+            client_ip: m.client_ip,
             model: m.model,
             actual_source_kind: m.actual_source_kind,
             actual_source_id: m.actual_source_id,
@@ -153,6 +158,7 @@ impl From<RequestTokenStatRecord> for RequestTokenStat {
             request_log_id: s.request_log_id,
             key_id: s.key_id,
             account_id: s.account_id,
+            client_ip: s.client_ip,
             model: s.model,
             actual_source_kind: s.actual_source_kind,
             actual_source_id: s.actual_source_id,
@@ -175,11 +181,12 @@ mod tests {
     #[tokio::test]
     async fn upsert_replaces_stat_by_request_log() {
         let db = Database::connect("sqlite::memory:").await.unwrap();
-        db.execute(Statement::from_string(db.get_database_backend(), "CREATE TABLE request_token_stats (request_log_id BIGINT PRIMARY KEY, id BIGINT NULL, key_id TEXT, account_id TEXT, model TEXT, actual_source_kind TEXT, actual_source_id TEXT, input_tokens BIGINT, cached_input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT, reasoning_output_tokens BIGINT, estimated_cost_usd DOUBLE, usage_included BOOLEAN NOT NULL DEFAULT 1, created_at BIGINT NOT NULL)")).await.unwrap();
+        db.execute(Statement::from_string(db.get_database_backend(), "CREATE TABLE request_token_stats (request_log_id BIGINT PRIMARY KEY, id BIGINT NULL, key_id TEXT, account_id TEXT, client_ip TEXT, model TEXT, actual_source_kind TEXT, actual_source_id TEXT, input_tokens BIGINT, cached_input_tokens BIGINT, output_tokens BIGINT, total_tokens BIGINT, reasoning_output_tokens BIGINT, estimated_cost_usd DOUBLE, usage_included BOOLEAN NOT NULL DEFAULT 1, created_at BIGINT NOT NULL)")).await.unwrap();
         let stat = RequestTokenStatRecord {
             request_log_id: 9,
             key_id: Some("k".into()),
             account_id: None,
+            client_ip: Some("192.168.1.20".into()),
             model: Some("gpt-5".into()),
             actual_source_kind: None,
             actual_source_id: None,

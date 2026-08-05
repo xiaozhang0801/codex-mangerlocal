@@ -884,6 +884,7 @@ mod tests {
                 request_log_id: 99,
                 key_id: None,
                 account_id: None,
+                client_ip: None,
                 model: Some("fixture".into()),
                 actual_source_kind: None,
                 actual_source_id: None,

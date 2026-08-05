@@ -30,6 +30,8 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     account_id: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
+    client_ip: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
     initial_account_id: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     attempted_account_ids_json: Option<String>,
@@ -122,6 +124,7 @@ impl RequestLogsRepository {
             trace_id: Set(log.trace_id),
             key_id: Set(log.key_id),
             account_id: Set(log.account_id),
+            client_ip: Set(log.client_ip),
             initial_account_id: Set(log.initial_account_id),
             attempted_account_ids_json: Set(log.attempted_account_ids_json),
             initial_aggregate_api_id: Set(log.initial_aggregate_api_id),
@@ -209,6 +212,7 @@ impl From<Model> for RequestLogRecord {
                 trace_id: model.trace_id,
                 key_id: model.key_id,
                 account_id: model.account_id,
+                client_ip: model.client_ip,
                 initial_account_id: model.initial_account_id,
                 attempted_account_ids_json: model.attempted_account_ids_json,
                 initial_aggregate_api_id: model.initial_aggregate_api_id,
@@ -261,6 +265,7 @@ pub(crate) fn fixture() -> RequestLog {
         trace_id: Some("trace_id-fixture".into()),
         key_id: Some("key_id-fixture".into()),
         account_id: Some("account_id-fixture".into()),
+        client_ip: Some("192.168.1.20".into()),
         initial_account_id: Some("initial_account_id-fixture".into()),
         attempted_account_ids_json: Some("[\"first\",\"second\"]".into()),
         initial_aggregate_api_id: Some("initial_aggregate_api_id-fixture".into()),

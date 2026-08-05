@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-#[cfg(test)]
 use std::time::Duration;
 
 use codexmanager_core::storage::now_ts;
 
 const REQUEST_GATE_LOCK_TTL_SECS: i64 = 30 * 60;
 const REQUEST_GATE_LOCK_CLEANUP_INTERVAL_SECS: i64 = 60;
+const CLIENT_IP_GATE_MAX_RUNNING: usize = 4;
 
 struct RequestGateLockEntry {
     lock: Arc<RequestGateLock>,
@@ -28,13 +28,14 @@ pub(crate) enum RequestGateAcquireError {
 
 #[derive(Default)]
 struct RequestGateState {
-    held: bool,
+    running: usize,
 }
 
 pub(crate) struct RequestGateLock {
     state: Mutex<RequestGateState>,
     available: Condvar,
     async_available: tokio::sync::Notify,
+    max_running: usize,
 }
 
 impl RequestGateLock {
@@ -54,7 +55,13 @@ impl RequestGateLock {
             state: Mutex::new(RequestGateState::default()),
             available: Condvar::new(),
             async_available: tokio::sync::Notify::new(),
+            max_running: 1,
         }
+    }
+
+    fn with_max_running(mut self, max_running: usize) -> Self {
+        self.max_running = max_running.max(1);
+        self
     }
 
     /// 函数 `try_acquire`
@@ -78,10 +85,10 @@ impl RequestGateLock {
                 return Err(RequestGateAcquireError::Poisoned);
             }
         };
-        if state.held {
+        if state.running >= self.max_running {
             return Ok(None);
         }
-        state.held = true;
+        state.running += 1;
         drop(state);
         Ok(Some(RequestGateGuard {
             lock: Arc::clone(self),
@@ -104,7 +111,6 @@ impl RequestGateLock {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn acquire(self: &Arc<Self>) -> Result<RequestGateGuard, RequestGateAcquireError> {
         let state = match self.state.lock() {
             Ok(guard) => guard,
@@ -113,11 +119,15 @@ impl RequestGateLock {
                 return Err(RequestGateAcquireError::Poisoned);
             }
         };
-        let Ok(mut state) = self.available.wait_while(state, |state| state.held) else {
+        let max_running = self.max_running;
+        let Ok(mut state) = self
+            .available
+            .wait_while(state, |state| state.running >= max_running)
+        else {
             log::warn!("event=lock_poisoned lock=request_gate_state action=skip_wait_while");
             return Err(RequestGateAcquireError::Poisoned);
         };
-        state.held = true;
+        state.running += 1;
         drop(state);
         Ok(RequestGateGuard {
             lock: Arc::clone(self),
@@ -135,7 +145,6 @@ impl RequestGateLock {
     ///
     /// # 返回
     /// 返回函数执行结果
-    #[cfg(test)]
     pub(crate) fn acquire_with_timeout(
         self: &Arc<Self>,
         timeout: Duration,
@@ -149,15 +158,15 @@ impl RequestGateLock {
         };
         let wait_result = self
             .available
-            .wait_timeout_while(state, timeout, |state| state.held);
+            .wait_timeout_while(state, timeout, |state| state.running >= self.max_running);
         let Ok((mut state, _)) = wait_result else {
             log::warn!("event=lock_poisoned lock=request_gate_state action=skip_wait_timeout");
             return Err(RequestGateAcquireError::Poisoned);
         };
-        if state.held {
+        if state.running >= self.max_running {
             return Ok(None);
         }
-        state.held = true;
+        state.running += 1;
         drop(state);
         Ok(Some(RequestGateGuard {
             lock: Arc::clone(self),
@@ -189,7 +198,7 @@ impl Drop for RequestGateGuard {
                 poisoned.into_inner()
             }
         };
-        state.held = false;
+        state.running = state.running.saturating_sub(1);
         self.lock.available.notify_one();
         self.lock.async_available.notify_one();
     }
@@ -220,6 +229,26 @@ fn gate_key(key_id: &str, path: &str, model: Option<&str>) -> String {
     )
 }
 
+fn client_ip_gate_key(client_ip: &str) -> String {
+    format!("client_ip|{}", client_ip.trim())
+}
+
+fn gate_lock_for_key(key: String, max_running: usize) -> Arc<RequestGateLock> {
+    let lock = REQUEST_GATE_LOCKS.get_or_init(|| Mutex::new(RequestGateLockTable::default()));
+    let mut table = crate::lock_utils::lock_recover(lock, "request_gate_locks");
+    let now = now_ts();
+    maybe_cleanup_request_gate_locks(&mut table, now);
+    let entry = table
+        .entries
+        .entry(key)
+        .or_insert_with(|| RequestGateLockEntry {
+            lock: Arc::new(RequestGateLock::new().with_max_running(max_running)),
+            last_seen_at: now,
+        });
+    entry.last_seen_at = now;
+    entry.lock.clone()
+}
+
 /// 函数 `request_gate_lock`
 ///
 /// 作者: gaohongshun
@@ -236,19 +265,11 @@ pub(crate) fn request_gate_lock(
     path: &str,
     model: Option<&str>,
 ) -> Arc<RequestGateLock> {
-    let lock = REQUEST_GATE_LOCKS.get_or_init(|| Mutex::new(RequestGateLockTable::default()));
-    let mut table = crate::lock_utils::lock_recover(lock, "request_gate_locks");
-    let now = now_ts();
-    maybe_cleanup_request_gate_locks(&mut table, now);
-    let entry = table
-        .entries
-        .entry(gate_key(key_id, path, model))
-        .or_insert_with(|| RequestGateLockEntry {
-            lock: Arc::new(RequestGateLock::new()),
-            last_seen_at: now,
-        });
-    entry.last_seen_at = now;
-    entry.lock.clone()
+    gate_lock_for_key(gate_key(key_id, path, model), 1)
+}
+
+pub(crate) fn client_ip_gate_lock(client_ip: &str) -> Arc<RequestGateLock> {
+    gate_lock_for_key(client_ip_gate_key(client_ip), CLIENT_IP_GATE_MAX_RUNNING)
 }
 
 /// 函数 `maybe_cleanup_request_gate_locks`

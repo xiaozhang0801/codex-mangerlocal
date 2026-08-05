@@ -397,6 +397,7 @@ impl RequestLogsRepository {
                 request_log_id: id,
                 key_id: stat.key_id,
                 account_id: stat.account_id,
+                client_ip: stat.client_ip,
                 model: stat.model,
                 actual_source_kind: stat.actual_source_kind,
                 actual_source_id: stat.actual_source_id,

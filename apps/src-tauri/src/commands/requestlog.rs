@@ -120,3 +120,18 @@ pub async fn service_requestlog_today_summary(
 ) -> Result<serde_json::Value, String> {
     rpc_call_in_background("requestlog/today_summary", addr, None).await
 }
+
+#[tauri::command]
+pub async fn service_requestlog_client_ip_usage(
+    addr: Option<String>,
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "startTs": start_ts,
+        "endTs": end_ts,
+        "limit": limit
+    });
+    rpc_call_in_background("requestlog/client_ip_usage", addr, Some(params)).await
+}

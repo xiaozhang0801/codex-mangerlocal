@@ -19,6 +19,10 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 series_bucket_seconds,
             ))
         }
+        "dashboard/activeRequests" => {
+            let limit = super::i64_param(req, "limit");
+            super::value_or_error(dashboard::read_active_requests(actor, limit))
+        }
         "dashboard/memberSummary" => {
             let user_id = super::string_param(req, "userId");
             let day_start_ts = super::i64_param(req, "dayStartTs");

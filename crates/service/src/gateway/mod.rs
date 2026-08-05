@@ -175,6 +175,8 @@ mod official_responses_http;
 #[path = "auth/openai_fallback.rs"]
 mod openai_fallback;
 mod protocol_adapter;
+#[path = "observability/request_activity.rs"]
+mod request_activity;
 #[path = "request/request_entry.rs"]
 mod request_entry;
 #[path = "routing/request_gate.rs"]
@@ -217,6 +219,13 @@ pub(super) use official_responses_http::normalize_official_responses_http_body_w
 use protocol_adapter::build_gemini_error_body;
 use protocol_adapter::{
     adapt_request_for_protocol, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap,
+};
+#[cfg(test)]
+pub(crate) use request_activity::clear_request_activity_for_tests;
+pub(crate) use request_activity::{
+    begin_request_activity, has_multiple_active_client_ips, mark_request_activity_queued,
+    mark_request_activity_running, request_activity_snapshot, update_request_activity_source,
+    RequestActivityStart,
 };
 #[cfg(test)]
 pub(super) use request_helpers::parse_request_metadata;
@@ -493,9 +502,8 @@ use openai_fallback::try_openai_fallback;
 #[cfg(test)]
 pub(crate) use request_entry::handle_gateway_request;
 pub(crate) use request_entry::handle_gateway_request_async;
-use request_gate::request_gate_lock;
-#[cfg(test)]
-use request_gate::RequestGateAcquireError;
+use request_gate::{client_ip_gate_lock, request_gate_lock};
+pub(crate) use request_gate::RequestGateAcquireError;
 pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
@@ -545,6 +553,8 @@ pub(crate) fn reload_runtime_config_from_env() {
     runtime_config::reload_from_env();
     selection::reload_from_env();
     request_gate::clear_runtime_state();
+    #[cfg(test)]
+    request_activity::clear_request_activity_for_tests();
     cooldown::clear_runtime_state();
     route_quality::clear_runtime_state();
     route_hint::reload_from_env();

@@ -68,7 +68,9 @@ pub(crate) async fn migrate(db: &DatabaseConnection) -> Result<(), DbErr> {
     }
 
     ensure_request_log_clear_column(db).await?;
+    ensure_request_log_client_ip_column(db).await?;
     ensure_request_stat_legacy_id_column(db).await?;
+    ensure_request_stat_client_ip_column(db).await?;
     ensure_account_preferred_column(db).await?;
     crate::users::initialize_domain_locks(db).await?;
     let mut index = Index::create();
@@ -290,6 +292,50 @@ async fn ensure_request_log_clear_column(db: &DatabaseConnection) -> Result<(), 
     Ok(())
 }
 
+async fn ensure_request_log_client_ip_column(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let backend = db.get_database_backend();
+    let exists = match backend {
+        DatabaseBackend::Sqlite => db
+            .query_all(Statement::from_string(
+                backend,
+                "PRAGMA table_info(request_logs)".to_string(),
+            ))
+            .await?
+            .iter()
+            .any(|row| {
+                row.try_get::<String>("", "name")
+                    .is_ok_and(|name| name == "client_ip")
+            }),
+        DatabaseBackend::MySql | DatabaseBackend::Postgres => {
+            let schema = if backend == DatabaseBackend::MySql {
+                "DATABASE()"
+            } else {
+                "current_schema()"
+            };
+            let row = db
+                .query_one(Statement::from_string(
+                    backend,
+                    format!(
+                        "SELECT COUNT(*) AS count FROM information_schema.columns \
+                         WHERE table_schema={schema} AND table_name='request_logs' \
+                         AND column_name='client_ip'"
+                    ),
+                ))
+                .await?
+                .ok_or_else(|| DbErr::Custom("column catalog returned no row".into()))?;
+            row.try_get::<i64>("", "count")? > 0
+        }
+    };
+    if !exists {
+        db.execute(Statement::from_string(
+            backend,
+            "ALTER TABLE request_logs ADD COLUMN client_ip TEXT NULL".to_string(),
+        ))
+        .await?;
+    }
+    Ok(())
+}
+
 async fn ensure_account_preferred_column(db: &DatabaseConnection) -> Result<(), DbErr> {
     let backend = db.get_database_backend();
     let exists = match backend {
@@ -351,6 +397,50 @@ async fn ensure_request_stat_legacy_id_column(db: &DatabaseConnection) -> Result
         db.execute(Statement::from_string(
             backend,
             "ALTER TABLE request_token_stats ADD COLUMN id BIGINT NULL".to_string(),
+        ))
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_request_stat_client_ip_column(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let backend = db.get_database_backend();
+    let exists = match backend {
+        DatabaseBackend::Sqlite => db
+            .query_all(Statement::from_string(
+                backend,
+                "PRAGMA table_info(request_token_stats)".to_string(),
+            ))
+            .await?
+            .iter()
+            .any(|row| {
+                row.try_get::<String>("", "name")
+                    .is_ok_and(|name| name == "client_ip")
+            }),
+        DatabaseBackend::MySql | DatabaseBackend::Postgres => {
+            let schema = if backend == DatabaseBackend::MySql {
+                "DATABASE()"
+            } else {
+                "current_schema()"
+            };
+            let row = db
+                .query_one(Statement::from_string(
+                    backend,
+                    format!(
+                        "SELECT COUNT(*) AS count FROM information_schema.columns \
+                         WHERE table_schema={schema} AND table_name='request_token_stats' \
+                         AND column_name='client_ip'"
+                    ),
+                ))
+                .await?
+                .ok_or_else(|| DbErr::Custom("column catalog returned no row".into()))?;
+            row.try_get::<i64>("", "count")? > 0
+        }
+    };
+    if !exists {
+        db.execute(Statement::from_string(
+            backend,
+            "ALTER TABLE request_token_stats ADD COLUMN client_ip TEXT NULL".to_string(),
         ))
         .await?;
     }

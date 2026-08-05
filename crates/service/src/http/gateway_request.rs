@@ -400,6 +400,7 @@ impl From<tiny_http::Request> for GatewayRequest {
     fn from(mut request: tiny_http::Request) -> Self {
         // Test fixtures can retain their existing in-memory request builders.
         // Production code never creates or accepts a tiny_http Request.
+        let remote_addr = request.remote_addr().copied();
         let mut bytes = Vec::new();
         request
             .as_reader()
@@ -413,6 +414,7 @@ impl From<tiny_http::Request> for GatewayRequest {
         }
         let (parts, ()) = builder.body(()).expect("fixture request").into_parts();
         let (mut gateway, receiver) = Self::new(parts, Bytes::from(bytes));
+        gateway.remote_addr = remote_addr;
         gateway.test_request = Some(request);
         // The fixture owns its actual tiny_http socket. Keep the unused native
         // response channel alive so its dummy receiver cannot signal a false

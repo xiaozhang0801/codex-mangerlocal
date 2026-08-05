@@ -376,6 +376,7 @@ mod tests {
                 request_log_id: 1,
                 key_id: Some("migration-key".into()),
                 account_id: None,
+                client_ip: None,
                 model: Some("gpt-5".into()),
                 actual_source_kind: None,
                 actual_source_id: None,

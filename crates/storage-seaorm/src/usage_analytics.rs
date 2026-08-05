@@ -309,6 +309,7 @@ mod tests {
                 request_log_id: stamp,
                 key_id: Some(key.clone()),
                 account_id: Some("account-a".into()),
+                client_ip: None,
                 model: Some("model-a".into()),
                 actual_source_kind: None,
                 actual_source_id: None,

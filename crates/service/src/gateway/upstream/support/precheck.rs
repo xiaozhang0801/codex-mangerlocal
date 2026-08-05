@@ -39,6 +39,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
     account_plan_filter: Option<&str>,
     low_quota_mode: super::super::super::LowQuotaCandidateMode,
     respond_when_empty: bool,
+    client_ip: Option<&str>,
 ) -> CandidatePrecheckResult {
     let candidates: Vec<(Account, Token)> = match super::candidates::prepare_gateway_candidates(
         storage,
@@ -57,6 +58,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
                 storage,
                 super::super::super::request_log::RequestLogTraceContext {
                     trace_id: Some(trace_id),
+                    client_ip,
                     original_path: Some(original_path),
                     adapted_path: Some(path),
                     response_adapter: Some(response_adapter),
@@ -104,6 +106,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
             storage,
             super::super::super::request_log::RequestLogTraceContext {
                 trace_id: Some(trace_id),
+                client_ip,
                 original_path: Some(original_path),
                 adapted_path: Some(path),
                 response_adapter: Some(response_adapter),

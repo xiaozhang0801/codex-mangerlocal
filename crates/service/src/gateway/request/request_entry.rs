@@ -55,7 +55,7 @@ pub(crate) async fn handle_gateway_request_async(mut request: Request) -> Result
         &mut request,
         trace_id.clone(),
         debug,
-        client_ip,
+        client_ip.clone(),
     ) {
         Ok(v) => v,
         Err(err) => {
@@ -89,6 +89,7 @@ pub(crate) async fn handle_gateway_request_async(mut request: Request) -> Result
                     &storage,
                     super::request_log::RequestLogTraceContext {
                         trace_id: Some(trace_id.as_str()),
+                        client_ip: client_ip.as_deref(),
                         original_path: Some(request_path_for_log.as_str()),
                         adapted_path: Some(request_path_for_log.as_str()),
                         response_adapter: None,
@@ -119,7 +120,7 @@ pub(crate) async fn handle_gateway_request_async(mut request: Request) -> Result
                 return Ok(());
             }
             let response_message = super::error_message_for_client(
-                super::prefers_raw_errors_for_tiny_http_request(&request),
+                super::prefers_raw_errors_for_gateway_request(&request),
                 err.message.as_str(),
             );
             let response = super::error_response::terminal_text_response(
@@ -141,6 +142,7 @@ pub(crate) async fn handle_gateway_request_async(mut request: Request) -> Result
         validated.path.as_str(),
         validated.response_adapter,
         validated.request_method.as_str(),
+        validated.client_ip.as_deref(),
         validated.model_for_log.as_deref(),
         validated.reasoning_for_log.as_deref(),
         &validated.storage,
@@ -171,6 +173,7 @@ pub(crate) async fn handle_gateway_request_async(mut request: Request) -> Result
             validated.response_adapter,
             request_method_for_count_tokens.as_str(),
             validated.passthrough_body.as_ref(),
+            validated.client_ip.as_deref(),
             model_for_count_tokens.as_deref(),
             reasoning_for_count_tokens.as_deref(),
             &validated.storage,
@@ -190,18 +193,23 @@ pub(crate) fn handle_gateway_request(request: Request) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::http::gateway_request::GatewayRequest;
     use std::net::SocketAddr;
 
-    use tiny_http::{Header, Request, TestRequest};
+    use tiny_http::{Header, Request as TinyRequest, TestRequest};
 
-    fn request_with_remote_and_forwarded_header(remote_addr: &str, forwarded_ip: &str) -> Request {
-        TestRequest::new()
+    fn request_with_remote_and_forwarded_header(
+        remote_addr: &str,
+        forwarded_ip: &str,
+    ) -> GatewayRequest {
+        let request: TinyRequest = TestRequest::new()
             .with_remote_addr(remote_addr.parse::<SocketAddr>().expect("remote addr"))
             .with_header(
                 Header::from_bytes(crate::client_ip::FORWARDED_CLIENT_IP_HEADER, forwarded_ip)
                     .expect("forwarded client ip header"),
             )
-            .into()
+            .into();
+        request.into()
     }
 
     #[test]

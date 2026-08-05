@@ -326,6 +326,7 @@ mod tests {
             trace_id: Some("trace-domain-storage-clear".into()),
             key_id: None,
             account_id: None,
+            client_ip: None,
             initial_account_id: None,
             attempted_account_ids_json: None,
             initial_aggregate_api_id: None,

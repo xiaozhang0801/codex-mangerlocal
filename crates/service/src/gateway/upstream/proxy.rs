@@ -14,6 +14,9 @@ use super::proxy_pipeline::candidate_executor::{
 };
 use super::proxy_pipeline::execution_context::GatewayUpstreamExecutionContext;
 use super::proxy_pipeline::request_gate::acquire_request_gate_async;
+use super::proxy_pipeline::request_gate::{
+    acquire_client_ip_request_gate, ClientIpRequestGateError,
+};
 use super::proxy_pipeline::request_setup::prepare_request_setup;
 use super::proxy_pipeline::response_finalize::respond_terminal;
 use super::support::precheck::{prepare_candidates_for_proxy, CandidatePrecheckResult};
@@ -277,6 +280,7 @@ fn respond_model_route_error(
     client_reasoning_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
     reasoning_source_for_log: Option<&str>,
+    client_ip: Option<&str>,
     started_at: Instant,
     status_code: u16,
     message: String,
@@ -294,6 +298,7 @@ fn respond_model_route_error(
         storage,
         super::super::request_log::RequestLogTraceContext {
             trace_id: Some(trace_id),
+            client_ip,
             original_path: Some(original_path),
             adapted_path: Some(path),
             gateway_mode: gateway_mode_for_log,
@@ -458,6 +463,7 @@ fn respond_hybrid_route_error(
     client_reasoning_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
     reasoning_source_for_log: Option<&str>,
+    client_ip: Option<&str>,
     started_at: Instant,
     account_error: Option<&str>,
     aggregate_error: String,
@@ -482,6 +488,7 @@ fn respond_hybrid_route_error(
         client_reasoning_for_log,
         reasoning_for_log,
         reasoning_source_for_log,
+        client_ip,
         started_at,
         message,
     )
@@ -518,6 +525,7 @@ fn respond_aggregate_route_error(
     client_reasoning_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
     reasoning_source_for_log: Option<&str>,
+    client_ip: Option<&str>,
     started_at: Instant,
     message: String,
 ) -> Result<(), String> {
@@ -534,6 +542,7 @@ fn respond_aggregate_route_error(
         storage,
         super::super::request_log::RequestLogTraceContext {
             trace_id: Some(trace_id),
+            client_ip,
             original_path: Some(original_path),
             adapted_path: Some(path),
             gateway_mode: gateway_mode_for_log,
@@ -592,6 +601,7 @@ async fn proxy_with_aggregate_candidates(
     client_reasoning_for_log: Option<&str>,
     reasoning_for_log: Option<&str>,
     reasoning_source_for_log: Option<&str>,
+    client_ip: Option<&str>,
     service_tier_for_log: Option<&str>,
     effective_service_tier_for_log: Option<&str>,
     service_tier_source_for_log: Option<&str>,
@@ -639,6 +649,7 @@ async fn proxy_with_aggregate_candidates(
             client_reasoning_for_log,
             reasoning_for_log,
             reasoning_source_for_log,
+            client_ip,
             service_tier_for_log,
             effective_service_tier_for_log,
             service_tier_source_for_log,
@@ -710,7 +721,7 @@ pub(in super::super) async fn proxy_validated_request(
 ) -> Result<(), String> {
     let LocalValidationResult {
         trace_id,
-        client_ip: _client_ip,
+        client_ip,
         incoming_headers,
         storage,
         original_path,
@@ -784,6 +795,15 @@ pub(in super::super) async fn proxy_validated_request(
 
     let execution_plan =
         resolve_gateway_upstream_execution_plan(protocol_type.as_str(), rotation_strategy.as_str());
+    let _activity_guard =
+        super::super::begin_request_activity(super::super::RequestActivityStart {
+            trace_id: trace_id.as_str(),
+            client_ip: client_ip.as_deref(),
+            key_id: key_id.as_str(),
+            path: path.as_str(),
+            method: request_method.as_str(),
+            model: model_for_log.as_deref(),
+        });
     super::super::log_request_execution_plan(
         trace_id.as_str(),
         path.as_str(),
@@ -819,6 +839,7 @@ pub(in super::super) async fn proxy_validated_request(
                 client_reasoning_for_log.as_deref(),
                 reasoning_for_log.as_deref(),
                 reasoning_source_for_log.as_deref(),
+                client_ip.as_deref(),
                 started_at,
                 status_code,
                 message,
@@ -829,6 +850,60 @@ pub(in super::super) async fn proxy_validated_request(
     // 聚合优先混合轮转：聚合路径失败且请求未被消费时，需要把请求交还给账号路径继续，
     // 因此这里使用可变绑定。
     let mut request = request;
+    let _client_ip_gate_guard = if client_ip
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        super::super::mark_request_activity_queued(trace_id.as_str(), "client_ip_gate");
+        match acquire_client_ip_request_gate(
+            trace_id.as_str(),
+            client_ip.as_deref(),
+            request_deadline,
+        ) {
+            Ok(guard) => guard,
+            Err(error) => {
+                let (status_code, message) = match error {
+                    ClientIpRequestGateError::Unavailable => {
+                        (503, "client IP request gate unavailable".to_string())
+                    }
+                    ClientIpRequestGateError::Timeout => {
+                        (504, "client IP request queue wait timeout".to_string())
+                    }
+                };
+                return respond_model_route_error(
+                    request,
+                    &storage,
+                    trace_id.as_str(),
+                    key_id.as_str(),
+                    original_path.as_str(),
+                    path.as_str(),
+                    request_method.as_str(),
+                    response_adapter,
+                    service_tier_for_log.as_deref(),
+                    effective_service_tier_for_log.as_deref(),
+                    service_tier_source_for_log.as_deref(),
+                    gateway_mode_for_log.as_deref(),
+                    client_model_for_log.as_deref(),
+                    model_for_log.as_deref(),
+                    model_source_for_log.as_deref(),
+                    client_reasoning_for_log.as_deref(),
+                    reasoning_for_log.as_deref(),
+                    reasoning_source_for_log.as_deref(),
+                    client_ip.as_deref(),
+                    started_at,
+                    status_code,
+                    message,
+                );
+            }
+        }
+    } else {
+        None
+    };
+    super::super::mark_request_activity_running(
+        trace_id.as_str(),
+        route_kind_label(execution_plan.route_kind),
+    );
+
     if should_try_provider_executor_aggregate_route(execution_plan, configured_model.as_ref()) {
         let (aggregate_path, aggregate_body) = if is_hybrid_passthrough_route(execution_plan) {
             (passthrough_path.as_str(), &passthrough_body)
@@ -869,6 +944,7 @@ pub(in super::super) async fn proxy_validated_request(
                     client_reasoning_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
                     reasoning_source_for_log.as_deref(),
+                    client_ip.as_deref(),
                     service_tier_for_log.as_deref(),
                     effective_service_tier_for_log.as_deref(),
                     service_tier_source_for_log.as_deref(),
@@ -924,6 +1000,7 @@ pub(in super::super) async fn proxy_validated_request(
                         client_reasoning_for_log.as_deref(),
                         reasoning_for_log.as_deref(),
                         reasoning_source_for_log.as_deref(),
+                        client_ip.as_deref(),
                         started_at,
                         err,
                     );
@@ -948,6 +1025,7 @@ pub(in super::super) async fn proxy_validated_request(
         account_plan_filter.as_deref(),
         low_quota_candidate_mode_for_protocol(protocol_type.as_str()),
         respond_when_account_candidates_empty(execution_plan, configured_model.as_ref()),
+        client_ip.as_deref(),
     ) {
         CandidatePrecheckResult::Ready {
             request,
@@ -981,6 +1059,7 @@ pub(in super::super) async fn proxy_validated_request(
                         client_reasoning_for_log.as_deref(),
                         reasoning_for_log.as_deref(),
                         reasoning_source_for_log.as_deref(),
+                        client_ip.as_deref(),
                         service_tier_for_log.as_deref(),
                         effective_service_tier_for_log.as_deref(),
                         service_tier_source_for_log.as_deref(),
@@ -1013,6 +1092,7 @@ pub(in super::super) async fn proxy_validated_request(
                         client_reasoning_for_log.as_deref(),
                         reasoning_for_log.as_deref(),
                         reasoning_source_for_log.as_deref(),
+                        client_ip.as_deref(),
                         started_at,
                         Some("无可用账号(no available account)"),
                         err,
@@ -1083,6 +1163,7 @@ pub(in super::super) async fn proxy_validated_request(
         gateway_mode_for_log.as_deref(),
         Some(setup.route_strategy_for_log),
         Some(setup.route_source_for_log),
+        client_ip.as_deref(),
         super::super::request_log::estimate_input_tokens_from_body(body.as_ref()),
         setup.candidate_count,
         setup.account_max_inflight,
@@ -1091,6 +1172,7 @@ pub(in super::super) async fn proxy_validated_request(
     let disable_challenge_stateless_retry = !(protocol_type == PROTOCOL_ANTHROPIC_NATIVE
         && body.len() <= 2 * 1024)
         && !path.starts_with("/v1/responses");
+    super::super::mark_request_activity_queued(trace_id.as_str(), "request_gate");
     let request_gate_guard = acquire_request_gate_async(
         trace_id.as_str(),
         key_id.as_str(),
@@ -1100,6 +1182,7 @@ pub(in super::super) async fn proxy_validated_request(
     )
     .await;
     request.hold_until_complete(request_gate_guard);
+    super::super::mark_request_activity_running(trace_id.as_str(), "request_gate");
     let exhausted = match execute_candidate_sequence(
         request,
         candidates,
@@ -1190,6 +1273,7 @@ pub(in super::super) async fn proxy_validated_request(
                     client_reasoning_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
                     reasoning_source_for_log.as_deref(),
+                    client_ip.as_deref(),
                     service_tier_for_log.as_deref(),
                     effective_service_tier_for_log.as_deref(),
                     service_tier_source_for_log.as_deref(),
@@ -1222,6 +1306,7 @@ pub(in super::super) async fn proxy_validated_request(
                     client_reasoning_for_log.as_deref(),
                     reasoning_for_log.as_deref(),
                     reasoning_source_for_log.as_deref(),
+                    client_ip.as_deref(),
                     started_at,
                     Some(final_error.as_str()),
                     err,

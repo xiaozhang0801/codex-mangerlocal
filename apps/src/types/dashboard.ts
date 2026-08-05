@@ -67,6 +67,42 @@ export interface DashboardAdminUsageSummary {
   aggregateApis: DashboardSourceUsageSummary[];
 }
 
+export interface DashboardActiveRequestItem {
+  id: string;
+  traceId: string;
+  status: string;
+  clientIp: string | null;
+  keyId: string;
+  path: string;
+  method: string;
+  model: string | null;
+  routeKind: string;
+  sourceKind: string | null;
+  sourceId: string | null;
+  createdAtMs: number;
+  queuedAtMs: number | null;
+  runningAtMs: number | null;
+  waitMs: number;
+  runningMs: number;
+}
+
+export interface DashboardActiveRequestIpGroup {
+  clientIp: string;
+  totalCount: number;
+  queuedCount: number;
+  runningCount: number;
+  maxWaitMs: number;
+  maxRunningMs: number;
+}
+
+export interface DashboardActiveRequests {
+  totalCount: number;
+  queuedCount: number;
+  runningCount: number;
+  items: DashboardActiveRequestItem[];
+  ipGroups: DashboardActiveRequestIpGroup[];
+}
+
 export interface MemberDashboardWallet {
   id: string;
   balanceCreditMicros: number;

@@ -97,6 +97,7 @@ pub(crate) async fn exercise(db: &DatabaseConnection, suffix: &str, stamp: i64) 
         request_log_id: stamp,
         key_id: Some(id.clone()),
         account_id: None,
+        client_ip: None,
         model: Some("gpt-test".into()),
         actual_source_kind: None,
         actual_source_id: None,

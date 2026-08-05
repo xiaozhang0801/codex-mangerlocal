@@ -111,6 +111,7 @@ pub(super) async fn run(backend: StorageBackendKind, url_env: &str) {
         request_log_id: run,
         key_id: Some(id.clone()),
         account_id: None,
+        client_ip: None,
         model: Some("gpt-5".into()),
         actual_source_kind: Some("account".into()),
         actual_source_id: Some("fixture-source".into()),

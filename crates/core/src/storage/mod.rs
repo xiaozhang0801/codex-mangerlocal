@@ -813,6 +813,7 @@ pub struct RequestLog {
     pub trace_id: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub client_ip: Option<String>,
     pub initial_account_id: Option<String>,
     pub attempted_account_ids_json: Option<String>,
     pub initial_aggregate_api_id: Option<String>,
@@ -861,6 +862,7 @@ pub struct RequestTokenStat {
     pub request_log_id: i64,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub client_ip: Option<String>,
     pub model: Option<String>,
     pub actual_source_kind: Option<String>,
     pub actual_source_id: Option<String>,
@@ -896,6 +898,13 @@ pub struct ApiKeyTokenUsageSummary {
     pub key_id: String,
     pub total_tokens: i64,
     pub estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ClientIpUsageSummary {
+    pub client_ip: String,
+    pub usage: TokenUsageRollup,
+    pub last_seen_at: i64,
 }
 
 #[derive(Debug, Clone, Default)]
