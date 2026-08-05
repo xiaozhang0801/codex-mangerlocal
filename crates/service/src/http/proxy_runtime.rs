@@ -1,5 +1,5 @@
 use axum::body::{to_bytes, Body};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
 use axum::http::{header, HeaderMap, Request as HttpRequest, Response, StatusCode};
 use axum::routing::{any, get, post};
 use axum::Router;
@@ -7,6 +7,7 @@ use bytes::Bytes;
 use reqwest::Client;
 use std::io;
 use std::io::Read;
+use std::net::SocketAddr;
 
 use crate::http::proxy_bridge::run_proxy_server;
 use crate::http::proxy_request::{build_target_url, filter_request_headers};
@@ -78,6 +79,12 @@ fn build_backend_base_url(backend_addr: &str) -> String {
 /// 返回函数执行结果
 fn build_local_backend_client() -> Result<Client, reqwest::Error> {
     Client::builder().no_proxy().build()
+}
+
+fn build_outbound_proxy_headers(headers: &HeaderMap, peer_addr: SocketAddr) -> HeaderMap {
+    let mut outbound_headers = filter_request_headers(headers);
+    crate::client_ip::set_forwarded_client_ip_header(&mut outbound_headers, peer_addr);
+    outbound_headers
 }
 
 fn env_usize_or(name: &str, default: usize) -> usize {
@@ -226,6 +233,10 @@ async fn proxy_handler(
     request: HttpRequest<Body>,
 ) -> Response<Body> {
     let (parts, body) = request.into_parts();
+    let peer_addr = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| *addr);
     let prefer_raw_errors = crate::gateway::prefers_raw_errors_for_http_headers(&parts.headers);
     let target_url = build_target_url(&state.backend_base_url, &parts.uri);
     let max_body_bytes = crate::gateway::front_proxy_max_body_bytes();
@@ -275,7 +286,10 @@ async fn proxy_handler(
         }
     }
 
-    let mut outbound_headers = filter_request_headers(&parts.headers);
+    let mut outbound_headers = match peer_addr {
+        Some(peer_addr) => build_outbound_proxy_headers(&parts.headers, peer_addr),
+        None => filter_request_headers(&parts.headers),
+    };
     let read_limit = if request_body_limit == 0 {
         usize::MAX
     } else {

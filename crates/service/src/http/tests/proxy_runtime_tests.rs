@@ -1,7 +1,7 @@
 use super::{
-    build_backend_base_url, build_local_backend_client, front_proxy_max_blocking_threads,
-    front_proxy_worker_threads, normalize_incoming_request_body, proxy_handler, zstd_body_limit,
-    IncomingBodyDecodeError, ProxyState,
+    build_backend_base_url, build_local_backend_client, build_outbound_proxy_headers,
+    front_proxy_max_blocking_threads, front_proxy_worker_threads, normalize_incoming_request_body,
+    proxy_handler, zstd_body_limit, IncomingBodyDecodeError, ProxyState,
 };
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
@@ -110,6 +110,35 @@ fn backend_base_url_uses_http_scheme() {
     assert_eq!(
         build_backend_base_url("127.0.0.1:18080"),
         "http://127.0.0.1:18080"
+    );
+}
+
+#[test]
+fn front_proxy_replaces_external_forwarded_client_ip_header() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer test"),
+    );
+    headers.insert(
+        crate::client_ip::FORWARDED_CLIENT_IP_HEADER,
+        HeaderValue::from_static("203.0.113.9"),
+    );
+    let peer_addr = "192.168.1.20:55331".parse().expect("peer addr");
+
+    let outbound_headers = build_outbound_proxy_headers(&headers, peer_addr);
+
+    assert_eq!(
+        outbound_headers
+            .get(crate::client_ip::FORWARDED_CLIENT_IP_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("192.168.1.20"),
+    );
+    assert_eq!(
+        outbound_headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer test"),
     );
 }
 

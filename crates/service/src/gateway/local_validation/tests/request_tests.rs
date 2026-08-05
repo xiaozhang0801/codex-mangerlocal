@@ -785,6 +785,13 @@ fn aggregate_passthrough_applies_model_reasoning_and_service_tier_overrides_with
 }
 
 #[test]
+fn local_validation_result_exposes_client_ip_for_downstream_logging() {
+    let _read_client_ip = |result: &LocalValidationResult| {
+        let _ = result.client_ip.as_deref();
+    };
+}
+
+#[test]
 fn aggregate_passthrough_keeps_ultra_as_client_log_value_and_max_as_effective_value() {
     let api_key = sample_api_key(
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,

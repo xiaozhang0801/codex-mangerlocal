@@ -1802,6 +1802,7 @@ fn apply_passthrough_request_overrides(
 pub(super) fn build_local_validation_result(
     request: &Request,
     trace_id: String,
+    client_ip: Option<String>,
     incoming_headers: super::super::IncomingHeaderSnapshot,
     storage: crate::storage_helpers::StorageHandle,
     mut body: Vec<u8>,
@@ -1975,6 +1976,7 @@ pub(super) fn build_local_validation_result(
         );
         return Ok(LocalValidationResult {
             trace_id,
+            client_ip,
             incoming_headers,
             storage,
             original_path: normalized_path.clone(),
@@ -2333,6 +2335,7 @@ pub(super) fn build_local_validation_result(
 
     Ok(LocalValidationResult {
         trace_id,
+        client_ip,
         incoming_headers,
         storage,
         original_path: normalized_path,
