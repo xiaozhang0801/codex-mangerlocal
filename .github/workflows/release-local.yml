@@ -1,0 +1,322 @@
+name: release-local
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Local release tag"
+        required: true
+        type: string
+      ref:
+        description: "Git ref/branch/sha to build"
+        required: false
+        default: "main"
+        type: string
+      prerelease:
+        description: "Release channel override (auto/true/false)"
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - true
+          - false
+
+permissions:
+  contents: write
+
+env:
+  TAURI_CLI_VERSION: 2.10.1
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target-local
+
+concurrency:
+  group: ${{ format('{0}-tag-{1}', github.workflow, startsWith(github.event.inputs.tag, 'v') && github.event.inputs.tag || format('v{0}', github.event.inputs.tag)) }}
+  cancel-in-progress: false
+
+jobs:
+  build_frontend_dist:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || 'main' }}
+
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+        with:
+          pnpm-lock-path: |
+            apps/pnpm-lock.yaml
+            .github/workflows/release-local.yml
+
+      - name: Install frontend dependencies
+        working-directory: apps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend dist
+        working-directory: apps
+        run: pnpm run build:desktop
+
+      - name: Pack frontend dist artifact
+        shell: bash
+        run: bash scripts/release/pack-frontend-dist.sh apps frontend-dist.tar.gz
+
+      - name: Upload frontend dist artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanagerlocal-frontend-dist
+          path: frontend-dist.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  build_windows_x64:
+    needs: build_frontend_dist
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || 'main' }}
+
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+        with:
+          enable-pnpm-cache: "false"
+          enable-rust-cache: "false"
+
+      - name: Prepare frontend dist
+        uses: ./.github/actions/prepare-frontend-dist
+        with:
+          artifact-name: codexmanagerlocal-frontend-dist
+
+      - name: Verify local Tauri config
+        shell: pwsh
+        run: |
+          $config = Get-Content "apps/src-tauri/tauri.local.conf.json" -Raw | ConvertFrom-Json
+          if ($config.productName -ne "CodexManagerLocal") {
+            throw "unexpected productName: $($config.productName)"
+          }
+          if ($config.identifier -ne "com.codexmanager.local") {
+            throw "unexpected identifier: $($config.identifier)"
+          }
+
+      - name: Build CodexManagerLocal Windows x64
+        working-directory: apps
+        shell: pwsh
+        run: pnpm dlx "@tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}" build --bundles nsis --config src-tauri/tauri.local.conf.json --ci
+
+      - name: Stage Windows setup
+        shell: pwsh
+        run: |
+          $releaseDir = Join-Path "${{ env.CARGO_TARGET_DIR }}" "release"
+          $bundleDir = Join-Path $releaseDir "bundle"
+          $assetsDir = Join-Path $releaseDir "release-assets"
+          $version = (Get-Content "apps/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force $assetsDir | Out-Null
+
+          $installer = Get-ChildItem -Path $bundleDir -Recurse -File |
+            Where-Object { $_.Name -like "CodexManagerLocal*-setup.exe" -and $_.Name -notlike "*portable*" } |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "CodexManagerLocal setup installer not found under: $bundleDir"
+          }
+
+          $target = Join-Path $assetsDir "CodexManagerLocal_${version}_x64-setup.exe"
+          Copy-Item -Force $installer.FullName $target
+          Get-ChildItem -Path $assetsDir -File | ForEach-Object {
+            Write-Host "local desktop asset: $($_.FullName)"
+          }
+
+      - name: Upload Windows setup
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanagerlocal-windows-x64
+          path: ${{ env.CARGO_TARGET_DIR }}/release/release-assets/*-setup.exe
+          if-no-files-found: error
+          compression-level: 0
+
+  build_macos_x64:
+    needs: build_frontend_dist
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || 'main' }}
+
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+        with:
+          rust-target: x86_64-apple-darwin
+          enable-pnpm-cache: "false"
+          enable-rust-cache: "false"
+
+      - name: Prepare frontend dist
+        uses: ./.github/actions/prepare-frontend-dist
+        with:
+          artifact-name: codexmanagerlocal-frontend-dist
+
+      - name: Verify local Tauri config
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path("apps/src-tauri/tauri.local.conf.json").read_text(encoding="utf-8"))
+          assert config["productName"] == "CodexManagerLocal", config["productName"]
+          assert config["identifier"] == "com.codexmanager.local", config["identifier"]
+          PY
+
+      - name: Build CodexManagerLocal macOS x64 app
+        working-directory: apps
+        shell: bash
+        run: pnpm dlx "@tauri-apps/cli@${{ env.TAURI_CLI_VERSION }}" build --bundles app --target x86_64-apple-darwin --config src-tauri/tauri.local.conf.json --ci
+
+      - name: Rebuild CodexManagerLocal macOS x64 dmg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_dir="${{ env.CARGO_TARGET_DIR }}/x86_64-apple-darwin/release"
+          bundle_root="${release_dir}/bundle"
+          test -d "$bundle_root" || { echo "macOS bundle root not found: $bundle_root"; exit 1; }
+
+          bundle_dir="$(find "$bundle_root" -type d -path '*/CodexManagerLocal.app' | head -n 1)"
+          test -n "$bundle_dir" || { echo "CodexManagerLocal app bundle not found under: $bundle_root"; exit 1; }
+
+          dmg_dir="${bundle_root}/dmg"
+          mkdir -p "$dmg_dir"
+          find "$dmg_dir" -type f -name '*.dmg' -delete
+
+          version="$(python3 -c 'import json, pathlib; print(json.loads(pathlib.Path("apps/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"])')"
+
+          stage_dir="$(mktemp -d)"
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$stage_dir" "$temp_dir"' EXIT
+
+          ditto "$bundle_dir" "$stage_dir/CodexManagerLocal.app"
+          ln -s /Applications "$stage_dir/Applications"
+          install -m 0755 "assets/macos-local/Open CodexManagerLocal.command" "$stage_dir/Open CodexManagerLocal.command"
+          install -m 0644 "assets/macos-local/README-macOS-first-launch-local.txt" "$stage_dir/README-macOS-first-launch-local.txt"
+
+          codesign --force --deep --sign - "$stage_dir/CodexManagerLocal.app"
+          codesign --verify --deep --strict "$stage_dir/CodexManagerLocal.app"
+
+          dmg_path="${dmg_dir}/CodexManagerLocal_${version}_x64.dmg"
+          temp_dmg_path="${temp_dir}/CodexManagerLocal_${version}_x64.dmg"
+          created=false
+          for attempt in 1 2 3; do
+            rm -f "$temp_dmg_path"
+            hdiutil detach "/Volumes/CodexManagerLocal" -force >/dev/null 2>&1 || true
+            sync || true
+            sleep "$attempt"
+            if hdiutil create -volname "CodexManagerLocal" -srcfolder "$stage_dir" -ov -format UDZO "$temp_dmg_path"; then
+              created=true
+              break
+            fi
+            echo "hdiutil create failed on attempt ${attempt}, retrying..."
+          done
+
+          $created || { echo "macOS dmg create failed after retries"; exit 1; }
+          mv -f "$temp_dmg_path" "$dmg_path"
+          test -f "$dmg_path" || { echo "macOS dmg not created: $dmg_path"; exit 1; }
+          echo "local desktop asset: $dmg_path"
+
+      - name: Upload macOS dmg
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanagerlocal-macos-x64
+          path: ${{ env.CARGO_TARGET_DIR }}/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    needs: [build_windows_x64, build_macos_x64]
+    if: ${{ needs.build_windows_x64.result == 'success' && needs.build_macos_x64.result == 'success' }}
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || 'main' }}
+
+      - name: Download local release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: codexmanagerlocal-*-x64
+          merge-multiple: true
+          path: release-assets
+
+      - name: List local release assets
+        run: find release-assets -type f | sort
+
+      - name: Publish CodexManagerLocal GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          tag="${{ github.event.inputs.tag }}"
+          ref="${{ github.event.inputs.ref || 'main' }}"
+          prerelease_input="${{ github.event.inputs.prerelease || 'auto' }}"
+          assets_dir="release-assets"
+
+          if [[ "$tag" != v* ]]; then
+            tag="v$tag"
+          fi
+
+          target_sha="$(gh api "repos/$GH_REPO/commits/$ref" --jq .sha)"
+          if [[ -z "$target_sha" ]]; then
+            echo "failed to resolve ref to commit: $ref"
+            exit 1
+          fi
+
+          case "$prerelease_input" in
+            true|false)
+              prerelease="$prerelease_input"
+              ;;
+            auto)
+              if [[ "$tag" == *-* ]]; then
+                prerelease="true"
+              else
+                prerelease="false"
+              fi
+              ;;
+            *)
+              echo "invalid prerelease input: $prerelease_input"
+              exit 1
+              ;;
+          esac
+
+          mapfile -t files < <(find "$assets_dir" -type f \( -name '*.exe' -o -name '*.dmg' \) | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No CodexManagerLocal release assets found."
+            exit 1
+          fi
+
+          title="CodexManagerLocal $tag"
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            release_id="$(gh api "repos/$GH_REPO/releases/tags/$tag" --jq .id)"
+            payload="$(jq -n \
+              --arg name "$title" \
+              --arg target_commitish "$target_sha" \
+              --argjson prerelease "$prerelease" \
+              '{name: $name, target_commitish: $target_commitish, prerelease: $prerelease}')"
+            printf '%s' "$payload" | gh api "repos/$GH_REPO/releases/$release_id" --method PATCH --input -
+            gh release upload "$tag" "${files[@]}" --repo "$GH_REPO" --clobber
+          else
+            create_args=(--repo "$GH_REPO" --title "$title" --target "$target_sha" --generate-notes)
+            if [ "$prerelease" = "true" ]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "$tag" "${files[@]}" "${create_args[@]}"
+          fi
