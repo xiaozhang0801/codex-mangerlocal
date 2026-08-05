@@ -123,3 +123,17 @@ test("ensureModelForwardRuleRows 在空规则时保留一行可编辑空行", ()
     { pattern: "", target: "" },
   ]);
 });
+
+test("buildReleaseUrl 默认打开 CodexManagerLocal 本地发布页", () => {
+  assert.equal(
+    helpers.buildReleaseUrl(null),
+    "https://github.com/xiaozhang0801/codex-mangerlocal/releases",
+  );
+  assert.equal(
+    helpers.buildReleaseUrl({
+      repo: "xiaozhang0801/codex-mangerlocal",
+      releaseTag: "v0.5.3",
+    }),
+    "https://github.com/xiaozhang0801/codex-mangerlocal/releases/tag/v0.5.3",
+  );
+});

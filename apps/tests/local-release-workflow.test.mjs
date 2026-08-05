@@ -8,6 +8,24 @@ const repoRoot = path.resolve(appsRoot, "..");
 const defaultConfigPath = path.join(appsRoot, "src-tauri", "tauri.conf.json");
 const desktopCargoPath = path.join(appsRoot, "src-tauri", "Cargo.toml");
 const localConfigPath = path.join(appsRoot, "src-tauri", "tauri.local.conf.json");
+const updaterRuntimePath = path.join(
+  appsRoot,
+  "src-tauri",
+  "src",
+  "commands",
+  "updater",
+  "runtime.rs",
+);
+const envOverrideCatalogPath = path.join(
+  repoRoot,
+  "crates",
+  "service",
+  "src",
+  "app_settings",
+  "env_overrides",
+  "catalog",
+  "items.rs",
+);
 const workflowPath = path.join(repoRoot, ".github", "workflows", "release-local.yml");
 const macosHelperPath = path.join(
   repoRoot,
@@ -60,5 +78,24 @@ test("CodexManagerLocal has isolated Tauri identity and local release workflow",
   assert.match(
     readFileSync(macosReadmePath, "utf8"),
     /CodexManagerLocal macOS first launch/,
+  );
+});
+
+test("CodexManagerLocal updater defaults to the local GitHub releases", () => {
+  const localRepo = "xiaozhang0801/codex-mangerlocal";
+
+  assert.equal(existsSync(updaterRuntimePath), true);
+  const updaterRuntimeSource = readFileSync(updaterRuntimePath, "utf8");
+  assert.match(
+    updaterRuntimeSource,
+    new RegExp(`DEFAULT_UPDATE_REPO: &str = "${localRepo}"`),
+  );
+  assert.doesNotMatch(updaterRuntimeSource, /DEFAULT_UPDATE_REPO: &str = "qxcnm\/Codex-Manager"/);
+
+  assert.equal(existsSync(envOverrideCatalogPath), true);
+  const envOverrideCatalogSource = readFileSync(envOverrideCatalogPath, "utf8");
+  assert.match(
+    envOverrideCatalogSource,
+    new RegExp(`"CODEXMANAGER_UPDATE_REPO",[\\s\\S]*"${localRepo}"`),
   );
 });

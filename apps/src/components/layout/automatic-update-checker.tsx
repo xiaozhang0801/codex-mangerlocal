@@ -74,7 +74,7 @@ function checkForUpdate(): Promise<UpdateCheckResult> {
 
 function buildReleaseUrl(summary: UpdateCheckResult): string {
   if (!summary.repo) {
-    return "https://github.com/qxcnm/Codex-Manager/releases";
+    return "https://github.com/xiaozhang0801/codex-mangerlocal/releases";
   }
   const tag =
     summary.releaseTag ||

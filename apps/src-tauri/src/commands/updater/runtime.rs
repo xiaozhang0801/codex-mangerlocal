@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub(super) const DEFAULT_UPDATE_REPO: &str = "qxcnm/Codex-Manager";
+pub(super) const DEFAULT_UPDATE_REPO: &str = "xiaozhang0801/codex-mangerlocal";
 pub(super) const PORTABLE_MARKER_FILE: &str = ".codexmanager-portable";
 pub(super) const USER_AGENT: &str = "CodexManager-Updater";
 static UPDATE_HTTP_CLIENT: OnceLock<Mutex<Option<Client>>> = OnceLock::new();

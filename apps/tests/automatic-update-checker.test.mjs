@@ -141,3 +141,14 @@ test("update dialogs use a compact hover treatment for the later button", () => 
     /update-dialog-later-button:hover[\s\S]*box-shadow: none/,
   );
 });
+
+test("automatic updater fallback release URL points to CodexManagerLocal releases", () => {
+  assert.match(
+    checkerSource,
+    /https:\/\/github\.com\/xiaozhang0801\/codex-mangerlocal\/releases/,
+  );
+  assert.doesNotMatch(
+    checkerSource,
+    /https:\/\/github\.com\/qxcnm\/Codex-Manager\/releases/,
+  );
+});
