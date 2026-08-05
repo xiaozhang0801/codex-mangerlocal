@@ -66,6 +66,8 @@ test("CodexManagerLocal has isolated Tauri identity and local release workflow",
   assert.match(workflowSource, /--config\s+src-tauri\/tauri\.local\.conf\.json/);
   assert.match(workflowSource, /CodexManagerLocal_\$\{version\}_x64-setup\.exe/);
   assert.match(workflowSource, /CodexManagerLocal_\$\{version\}_x64\.dmg/);
+  assert.doesNotMatch(workflowSource, /enable-rust-cache/);
+  assert.match(workflowSource, /enable-cargo-cache:\s*"false"/);
   assert.doesNotMatch(workflowSource, /CodexManager\.app/);
   assert.doesNotMatch(workflowSource, /CodexManager_\$\{?version\}?/);
 
