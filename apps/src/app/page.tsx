@@ -65,6 +65,7 @@ import {
 } from "@/components/ui/table";
 import { useDashboardStats } from "@/hooks/useDashboardStats";
 import { useDashboardAdminUsageSummary } from "@/hooks/useDashboardAdminUsageSummary";
+import { useDashboardActiveRequests } from "@/hooks/useDashboardActiveRequests";
 import { resolveSessionRole, useAppSession } from "@/hooks/useAppSession";
 import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { useMemberDashboardSummary } from "@/hooks/useMemberDashboardSummary";
@@ -88,6 +89,9 @@ import {
   YAxis,
 } from "recharts";
 import type {
+  DashboardActiveRequestIpGroup,
+  DashboardActiveRequestItem,
+  DashboardActiveRequests,
   DashboardAdminUsageSummary,
   DashboardDailyUsagePoint,
   DashboardTokenUsage,
@@ -109,6 +113,7 @@ interface MetricCardProps {
 }
 
 type AdminUsageRangePreset = "7d" | "14d" | "30d" | "custom";
+type ActiveRequestFilter = "all" | "running" | "queued";
 
 interface AdminUsageRangeValue {
   startTs: number | null;
@@ -249,6 +254,36 @@ function alertTone(alert: MemberDashboardAlert): string {
     return "border-yellow-500/40 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300";
   }
   return "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300";
+}
+
+function activeRequestStatusLabel(status: string): string {
+  return status === "running" ? "运行中" : "排队中";
+}
+
+function activeRequestBadgeVariant(
+  status: string,
+): "default" | "secondary" | "destructive" | "outline" {
+  return status === "running" ? "default" : "secondary";
+}
+
+function formatActiveRequestDuration(ms: number | null | undefined): string {
+  const seconds = Math.max(0, Math.floor((ms ?? 0) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${restSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function activeRequestSourceLabel(item: DashboardActiveRequestItem): string {
+  if (item.sourceKind && item.sourceId) {
+    return `${item.sourceKind}:${item.sourceId}`;
+  }
+  if (item.routeKind) {
+    return item.routeKind;
+  }
+  return "--";
 }
 
 function MetricCard({
@@ -561,6 +596,188 @@ function DailyTokenLineChart({
         </AreaChart>
       </ChartContainer>
     </div>
+  );
+}
+
+function ActiveRequestIpGroupCard({
+  group,
+}: {
+  group: DashboardActiveRequestIpGroup;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="mission-panel rounded-lg border border-border/60 bg-background/35 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0 truncate font-mono text-sm font-semibold">
+          {group.clientIp}
+        </div>
+        <Badge variant="outline" className="shrink-0">
+          {group.totalCount}
+        </Badge>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+        <div>
+          <div>{t("运行中")}</div>
+          <div className="mt-0.5 font-mono text-sm font-semibold text-foreground">
+            {group.runningCount}
+          </div>
+        </div>
+        <div>
+          <div>{t("排队中")}</div>
+          <div className="mt-0.5 font-mono text-sm font-semibold text-foreground">
+            {group.queuedCount}
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+        <span>{t("等待")} {formatActiveRequestDuration(group.maxWaitMs)}</span>
+        <span>{t("运行")} {formatActiveRequestDuration(group.maxRunningMs)}</span>
+      </div>
+    </div>
+  );
+}
+
+function AdminActiveRequestsCard({
+  data,
+  isLoading,
+  isRefreshing,
+  isError,
+}: {
+  data: DashboardActiveRequests | undefined;
+  isLoading: boolean;
+  isRefreshing: boolean;
+  isError: boolean;
+}) {
+  const { t } = useI18n();
+  const [filter, setFilter] = useState<ActiveRequestFilter>("all");
+  const items = data?.items ?? [];
+  const ipGroups = data?.ipGroups ?? [];
+  const visibleItems = useMemo(
+    () =>
+      filter === "all"
+        ? items
+        : items.filter((item) => item.status === filter),
+    [filter, items],
+  );
+
+  return (
+    <Card className="glass-card mission-panel shadow-sm">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
+        <div>
+          <CardTitle className="flex items-center gap-2 text-base font-semibold">
+            <Activity className="h-4 w-4 text-primary" />
+            {t("实时 IP 请求")}
+            {isRefreshing ? (
+              <Badge variant="outline" className="ml-1">
+                {t("刷新中")}
+              </Badge>
+            ) : null}
+          </CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t("当前运行中")} {data?.runningCount ?? 0} · {t("排队中")}{" "}
+            {data?.queuedCount ?? 0} · {t("总数")} {data?.totalCount ?? 0}
+          </p>
+        </div>
+        <Select
+          value={filter}
+          onValueChange={(value) => setFilter(value as ActiveRequestFilter)}
+        >
+          <SelectTrigger size="sm" className="w-[120px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="all">{t("全部")}</SelectItem>
+              <SelectItem value="running">{t("运行中")}</SelectItem>
+              <SelectItem value="queued">{t("排队中")}</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isError ? (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>{t("实时请求读取失败")}</AlertTitle>
+            <AlertDescription>
+              {t("请确认本地服务在线，并且当前账号拥有管理员权限。")}
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {isLoading ? (
+          <div className="grid gap-2 md:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <Skeleton key={index} className="h-24 w-full rounded-lg" />
+            ))}
+          </div>
+        ) : ipGroups.length > 0 ? (
+          <div className="grid gap-2 md:grid-cols-3">
+            {ipGroups.slice(0, 6).map((group) => (
+              <ActiveRequestIpGroupCard key={group.clientIp} group={group} />
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-center text-sm text-muted-foreground">
+            {t("当前没有运行中或排队中的请求")}
+          </div>
+        )}
+
+        <div className="overflow-hidden rounded-lg border border-border/70">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("状态")}</TableHead>
+                <TableHead>{t("客户端 IP")}</TableHead>
+                <TableHead>{t("模型 / 路径")}</TableHead>
+                <TableHead>{t("来源")}</TableHead>
+                <TableHead className="text-right">{t("等待 / 运行")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visibleItems.length > 0 ? (
+                visibleItems.map((item) => (
+                  <TableRow key={item.id || item.traceId}>
+                    <TableCell>
+                      <Badge variant={activeRequestBadgeVariant(item.status)}>
+                        {t(activeRequestStatusLabel(item.status))}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono">
+                      {item.clientIp ?? t("未知 IP")}
+                    </TableCell>
+                    <TableCell>
+                      <div className="max-w-[240px] truncate font-medium">
+                        {item.model || item.path || "--"}
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        {item.method} {item.path}
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-[220px] truncate text-xs text-muted-foreground">
+                      {activeRequestSourceLabel(item)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs tabular-nums">
+                      {formatActiveRequestDuration(item.waitMs)} /{" "}
+                      {formatActiveRequestDuration(item.runningMs)}
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell
+                    colSpan={5}
+                    className="h-20 text-center text-sm text-muted-foreground"
+                  >
+                    {isLoading ? t("正在读取实时请求") : t("没有匹配的实时请求")}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -882,6 +1099,12 @@ function AdminDashboard() {
     },
     true,
   );
+  const {
+    data: activeRequests,
+    isLoading: isActiveRequestsLoading,
+    isFetching: isActiveRequestsFetching,
+    isError: isActiveRequestsError,
+  } = useDashboardActiveRequests({ limit: 50 }, true);
   usePageTransitionReady("/", !isServiceReady || !isLoading);
 
   const isCustomAdminUsageRangeInvalid =
@@ -919,6 +1142,13 @@ function AdminDashboard() {
         secondaryKnownCount={stats.poolRemain.secondaryKnownCount}
         secondaryBucketCount={stats.poolRemain.secondaryBucketCount}
         isLoading={isLoading}
+      />
+
+      <AdminActiveRequestsCard
+        data={activeRequests}
+        isLoading={isActiveRequestsLoading}
+        isRefreshing={isActiveRequestsFetching && !isActiveRequestsLoading}
+        isError={isActiveRequestsError}
       />
 
       <DirectModeUnavailable active={isDirectAccountMode}>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Database, Shield, Zap } from "lucide-react";
+import { Database, Network, Shield, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
@@ -33,6 +33,22 @@ import type {
 
 const logTooltipContentClassName = "logs-tooltip-content";
 const logTooltipLabelClassName = "text-[10px] font-medium text-muted-foreground";
+
+export function ClientIpCell({ log }: { log: RequestLog }) {
+  const clientIp = String(log.clientIp || "").trim();
+  if (!clientIp) {
+    return <span className="text-muted-foreground">-</span>;
+  }
+
+  return (
+    <div className="flex max-w-[140px] items-center gap-1.5">
+      <Network className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate font-mono text-[11px]" title={clientIp}>
+        {clientIp}
+      </span>
+    </div>
+  );
+}
 
 export function AccountKeyInfoCell({
   log,

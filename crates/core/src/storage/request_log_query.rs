@@ -62,6 +62,7 @@ fn parse_prefixed_request_log_query(raw: &str) -> Option<RequestLogQuery> {
 
     match normalized_prefix.as_str() {
         "account" | "account_id" => Some(parse_account_query(is_exact, needle)),
+        "ip" | "client_ip" => Some(parse_field_query("client_ip", is_exact, needle)),
         "path" | "request_path" => Some(parse_field_query("request_path", is_exact, needle)),
         "original" | "original_path" => Some(parse_field_query("original_path", is_exact, needle)),
         "adapted" | "adapted_path" => Some(parse_field_query("adapted_path", is_exact, needle)),

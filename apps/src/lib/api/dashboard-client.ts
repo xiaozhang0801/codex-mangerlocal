@@ -1,6 +1,9 @@
 import { invoke, withAddr } from "./transport";
 import { normalizeModelCatalog, normalizeRequestLogs } from "./normalize";
 import type {
+  DashboardActiveRequestIpGroup,
+  DashboardActiveRequestItem,
+  DashboardActiveRequests,
   DashboardAdminUsageSummary,
   DashboardDailyUsagePoint,
   DashboardModelUsageSeries,
@@ -162,6 +165,60 @@ function readAdminUsageSummary(value: unknown): DashboardAdminUsageSummary {
     aggregateApis: asArray(source.aggregateApis ?? source.aggregate_apis)
       .map(readSourceUsageSummary)
       .filter((item): item is DashboardSourceUsageSummary => Boolean(item)),
+  };
+}
+
+function readActiveRequestItem(value: unknown): DashboardActiveRequestItem | null {
+  const source = asRecord(value);
+  const traceId = asString(source.traceId ?? source.trace_id);
+  const id = asString(source.id, traceId);
+  if (!id && !traceId) return null;
+  return {
+    id: id || traceId,
+    traceId,
+    status: asString(source.status) || "queued",
+    clientIp: nullableString(source.clientIp ?? source.client_ip),
+    keyId: asString(source.keyId ?? source.key_id),
+    path: asString(source.path),
+    method: asString(source.method) || "POST",
+    model: nullableString(source.model),
+    routeKind: asString(source.routeKind ?? source.route_kind),
+    sourceKind: nullableString(source.sourceKind ?? source.source_kind),
+    sourceId: nullableString(source.sourceId ?? source.source_id),
+    createdAtMs: asNumber(source.createdAtMs ?? source.created_at_ms),
+    queuedAtMs: nullableNumber(source.queuedAtMs ?? source.queued_at_ms),
+    runningAtMs: nullableNumber(source.runningAtMs ?? source.running_at_ms),
+    waitMs: asNumber(source.waitMs ?? source.wait_ms),
+    runningMs: asNumber(source.runningMs ?? source.running_ms),
+  };
+}
+
+function readActiveRequestIpGroup(value: unknown): DashboardActiveRequestIpGroup | null {
+  const source = asRecord(value);
+  const clientIp = asString(source.clientIp ?? source.client_ip);
+  if (!clientIp) return null;
+  return {
+    clientIp,
+    totalCount: asNumber(source.totalCount ?? source.total_count),
+    queuedCount: asNumber(source.queuedCount ?? source.queued_count),
+    runningCount: asNumber(source.runningCount ?? source.running_count),
+    maxWaitMs: asNumber(source.maxWaitMs ?? source.max_wait_ms),
+    maxRunningMs: asNumber(source.maxRunningMs ?? source.max_running_ms),
+  };
+}
+
+function readActiveRequests(value: unknown): DashboardActiveRequests {
+  const source = asRecord(value);
+  return {
+    totalCount: asNumber(source.totalCount ?? source.total_count),
+    queuedCount: asNumber(source.queuedCount ?? source.queued_count),
+    runningCount: asNumber(source.runningCount ?? source.running_count),
+    items: asArray(source.items)
+      .map(readActiveRequestItem)
+      .filter((item): item is DashboardActiveRequestItem => Boolean(item)),
+    ipGroups: asArray(source.ipGroups ?? source.ip_groups)
+      .map(readActiveRequestIpGroup)
+      .filter((item): item is DashboardActiveRequestIpGroup => Boolean(item)),
   };
 }
 
@@ -340,5 +397,16 @@ export const dashboardClient = {
       }),
     );
     return readMemberDashboardSummary(result);
+  },
+  async getActiveRequests(params?: {
+    limit?: number | null;
+  }): Promise<DashboardActiveRequests> {
+    const result = await invoke<unknown>(
+      "service_dashboard_active_requests",
+      withAddr({
+        limit: params?.limit ?? null,
+      }),
+    );
+    return readActiveRequests(result);
   },
 };

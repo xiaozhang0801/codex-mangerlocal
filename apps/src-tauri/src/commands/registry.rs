@@ -36,6 +36,7 @@ macro_rules! invoke_handler {
             crate::commands::startup::service_startup_snapshot,
             crate::commands::dashboard::service_dashboard_admin_usage_summary,
             crate::commands::dashboard::service_dashboard_member_summary,
+            crate::commands::dashboard::service_dashboard_active_requests,
             crate::commands::quota::service_quota_overview,
             crate::commands::quota::service_quota_model_usage,
             crate::commands::quota::service_quota_api_key_usage,
@@ -56,6 +57,7 @@ macro_rules! invoke_handler {
             crate::commands::requestlog::service_requestlog_summary,
             crate::commands::requestlog::service_requestlog_clear,
             crate::commands::requestlog::service_requestlog_today_summary,
+            crate::commands::requestlog::service_requestlog_client_ip_usage,
             // plugin
             crate::commands::plugin::service_plugin_catalog_list,
             crate::commands::plugin::service_plugin_catalog_refresh,

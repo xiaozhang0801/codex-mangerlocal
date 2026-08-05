@@ -163,6 +163,7 @@ fn append_request_log_query_clause(
                 "IFNULL(r.attempted_account_ids_json,'') LIKE ?",
                 "IFNULL(r.initial_aggregate_api_id,'') LIKE ?",
                 "IFNULL(r.attempted_aggregate_api_ids_json,'') LIKE ?",
+                "IFNULL(r.client_ip,'') LIKE ?",
                 "IFNULL(r.aggregate_api_supplier_name,'') LIKE ?",
                 "IFNULL(r.aggregate_api_url,'') LIKE ?",
                 "IFNULL(r.original_path,'') LIKE ?",

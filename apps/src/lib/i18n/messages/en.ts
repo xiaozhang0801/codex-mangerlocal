@@ -615,6 +615,8 @@ export const EN_MESSAGES: MessageCatalog = {
   "15 秒刷新": "refresh every 15s",
   "搜索路径、账号或密钥...": "Search path, account, or key...",
   "搜索路径、账号或密钥 ID...": "Search path, account, or key ID...",
+  "搜索路径、账号、密钥 ID 或 IP...":
+    "Search path, account, key ID, or IP...",
   实时网关观测: "Live gateway monitoring",
   快捷时间: "Quick range",
   全部时间: "All time",

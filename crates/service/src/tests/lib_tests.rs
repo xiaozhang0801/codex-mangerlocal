@@ -1506,6 +1506,46 @@ fn insert_test_request_log(
         .expect("insert request log");
 }
 
+fn insert_test_request_log_with_client_ip(
+    key_id: &str,
+    trace_id: &str,
+    client_ip: &str,
+    total_tokens: i64,
+    created_at: i64,
+) {
+    let storage = storage_helpers::open_storage().expect("open storage");
+    storage
+        .insert_request_log_with_token_stat(
+            &RequestLog {
+                trace_id: Some(trace_id.to_string()),
+                key_id: Some(key_id.to_string()),
+                client_ip: Some(client_ip.to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                model: Some("gpt-5-mini".to_string()),
+                status_code: Some(200),
+                input_tokens: Some(total_tokens),
+                cached_input_tokens: Some(0),
+                output_tokens: Some(0),
+                total_tokens: Some(total_tokens),
+                created_at,
+                ..RequestLog::default()
+            },
+            &RequestTokenStat {
+                key_id: Some(key_id.to_string()),
+                client_ip: Some(client_ip.to_string()),
+                model: Some("gpt-5-mini".to_string()),
+                input_tokens: Some(total_tokens),
+                cached_input_tokens: Some(0),
+                output_tokens: Some(0),
+                total_tokens: Some(total_tokens),
+                created_at,
+                ..RequestTokenStat::default()
+            },
+        )
+        .expect("insert request log with client ip");
+}
+
 #[test]
 fn set_model_group_models_validates_requested_catalog_slugs_only() {
     let _guard = test_env_guard();
@@ -2424,6 +2464,69 @@ fn member_api_key_usage_stats_filter_to_owned_keys() {
         RpcActor::system_admin(),
     ));
     assert_eq!(admin_stats.result["items"].as_array().unwrap().len(), 2);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn requestlog_client_ip_usage_rpc_filters_member_keys_and_groups_by_ip() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-requestlog-client-ip-usage-rpc");
+    let user_one = create_test_member("client-ip-usage-one", Some(2_000_000));
+    let user_two = create_test_member("client-ip-usage-two", Some(2_000_000));
+    let key_one = create_owned_test_api_key(&user_one.id, "client ip usage one", "gpt-5-mini");
+    let key_two = create_owned_test_api_key(&user_two.id, "client ip usage two", "gpt-5-mini");
+
+    insert_test_request_log_with_client_ip(
+        &key_one,
+        "trace-client-ip-one",
+        "192.168.1.20",
+        100,
+        1_700_000_010,
+    );
+    insert_test_request_log_with_client_ip(
+        &key_two,
+        "trace-client-ip-two",
+        "192.168.1.20",
+        200,
+        1_700_000_020,
+    );
+
+    let member_usage = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/client_ip_usage",
+            serde_json::json!({
+                "startTs": 1_700_000_000,
+                "endTs": 1_700_000_100,
+                "limit": 10
+            }),
+        ),
+        RpcActor::from_parts(Some(ROLE_MEMBER), Some(&user_one.id)),
+    ));
+    assert!(
+        member_usage.result.get("error").is_none(),
+        "{:?}",
+        member_usage.result
+    );
+    let member_items = member_usage.result["items"].as_array().unwrap();
+    assert_eq!(member_items.len(), 1);
+    assert_eq!(member_items[0]["clientIp"], "192.168.1.20");
+    assert_eq!(member_items[0]["totalTokens"], 100);
+    assert!(member_items[0].get("keyId").is_none());
+
+    let admin_usage = response_result(handle_request_with_actor(
+        rpc_request(
+            "requestlog/client_ip_usage",
+            serde_json::json!({
+                "startTs": 1_700_000_000,
+                "endTs": 1_700_000_100,
+                "limit": 10
+            }),
+        ),
+        RpcActor::system_admin(),
+    ));
+    assert_eq!(admin_usage.result["items"].as_array().unwrap().len(), 1);
+    assert_eq!(admin_usage.result["items"][0]["totalTokens"], 300);
 
     let _ = std::fs::remove_file(db_path);
 }

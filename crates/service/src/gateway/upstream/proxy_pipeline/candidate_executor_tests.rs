@@ -186,6 +186,7 @@ fn run_candidate_sequence_with_statuses(
         Some("account_rotation"),
         Some(setup.route_strategy_for_log),
         Some(setup.route_source_for_log),
+        None,
         1,
         setup.candidate_count,
         setup.account_max_inflight,

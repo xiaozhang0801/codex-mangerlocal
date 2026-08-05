@@ -4,6 +4,7 @@ use super::{
     normalize_admin_series_bucket_seconds, read_member_usage_breakdown, read_usage_trend_7d,
     SourceMetadata,
 };
+use crate::{RpcActor, ROLE_MEMBER};
 use codexmanager_core::storage::{
     ApiKey, ApiKeyOwner, AppUser, DailyTokenUsageRollup, ModelTokenUsageRollup, RequestTokenStat,
     SourceTokenUsageRollup, Storage, TokenUsageRollup, UserTokenUsageRollup,
@@ -413,4 +414,35 @@ fn member_usage_trend_reuses_today_rollup() {
         trend.points.last().map(|point| point.total_tokens),
         Some(42)
     );
+}
+
+#[test]
+fn active_requests_are_admin_only_and_group_by_client_ip() {
+    crate::gateway::clear_request_activity_for_tests();
+    let _guard = crate::gateway::begin_request_activity(crate::gateway::RequestActivityStart {
+        trace_id: "dash-active-one",
+        client_ip: Some("192.168.1.20"),
+        key_id: "key-active",
+        path: "/v1/responses",
+        method: "POST",
+        model: Some("gpt-5"),
+    });
+    crate::gateway::mark_request_activity_running("dash-active-one", "request_gate");
+
+    let summary =
+        super::read_active_requests(&RpcActor::system_admin(), Some(10)).expect("active requests");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.running_count, 1);
+    assert_eq!(summary.items[0].client_ip.as_deref(), Some("192.168.1.20"));
+    assert_eq!(summary.ip_groups[0].client_ip, "192.168.1.20");
+    assert_eq!(summary.ip_groups[0].running_count, 1);
+
+    let err = super::read_active_requests(
+        &RpcActor::from_parts(Some(ROLE_MEMBER), Some("member-active")),
+        Some(10),
+    )
+    .expect_err("member should be denied");
+    assert!(err.contains("permission_denied"));
+
+    crate::gateway::clear_request_activity_for_tests();
 }

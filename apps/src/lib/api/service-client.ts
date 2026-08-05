@@ -17,6 +17,7 @@ import {
 import {
   normalizeAppSettings,
   normalizeBackgroundTasks,
+  normalizeClientIpUsageListResult,
   normalizeRequestLogFilterSummary,
   normalizeRequestLogListResult,
   normalizeRequestLogListWithSummaryResult,
@@ -25,6 +26,7 @@ import {
 } from "./normalize";
 import {
   BackgroundTaskSettings,
+  ClientIpUsageListResult,
   RequestLogFilterSummary,
   RequestLogListResult,
   RequestLogListWithSummaryResult,
@@ -195,6 +197,21 @@ export const serviceClient = {
       withAddr(params)
     );
     return normalizeTodaySummary(result);
+  },
+  async listClientIpUsage(params?: {
+    startTs?: number | null;
+    endTs?: number | null;
+    limit?: number | null;
+  }): Promise<ClientIpUsageListResult> {
+    const result = await invoke<unknown>(
+      "service_requestlog_client_ip_usage",
+      withAddr({
+        startTs: params?.startTs ?? null,
+        endTs: params?.endTs ?? null,
+        limit: params?.limit ?? null,
+      })
+    );
+    return normalizeClientIpUsageListResult(result);
   },
 
   async getListenConfig(): Promise<ServiceListenConfig> {

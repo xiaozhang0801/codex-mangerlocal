@@ -8,6 +8,7 @@ pub(super) struct LocalResponseContext<'a> {
     pub(super) path: &'a str,
     pub(super) response_adapter: super::ResponseAdapter,
     pub(super) request_method: &'a str,
+    pub(super) client_ip: Option<&'a str>,
     pub(super) model_for_log: Option<&'a str>,
     pub(super) reasoning_for_log: Option<&'a str>,
     pub(super) storage: &'a codexmanager_core::storage::Storage,
@@ -40,6 +41,7 @@ pub(super) fn record_local_result(
         ctx.storage,
         super::request_log::RequestLogTraceContext {
             trace_id: Some(ctx.trace_id),
+            client_ip: ctx.client_ip,
             original_path: Some(ctx.original_path),
             adapted_path: Some(ctx.path),
             response_adapter: Some(ctx.response_adapter),

@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::key_id_filters::{PairedKeyIdSqlFilter, TempKeyIdFilter};
 use super::{
-    now_ts, ApiKeyModelTokenUsageSummary, ApiKeyTokenUsageSummary, DailyTokenUsageRollup,
-    MemberDashboardUsageBreakdownSnapshot, ModelTokenUsageRollup, RequestLogQuerySummary,
-    RequestLogTodaySummary, RequestTokenStat, SourceTokenUsageRollup, Storage, TokenUsageRollup,
-    TokenUsageSummary, UserTokenUsageRollup,
+    now_ts, ApiKeyModelTokenUsageSummary, ApiKeyTokenUsageSummary, ClientIpUsageSummary,
+    DailyTokenUsageRollup, MemberDashboardUsageBreakdownSnapshot, ModelTokenUsageRollup,
+    RequestLogQuerySummary, RequestLogTodaySummary, RequestTokenStat, SourceTokenUsageRollup,
+    Storage, TokenUsageRollup, TokenUsageSummary, UserTokenUsageRollup,
 };
 
 const DEFAULT_REQUEST_TOKEN_STATS_RETAIN_DAYS: i64 = 14;
@@ -117,6 +117,10 @@ const USER_OWNER_EXPR: &str = "COALESCE(
 const USER_OWNER_JOINS: &str = "
     LEFT JOIN api_key_owners owner ON owner.key_id = r.key_id AND owner.owner_kind = 'user'
     LEFT JOIN api_key_owners stat_owner ON stat_owner.key_id = t.key_id AND stat_owner.owner_kind = 'user'";
+const CLIENT_IP_USAGE_KEY_EXPR: &str =
+    "COALESCE(NULLIF(TRIM(t.key_id), ''), NULLIF(TRIM(r.key_id), ''))";
+const CLIENT_IP_USAGE_IP_EXPR: &str =
+    "COALESCE(NULLIF(TRIM(t.client_ip), ''), NULLIF(TRIM(r.client_ip), ''))";
 
 fn token_usage_rollup_from_row(row: &Row<'_>, offset: usize) -> Result<TokenUsageRollup> {
     Ok(TokenUsageRollup {
@@ -348,6 +352,25 @@ fn request_token_stats_by_key_for_user_sql(combined_selects: &str) -> String {
          ORDER BY total_tokens DESC, s.key_id ASC"
     )
 }
+
+fn request_token_stats_by_client_ip_sql(raw: &str, hourly: &str) -> String {
+    format!(
+        "WITH combined AS (
+            {raw}
+            UNION ALL
+            {hourly}
+         )
+         SELECT
+            s.client_ip,
+            {COMBINED_ROLLUP_COLUMNS},
+            IFNULL(MAX(IFNULL(s.last_seen_at, 0)), 0) AS last_seen_at
+         FROM combined s
+         WHERE s.client_ip IS NOT NULL AND TRIM(s.client_ip) <> ''
+         GROUP BY s.client_ip
+         ORDER BY total_tokens DESC, s.client_ip ASC"
+    )
+}
+
 fn request_token_stats_total_rollup_sql(raw: &str, hourly: &str) -> String {
     format!(
         "WITH combined AS (
@@ -524,6 +547,22 @@ fn raw_token_rollup_select(
     )
 }
 
+fn raw_client_ip_usage_select(key_filter_clause: &str) -> String {
+    format!(
+        "SELECT
+            {CLIENT_IP_USAGE_KEY_EXPR} AS key_id,
+            {CLIENT_IP_USAGE_IP_EXPR} AS client_ip,
+            {TOKEN_ROLLUP_COLUMNS},
+            IFNULL(MAX(t.created_at), 0) AS last_seen_at
+         FROM request_token_stats t
+         LEFT JOIN request_logs r ON r.id = t.request_log_id
+         WHERE t.created_at >= ?1
+           AND t.created_at < ?2
+           AND {CLIENT_IP_USAGE_IP_EXPR} IS NOT NULL{key_filter_clause}
+         GROUP BY {CLIENT_IP_USAGE_KEY_EXPR}, {CLIENT_IP_USAGE_IP_EXPR}"
+    )
+}
+
 fn hourly_token_rollup_select(select_prefix: &str, where_clause: &str, group_by: &str) -> String {
     format!(
         "SELECT
@@ -532,6 +571,21 @@ fn hourly_token_rollup_select(select_prefix: &str, where_clause: &str, group_by:
          FROM request_token_stat_hourly_rollups h
          WHERE {where_clause}
          {group_by}"
+    )
+}
+
+fn hourly_client_ip_usage_select(key_filter_clause: &str) -> String {
+    format!(
+        "SELECT
+            NULLIF(TRIM(h.key_id), '') AS key_id,
+            NULLIF(TRIM(h.client_ip), '') AS client_ip,
+            {HOURLY_ROLLUP_COLUMNS},
+            IFNULL(MAX(IFNULL(h.last_seen_at, 0)), 0) AS last_seen_at
+         FROM request_token_stat_client_ip_hourly_rollups h
+         WHERE h.bucket_start >= ?1
+           AND h.bucket_end <= ?2
+           AND NULLIF(TRIM(h.client_ip), '') IS NOT NULL{key_filter_clause}
+         GROUP BY key_id, client_ip"
     )
 }
 
@@ -547,7 +601,7 @@ fn raw_key_usage_select(select_prefix: &str, where_clause: &str, group_by: &str)
             IFNULL(SUM(IFNULL(t.reasoning_output_tokens, 0)), 0) AS reasoning_output_tokens,
             IFNULL(SUM({token_total}), 0) AS total_tokens,
             IFNULL(SUM(IFNULL(t.estimated_cost_usd, 0.0)), 0.0) AS estimated_cost_usd
-         FROM request_token_stats t
+         FROM request_token_stats t INDEXED BY idx_request_token_stats_success_key_model_created_at
          WHERE ({where_clause}) AND t.usage_included = 1
          {group_by}",
         token_total = token_total_sql_expr(),
@@ -652,6 +706,14 @@ fn map_api_key_model_token_usage_summary(row: &Row<'_>) -> Result<ApiKeyModelTok
     })
 }
 
+fn map_client_ip_usage_summary(row: &Row<'_>) -> Result<ClientIpUsageSummary> {
+    Ok(ClientIpUsageSummary {
+        client_ip: row.get(0)?,
+        usage: token_usage_rollup_from_row(row, 1)?,
+        last_seen_at: row.get::<_, i64>(10)?.max(0),
+    })
+}
+
 impl Storage {
     /// 函数 `insert_request_token_stat`
     ///
@@ -668,11 +730,20 @@ impl Storage {
     pub fn insert_request_token_stat(&self, stat: &RequestTokenStat) -> Result<()> {
         self.conn.execute(
             "INSERT INTO request_token_stats (
-                request_log_id, key_id, account_id, model, actual_source_kind, actual_source_id,
+                request_log_id, key_id, account_id, client_ip, model, actual_source_kind, actual_source_id,
                 input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
                 estimated_cost_usd, usage_included, created_at
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                ?1, ?2, ?3,
+                COALESCE(
+                    ?4,
+                    (
+                        SELECT client_ip
+                        FROM request_logs
+                        WHERE id = ?1
+                    )
+                ),
+                ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 COALESCE(
                     (
                         SELECT CASE
@@ -684,12 +755,13 @@ impl Storage {
                     ),
                     1
                 ),
-                ?13
+                ?14
              )",
             (
                 stat.request_log_id,
                 &stat.key_id,
                 &stat.account_id,
+                &stat.client_ip,
                 &stat.model,
                 &stat.actual_source_kind,
                 &stat.actual_source_id,
@@ -811,6 +883,64 @@ impl Storage {
                     request_count = request_token_stat_hourly_rollups.request_count + excluded.request_count,
                     success_count = request_token_stat_hourly_rollups.success_count + excluded.success_count,
                     error_count = request_token_stat_hourly_rollups.error_count + excluded.error_count,
+                    updated_at = excluded.updated_at",
+                token_total = token_total_sql_expr(),
+            ),
+            (cutoff_ts, now),
+        )?;
+        tx.execute(
+            &format!(
+                "INSERT INTO request_token_stat_client_ip_hourly_rollups (
+                    bucket_start, bucket_end, key_id, client_ip,
+                    input_tokens, cached_input_tokens, output_tokens, total_tokens,
+                    reasoning_output_tokens, estimated_cost_usd, request_count, success_count,
+                    error_count, last_seen_at, updated_at
+                 )
+                 SELECT
+                    CAST(t.created_at / {HOUR_SECONDS} AS INTEGER) * {HOUR_SECONDS},
+                    CAST(t.created_at / {HOUR_SECONDS} AS INTEGER) * {HOUR_SECONDS} + {HOUR_SECONDS},
+                    COALESCE({CLIENT_IP_USAGE_KEY_EXPR}, ''),
+                    {CLIENT_IP_USAGE_IP_EXPR},
+                    IFNULL(SUM(CASE WHEN t.usage_included = 1 AND t.input_tokens > 0 THEN t.input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.usage_included = 1 AND t.cached_input_tokens > 0 THEN t.cached_input_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.usage_included = 1 AND t.output_tokens > 0 THEN t.output_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.usage_included = 1 THEN {token_total} ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.usage_included = 1 AND t.reasoning_output_tokens > 0 THEN t.reasoning_output_tokens ELSE 0 END), 0),
+                    IFNULL(SUM(CASE WHEN t.usage_included = 1 AND t.estimated_cost_usd > 0 THEN t.estimated_cost_usd ELSE 0.0 END), 0.0),
+                    COUNT(DISTINCT t.request_log_id),
+                    COUNT(DISTINCT CASE WHEN r.status_code >= 200 AND r.status_code <= 299 THEN t.request_log_id END),
+                    COUNT(DISTINCT CASE WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN t.request_log_id END),
+                    IFNULL(MAX(t.created_at), 0),
+                    ?2
+                 FROM request_token_stats t
+                 LEFT JOIN request_logs r ON r.id = t.request_log_id
+                 WHERE t.created_at < ?1
+                   AND {CLIENT_IP_USAGE_IP_EXPR} IS NOT NULL
+                 GROUP BY
+                    CAST(t.created_at / {HOUR_SECONDS} AS INTEGER) * {HOUR_SECONDS},
+                    COALESCE({CLIENT_IP_USAGE_KEY_EXPR}, ''),
+                    {CLIENT_IP_USAGE_IP_EXPR}
+                 ON CONFLICT(bucket_start, key_id, client_ip)
+                 DO UPDATE SET
+                    bucket_end = CASE
+                        WHEN request_token_stat_client_ip_hourly_rollups.bucket_end > excluded.bucket_end
+                            THEN request_token_stat_client_ip_hourly_rollups.bucket_end
+                        ELSE excluded.bucket_end
+                    END,
+                    input_tokens = request_token_stat_client_ip_hourly_rollups.input_tokens + excluded.input_tokens,
+                    cached_input_tokens = request_token_stat_client_ip_hourly_rollups.cached_input_tokens + excluded.cached_input_tokens,
+                    output_tokens = request_token_stat_client_ip_hourly_rollups.output_tokens + excluded.output_tokens,
+                    total_tokens = request_token_stat_client_ip_hourly_rollups.total_tokens + excluded.total_tokens,
+                    reasoning_output_tokens = request_token_stat_client_ip_hourly_rollups.reasoning_output_tokens + excluded.reasoning_output_tokens,
+                    estimated_cost_usd = request_token_stat_client_ip_hourly_rollups.estimated_cost_usd + excluded.estimated_cost_usd,
+                    request_count = request_token_stat_client_ip_hourly_rollups.request_count + excluded.request_count,
+                    success_count = request_token_stat_client_ip_hourly_rollups.success_count + excluded.success_count,
+                    error_count = request_token_stat_client_ip_hourly_rollups.error_count + excluded.error_count,
+                    last_seen_at = CASE
+                        WHEN request_token_stat_client_ip_hourly_rollups.last_seen_at > excluded.last_seen_at
+                            THEN request_token_stat_client_ip_hourly_rollups.last_seen_at
+                        ELSE excluded.last_seen_at
+                    END,
                     updated_at = excluded.updated_at",
                 token_total = token_total_sql_expr(),
             ),
@@ -1197,6 +1327,45 @@ impl Storage {
         })
     }
 
+    pub fn summarize_request_token_stats_by_client_ip_between(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+        key_ids: Option<&[String]>,
+    ) -> Result<Vec<ClientIpUsageSummary>> {
+        if end_ts <= start_ts {
+            return Ok(Vec::new());
+        }
+
+        let key_filter = if let Some(key_ids) = key_ids {
+            let Some(filter) = TempKeyIdFilter::create(self, key_ids)? else {
+                return Ok(Vec::new());
+            };
+            Some(filter)
+        } else {
+            None
+        };
+        let raw_key_filter_clause = key_filter
+            .as_ref()
+            .map(|filter| filter.exists_clause(CLIENT_IP_USAGE_KEY_EXPR))
+            .unwrap_or_default();
+        let hourly_key_filter_clause = key_filter
+            .as_ref()
+            .map(|filter| filter.exists_clause("NULLIF(TRIM(h.key_id), '')"))
+            .unwrap_or_default();
+        let raw = raw_client_ip_usage_select(&raw_key_filter_clause);
+        let hourly = hourly_client_ip_usage_select(&hourly_key_filter_clause);
+        let sql = request_token_stats_by_client_ip_sql(&raw, &hourly);
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(params![start_ts, end_ts])?;
+        let mut items = Vec::new();
+        while let Some(row) = rows.next()? {
+            items.push(map_client_ip_usage_summary(row)?);
+        }
+        Ok(items)
+    }
+
     fn summarize_request_token_stats_by_key_and_model_filtered(
         &self,
         start_ts: Option<i64>,
@@ -1559,6 +1728,7 @@ impl Storage {
                 request_log_id INTEGER NOT NULL,
                 key_id TEXT,
                 account_id TEXT,
+                client_ip TEXT,
                 model TEXT,
                 actual_source_kind TEXT,
                 actual_source_id TEXT,
@@ -1574,6 +1744,7 @@ impl Storage {
             )",
             [],
         )?;
+        self.ensure_column("request_token_stats", "client_ip", "TEXT")?;
         self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_request_token_stats_request_log_id
              ON request_token_stats(request_log_id)",
@@ -1592,6 +1763,16 @@ impl Storage {
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_token_stats_key_id_created_at
              ON request_token_stats(key_id, created_at DESC)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_stats_client_ip_created_at
+             ON request_token_stats(client_ip, created_at DESC)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_stats_key_client_ip_created_at
+             ON request_token_stats(key_id, client_ip, created_at DESC)",
             [],
         )?;
         self.conn.execute(
@@ -1617,6 +1798,26 @@ impl Storage {
             "usage_included",
             "INTEGER NOT NULL DEFAULT 1 CHECK (usage_included IN (0, 1))",
         )?;
+        if self.has_column("request_logs", "client_ip")? {
+            self.conn.execute(
+                "UPDATE request_token_stats
+                 SET client_ip = (
+                    SELECT request_logs.client_ip
+                    FROM request_logs
+                    WHERE request_logs.id = request_token_stats.request_log_id
+                 )
+                 WHERE (client_ip IS NULL OR TRIM(client_ip) = '')
+                   AND request_log_id IS NOT NULL
+                   AND EXISTS (
+                        SELECT 1
+                        FROM request_logs
+                        WHERE request_logs.id = request_token_stats.request_log_id
+                          AND request_logs.client_ip IS NOT NULL
+                          AND TRIM(request_logs.client_ip) <> ''
+                   )",
+                [],
+            )?;
+        }
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_token_stats_success_key_model_created_at
              ON request_token_stats(key_id, model, created_at DESC)
@@ -1737,6 +1938,37 @@ impl Storage {
              ON request_token_stat_hourly_rollups(actual_source_kind, actual_source_id, bucket_start)",
             [],
         )?;
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS request_token_stat_client_ip_hourly_rollups (
+                bucket_start INTEGER NOT NULL,
+                bucket_end INTEGER NOT NULL,
+                key_id TEXT NOT NULL DEFAULT '',
+                client_ip TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                last_seen_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(bucket_start, key_id, client_ip)
+             )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_stat_client_ip_hourly_key_bucket
+             ON request_token_stat_client_ip_hourly_rollups(key_id, bucket_start)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_stat_client_ip_hourly_ip_bucket
+             ON request_token_stat_client_ip_hourly_rollups(client_ip, bucket_start)",
+            [],
+        )?;
         if self.has_column("request_logs", "input_tokens")? {
             let actual_source_kind_expr =
                 if self.has_column("request_logs", "actual_source_kind")? {
@@ -1749,14 +1981,19 @@ impl Storage {
             } else {
                 "NULL"
             };
+            let client_ip_expr = if self.has_column("request_logs", "client_ip")? {
+                "client_ip"
+            } else {
+                "NULL"
+            };
             let backfill_sql = format!(
                 "INSERT OR IGNORE INTO request_token_stats (
-                    request_log_id, key_id, account_id, model, actual_source_kind, actual_source_id,
+                    request_log_id, key_id, account_id, client_ip, model, actual_source_kind, actual_source_id,
                     input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
                     estimated_cost_usd, usage_included, created_at
                  )
                  SELECT
-                    id, key_id, account_id, model, {actual_source_kind_expr}, {actual_source_id_expr},
+                    id, key_id, account_id, {client_ip_expr}, model, {actual_source_kind_expr}, {actual_source_id_expr},
                     input_tokens, cached_input_tokens, output_tokens, NULL, reasoning_output_tokens,
                     estimated_cost_usd,
                     CASE WHEN status_code >= 200 AND status_code <= 299 THEN 1 ELSE 0 END,

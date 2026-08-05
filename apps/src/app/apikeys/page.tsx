@@ -54,11 +54,13 @@ import {
 } from "@/hooks/useAppSession";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
+import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
 import { accountClient } from "@/lib/api/account-client";
 import { appClient } from "@/lib/api/app-client";
+import { serviceClient } from "@/lib/api/service-client";
 import {
   buildGeminiGatewayEndpoint,
   buildOpenAiGatewayEndpoint,
@@ -177,6 +179,7 @@ export default function ApiKeysPage() {
   } = useApiKeys();
   const isPageActive = useDesktopPageActive("/apikeys/");
   const isUsageQueryEnabled = useDeferredDesktopActivation(isServiceReady);
+  const localDayRange = useLocalDayRange();
   usePageTransitionReady(
     "/apikeys/",
     !isServiceReady || (!isLoading && !isModelsLoading),
@@ -337,6 +340,58 @@ export default function ApiKeysPage() {
   const costByKey = usageOverview?.costByKey || {};
   const todayUsageByKey = usageOverview?.todayUsageByKey || {};
   const todayCostByKey = usageOverview?.todayCostByKey || {};
+  const { data: clientIpUsage, isPending: isClientIpUsageLoading } = useQuery({
+    queryKey: ["apikey-client-ip-usage", serviceAddr || null],
+    queryFn: () => serviceClient.listClientIpUsage({ limit: 100 }),
+    enabled: isUsageQueryEnabled && isPageActive,
+    retry: 1,
+  });
+  const { data: todayClientIpUsage } = useQuery({
+    queryKey: [
+      "apikey-client-ip-usage",
+      "today",
+      serviceAddr || null,
+      localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+    ],
+    queryFn: () =>
+      serviceClient.listClientIpUsage({
+        startTs: localDayRange.dayStartTs,
+        endTs: localDayRange.dayEndTs,
+        limit: 100,
+      }),
+    enabled: isUsageQueryEnabled && isPageActive,
+    retry: 1,
+  });
+  const todayTokensByClientIp = useMemo(
+    () =>
+      new Map(
+        (todayClientIpUsage?.items ?? []).map((item) => [
+          item.clientIp,
+          item.totalTokens,
+        ]),
+      ),
+    [todayClientIpUsage?.items],
+  );
+  const todayCostByClientIp = useMemo(
+    () =>
+      new Map(
+        (todayClientIpUsage?.items ?? []).map((item) => [
+          item.clientIp,
+          item.estimatedCostUsd,
+        ]),
+      ),
+    [todayClientIpUsage?.items],
+  );
+  const clientIpUsageRows = useMemo(
+    () =>
+      (clientIpUsage?.items ?? []).map((item) => ({
+        ...item,
+        todayTokens: todayTokensByClientIp.get(item.clientIp) ?? 0,
+        todayEstimatedCostUsd: todayCostByClientIp.get(item.clientIp) ?? 0,
+      })),
+    [clientIpUsage?.items, todayCostByClientIp, todayTokensByClientIp],
+  );
   const showOverviewLoading =
     isServiceReady && isPageActive && isUsageOverviewLoading;
 
@@ -644,6 +699,90 @@ export default function ApiKeysPage() {
           </>
         )}
       </div>
+
+      <WorkPanel>
+        <CardContent className="p-0">
+          <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-semibold text-foreground">
+                {t("内网 IP 用量")}
+              </h2>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                {t("按客户端 IP 汇总，不按密钥拆分")}
+              </p>
+            </div>
+            <Badge variant="secondary" className="rounded-md px-2.5">
+              {t("共 {count} 条", { count: clientIpUsageRows.length })}
+            </Badge>
+          </div>
+          <Table className="min-w-[860px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("客户端 IP")}</TableHead>
+                <TableHead>{t("今日 Token / 金额")}</TableHead>
+                <TableHead>{t("累计 Token / 金额")}</TableHead>
+                <TableHead>{t("请求数")}</TableHead>
+                <TableHead>{t("成功 / 异常")}</TableHead>
+                <TableHead>{t("最近出现")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isClientIpUsageLoading ? (
+                Array.from({ length: 3 }).map((_, index) => (
+                  <TableRow key={index}>
+                    <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                  </TableRow>
+                ))
+              ) : clientIpUsageRows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="h-28 text-center">
+                    <span className="text-sm text-muted-foreground">
+                      {t("暂无 IP 用量")}
+                    </span>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                clientIpUsageRows.map((item) => (
+                  <TableRow key={item.clientIp}>
+                    <TableCell>
+                      <code className="inline-block max-w-[180px] truncate whitespace-nowrap rounded border border-primary/5 bg-muted/50 px-2 py-1 font-mono text-[10px] leading-4 text-primary">
+                        {item.clientIp}
+                      </code>
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      <div>{formatCompactTokenAmount(item.todayTokens)}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {formatQuotaLimitUsd(item.todayEstimatedCostUsd)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      <div>{formatCompactTokenAmount(item.totalTokens)}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {formatQuotaLimitUsd(item.estimatedCostUsd)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      {item.requestCount.toLocaleString("zh-CN")}
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums text-muted-foreground">
+                      {item.successCount.toLocaleString("zh-CN")} /{" "}
+                      {item.errorCount.toLocaleString("zh-CN")}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {formatLocalMinuteFromSeconds(item.lastSeenAt, t("从未出现"))}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </WorkPanel>
 
       <WorkPanel>
         <CardContent className="p-0">

@@ -41,3 +41,18 @@ pub async fn service_dashboard_member_summary(
     )
     .await
 }
+
+#[tauri::command]
+pub async fn service_dashboard_active_requests(
+    addr: Option<String>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background(
+        "dashboard/activeRequests",
+        addr,
+        Some(serde_json::json!({
+            "limit": limit,
+        })),
+    )
+    .await
+}

@@ -341,6 +341,7 @@ pub(in super::super) fn execute_candidate_sequence(
         }
         prepare_next_account_candidate_client(ordered_account_ids.as_slice(), idx, trace_id);
         attempted_account_ids.push(account.id.clone());
+        crate::gateway::update_request_activity_source(trace_id, "openai_account", &account.id);
 
         let request_ref = request
             .as_ref()

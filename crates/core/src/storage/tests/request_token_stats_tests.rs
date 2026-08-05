@@ -375,6 +375,87 @@ fn member_dashboard_usage_breakdown_snapshot_combines_key_and_model_rollups() {
 }
 
 #[test]
+fn client_ip_usage_summarizes_across_keys_and_survives_rollup() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    for (index, key_id, client_ip, total_tokens) in [
+        (0_i64, "key-a", "192.168.1.20", 100_i64),
+        (1_i64, "key-b", "192.168.1.20", 200_i64),
+        (2_i64, "key-c", "192.168.1.21", 50_i64),
+    ] {
+        let created_at = 1_000 + index;
+        storage
+            .insert_request_log_with_token_stat(
+                &RequestLog {
+                    trace_id: Some(format!("trc-client-ip-{index}")),
+                    key_id: Some(key_id.to_string()),
+                    client_ip: Some(client_ip.to_string()),
+                    request_path: "/v1/responses".to_string(),
+                    method: "POST".to_string(),
+                    model: Some("gpt-5".to_string()),
+                    status_code: Some(200),
+                    created_at,
+                    ..RequestLog::default()
+                },
+                &RequestTokenStat {
+                    key_id: Some(key_id.to_string()),
+                    client_ip: Some(client_ip.to_string()),
+                    model: Some("gpt-5".to_string()),
+                    input_tokens: Some(total_tokens),
+                    total_tokens: Some(total_tokens),
+                    estimated_cost_usd: Some(total_tokens as f64 / 100.0),
+                    created_at,
+                    ..RequestTokenStat::default()
+                },
+            )
+            .expect("insert client ip usage");
+    }
+
+    let before_rollup = storage
+        .summarize_request_token_stats_by_client_ip_between(0, 7_200, None)
+        .expect("summarize client ip usage before rollup");
+    assert_eq!(
+        before_rollup
+            .iter()
+            .map(|item| (item.client_ip.as_str(), item.usage.total_tokens))
+            .collect::<Vec<_>>(),
+        vec![("192.168.1.20", 300), ("192.168.1.21", 50)]
+    );
+
+    let selected_keys = vec!["key-a".to_string()];
+    let selected_before_rollup = storage
+        .summarize_request_token_stats_by_client_ip_between(0, 7_200, Some(&selected_keys))
+        .expect("summarize selected client ip usage before rollup");
+    assert_eq!(selected_before_rollup.len(), 1);
+    assert_eq!(selected_before_rollup[0].client_ip, "192.168.1.20");
+    assert_eq!(selected_before_rollup[0].usage.total_tokens, 100);
+
+    let rolled = storage
+        .rollup_request_token_stats_before(7_200)
+        .expect("roll up token stats");
+    assert_eq!(rolled, 3);
+
+    let after_rollup = storage
+        .summarize_request_token_stats_by_client_ip_between(0, 7_200, None)
+        .expect("summarize client ip usage after rollup");
+    assert_eq!(
+        after_rollup
+            .iter()
+            .map(|item| (item.client_ip.as_str(), item.usage.total_tokens))
+            .collect::<Vec<_>>(),
+        vec![("192.168.1.20", 300), ("192.168.1.21", 50)]
+    );
+
+    let selected_after_rollup = storage
+        .summarize_request_token_stats_by_client_ip_between(0, 7_200, Some(&selected_keys))
+        .expect("summarize selected client ip usage after rollup");
+    assert_eq!(selected_after_rollup.len(), 1);
+    assert_eq!(selected_after_rollup[0].client_ip, "192.168.1.20");
+    assert_eq!(selected_after_rollup[0].usage.total_tokens, 100);
+}
+
+#[test]
 fn summaries_for_user_join_owned_keys_across_live_hourly_and_legacy_usage() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");
@@ -1396,6 +1477,7 @@ fn dashboard_rollups_survive_cleared_request_logs() {
             reasoning_output_tokens: Some(2),
             estimated_cost_usd: Some(0.25),
             created_at: 3_700,
+            ..RequestTokenStat::default()
         })
         .expect("insert openai stat");
     storage
@@ -1413,6 +1495,7 @@ fn dashboard_rollups_survive_cleared_request_logs() {
             reasoning_output_tokens: Some(3),
             estimated_cost_usd: Some(0.35),
             created_at: 3_700,
+            ..RequestTokenStat::default()
         })
         .expect("insert aggregate stat");
 

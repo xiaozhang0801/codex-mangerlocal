@@ -193,3 +193,49 @@ fn request_log_persists_client_ultra_and_effective_max_separately() {
         Some("client_request_normalized")
     );
 }
+
+#[test]
+fn write_request_log_records_client_ip_on_log_and_usage_stats() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    super::write_request_log(
+        &storage,
+        super::RequestLogTraceContext {
+            trace_id: Some("trace-client-ip"),
+            client_ip: Some("192.168.1.20"),
+            original_path: Some("/v1/responses"),
+            adapted_path: Some("/v1/responses"),
+            request_type: Some("http"),
+            ..Default::default()
+        },
+        Some("key-client-ip"),
+        None,
+        "/v1/responses",
+        "POST",
+        Some("gpt-5"),
+        None,
+        None,
+        Some(200),
+        super::RequestLogUsage {
+            input_tokens: Some(42),
+            total_tokens: Some(42),
+            ..Default::default()
+        },
+        None,
+        Some(10),
+    );
+
+    let logs = storage
+        .list_request_logs(Some("192.168.1.20"), 10)
+        .expect("read request logs");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].client_ip.as_deref(), Some("192.168.1.20"));
+
+    let usage = storage
+        .summarize_request_token_stats_by_client_ip_between(0, i64::MAX, None)
+        .expect("summarize client ip usage");
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].client_ip, "192.168.1.20");
+    assert_eq!(usage[0].usage.total_tokens, 42);
+}

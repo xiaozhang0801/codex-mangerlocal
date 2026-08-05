@@ -1039,6 +1039,7 @@ pub(in super::super) struct AggregateProxyRequest<'a> {
     pub client_reasoning_for_log: Option<&'a str>,
     pub reasoning_for_log: Option<&'a str>,
     pub reasoning_source_for_log: Option<&'a str>,
+    pub client_ip: Option<&'a str>,
     pub service_tier_for_log: Option<&'a str>,
     pub effective_service_tier_for_log: Option<&'a str>,
     pub service_tier_source_for_log: Option<&'a str>,
@@ -1071,6 +1072,7 @@ pub(in super::super) fn proxy_aggregate_request(
         client_reasoning_for_log,
         reasoning_for_log,
         reasoning_source_for_log,
+        client_ip,
         service_tier_for_log,
         effective_service_tier_for_log,
         service_tier_source_for_log,
@@ -1120,6 +1122,11 @@ pub(in super::super) fn proxy_aggregate_request(
         );
         attempted_aggregate_api_ids.push(candidate.id.clone());
         let candidate_id = candidate.id.clone();
+        super::super::super::update_request_activity_source(
+            trace_id,
+            "aggregate_api",
+            candidate_id.as_str(),
+        );
         let candidate_upstream_model =
             aggregate_upstream_model_for_log(&candidate, model_for_log).map(str::to_string);
         let candidate_supplier_name = candidate.supplier_name.clone();
@@ -1225,6 +1232,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     storage,
                     super::super::super::request_log::RequestLogTraceContext {
                         trace_id: Some(trace_id),
+                        client_ip,
                         original_path: Some(original_path),
                         adapted_path: Some(path),
                         gateway_mode: gateway_mode_for_log,
@@ -1464,6 +1472,7 @@ pub(in super::super) fn proxy_aggregate_request(
                 storage,
                 super::super::super::request_log::RequestLogTraceContext {
                     trace_id: Some(trace_id),
+                    client_ip,
                     original_path: Some(original_path),
                     adapted_path: Some(path),
                     gateway_mode: gateway_mode_for_log,
@@ -1538,6 +1547,7 @@ pub(in super::super) fn proxy_aggregate_request(
         storage,
         super::super::super::request_log::RequestLogTraceContext {
             trace_id: Some(trace_id),
+            client_ip,
             original_path: Some(original_path),
             adapted_path: Some(path),
             gateway_mode: gateway_mode_for_log,

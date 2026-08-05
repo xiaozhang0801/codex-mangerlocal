@@ -83,6 +83,7 @@ pub(crate) use proxy_registry::{
 };
 
 pub(crate) use requestlog::clear as requestlog_clear;
+pub(crate) use requestlog::client_ip_usage as requestlog_client_ip_usage;
 pub(crate) use requestlog::list as requestlog_list;
 pub(crate) use requestlog::summary as requestlog_summary;
 pub(crate) use requestlog::today_summary as requestlog_today_summary;

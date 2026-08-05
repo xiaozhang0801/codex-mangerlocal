@@ -1463,6 +1463,7 @@ pub struct RequestLogSummary {
     pub trace_id: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub client_ip: Option<String>,
     pub initial_account_id: Option<String>,
     #[serde(default)]
     pub attempted_account_ids: Vec<String>,
@@ -1614,6 +1615,36 @@ pub struct RequestLogTodaySummaryResult {
     pub estimated_cost: f64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClientIpUsageListParams {
+    pub start_ts: Option<i64>,
+    pub end_ts: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIpUsageSummaryResult {
+    pub client_ip: String,
+    pub request_count: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub total_tokens: i64,
+    pub estimated_cost_usd: f64,
+    pub last_seen_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIpUsageListResult {
+    pub items: Vec<ClientIpUsageSummaryResult>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartupSnapshotResult {
@@ -1720,6 +1751,48 @@ pub struct DashboardAdminUsageSummaryResult {
     pub openai_accounts: Vec<DashboardSourceUsageSummary>,
     #[serde(default)]
     pub aggregate_apis: Vec<DashboardSourceUsageSummary>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardActiveRequestItem {
+    pub id: String,
+    pub trace_id: String,
+    pub status: String,
+    pub client_ip: Option<String>,
+    pub key_id: String,
+    pub path: String,
+    pub method: String,
+    pub model: Option<String>,
+    pub route_kind: String,
+    pub source_kind: Option<String>,
+    pub source_id: Option<String>,
+    pub created_at_ms: i64,
+    pub queued_at_ms: Option<i64>,
+    pub running_at_ms: Option<i64>,
+    pub wait_ms: i64,
+    pub running_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardActiveRequestIpGroup {
+    pub client_ip: String,
+    pub total_count: i64,
+    pub queued_count: i64,
+    pub running_count: i64,
+    pub max_wait_ms: i64,
+    pub max_running_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardActiveRequestsResult {
+    pub total_count: i64,
+    pub queued_count: i64,
+    pub running_count: i64,
+    pub items: Vec<DashboardActiveRequestItem>,
+    pub ip_groups: Vec<DashboardActiveRequestIpGroup>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,11 @@
 use super::super::support::deadline;
 use std::time::Instant;
 
+pub(in super::super) enum ClientIpRequestGateError {
+    Unavailable,
+    Timeout,
+}
+
 /// 函数 `acquire_request_gate`
 ///
 /// 作者: gaohongshun
@@ -86,6 +91,93 @@ pub(in super::super) fn acquire_request_gate(
         Err(super::super::super::RequestGateAcquireError::Poisoned) => {
             super::super::super::trace_log::log_request_gate_skip(trace_id, "lock_poisoned", 0);
             None
+        }
+    }
+}
+
+pub(in super::super) fn acquire_client_ip_request_gate(
+    trace_id: &str,
+    client_ip: Option<&str>,
+    request_deadline: Option<Instant>,
+) -> Result<Option<super::super::super::request_gate::RequestGateGuard>, ClientIpRequestGateError> {
+    let Some(client_ip) = client_ip.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let request_gate_lock = super::super::super::client_ip_gate_lock(client_ip);
+    let request_gate_wait_timeout = super::super::super::request_gate_wait_timeout();
+    let gate_wait_started_at = Instant::now();
+    log::debug!(
+        "event=client_ip_request_gate_wait trace_id={} client_ip={}",
+        trace_id,
+        client_ip
+    );
+
+    match request_gate_lock.try_acquire() {
+        Ok(Some(guard)) => {
+            log::debug!(
+                "event=client_ip_request_gate_acquired trace_id={} client_ip={} wait_ms=0",
+                trace_id,
+                client_ip
+            );
+            Ok(Some(guard))
+        }
+        Ok(None) => {
+            let wait_result = match request_gate_wait_timeout {
+                Some(wait_timeout) => match deadline::cap_wait(wait_timeout, request_deadline) {
+                    Some(effective_wait) if !effective_wait.is_zero() => {
+                        request_gate_lock.acquire_with_timeout(effective_wait)
+                    }
+                    _ => Ok(None),
+                },
+                None => match deadline::remaining(request_deadline) {
+                    Some(remaining) if remaining.is_zero() => Ok(None),
+                    Some(remaining) => request_gate_lock.acquire_with_timeout(remaining),
+                    None => request_gate_lock.acquire().map(Some),
+                },
+            };
+            match wait_result {
+                Ok(Some(guard)) => {
+                    log::debug!(
+                        "event=client_ip_request_gate_acquired trace_id={} client_ip={} wait_ms={}",
+                        trace_id,
+                        client_ip,
+                        gate_wait_started_at.elapsed().as_millis()
+                    );
+                    Ok(Some(guard))
+                }
+                Err(super::super::super::RequestGateAcquireError::Poisoned) => {
+                    log::warn!(
+                        "event=client_ip_request_gate_unavailable trace_id={} client_ip={} wait_ms={}",
+                        trace_id,
+                        client_ip,
+                        gate_wait_started_at.elapsed().as_millis()
+                    );
+                    Err(ClientIpRequestGateError::Unavailable)
+                }
+                Ok(None) => {
+                    let reason = if deadline::is_expired(request_deadline) {
+                        "total_timeout"
+                    } else {
+                        "gate_wait_timeout"
+                    };
+                    log::warn!(
+                        "event=client_ip_request_gate_timeout trace_id={} client_ip={} reason={} wait_ms={}",
+                        trace_id,
+                        client_ip,
+                        reason,
+                        gate_wait_started_at.elapsed().as_millis()
+                    );
+                    Err(ClientIpRequestGateError::Timeout)
+                }
+            }
+        }
+        Err(super::super::super::RequestGateAcquireError::Poisoned) => {
+            log::warn!(
+                "event=client_ip_request_gate_unavailable trace_id={} client_ip={} wait_ms=0",
+                trace_id,
+                client_ip
+            );
+            Err(ClientIpRequestGateError::Unavailable)
         }
     }
 }

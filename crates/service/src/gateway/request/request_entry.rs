@@ -54,7 +54,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
         &mut request,
         trace_id.clone(),
         debug,
-        client_ip,
+        client_ip.clone(),
     ) {
         Ok(v) => v,
         Err(err) => {
@@ -88,6 +88,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
                     &storage,
                     super::request_log::RequestLogTraceContext {
                         trace_id: Some(trace_id.as_str()),
+                        client_ip: client_ip.as_deref(),
                         original_path: Some(request_path_for_log.as_str()),
                         adapted_path: Some(request_path_for_log.as_str()),
                         response_adapter: None,
@@ -129,6 +130,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
         validated.path.as_str(),
         validated.response_adapter,
         validated.request_method.as_str(),
+        validated.client_ip.as_deref(),
         validated.model_for_log.as_deref(),
         validated.reasoning_for_log.as_deref(),
         &validated.storage,
@@ -157,6 +159,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
             validated.response_adapter,
             request_method_for_count_tokens.as_str(),
             validated.passthrough_body.as_ref(),
+            validated.client_ip.as_deref(),
             model_for_count_tokens.as_deref(),
             reasoning_for_count_tokens.as_deref(),
             &validated.storage,

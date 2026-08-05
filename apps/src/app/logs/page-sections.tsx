@@ -38,6 +38,7 @@ import { formatTsFromSeconds } from "@/lib/utils/usage";
 import { cn } from "@/lib/utils";
 import {
   AccountKeyInfoCell,
+  ClientIpCell,
   ErrorInfoCell,
   ModelEffortCell,
   RequestRouteInfoCell,
@@ -219,7 +220,7 @@ export function RequestLogsTabContent({
                 <div className="relative min-w-0">
                   <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
-                    placeholder={t("搜索路径、账号或密钥 ID...")}
+                    placeholder={t("搜索路径、账号、密钥 ID 或 IP...")}
                     className="h-11 rounded-xl border-border/70 bg-background/80 pr-3 pl-10 text-sm shadow-none"
                     value={search}
                     onChange={(event) => onSearchChange(event.target.value)}
@@ -428,7 +429,7 @@ export function RequestLogsTabContent({
         </CardHeader>
         <CardContent className="px-0">
           <div className="overflow-x-auto">
-            <Table className="min-w-[1500px] table-fixed">
+            <Table className="min-w-[1640px] table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead className="h-12 w-[150px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
@@ -439,6 +440,9 @@ export function RequestLogsTabContent({
                   </TableHead>
                   <TableHead className="w-[224px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                     {t("账号 / 密钥")}
+                  </TableHead>
+                  <TableHead className="w-[140px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                    {t("客户端 IP")}
                   </TableHead>
                   <TableHead className="w-[220px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                     {t("模型 / 推理 / 等级")}
@@ -462,9 +466,10 @@ export function RequestLogsTabContent({
                   Array.from({ length: 10 }).map((_, index) => (
                     <TableRow key={index}>
                       <TableCell><Skeleton className="h-4 w-32" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-40" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-32" /></TableCell>
-                      <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-40" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                          <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                       <TableCell><Skeleton className="h-6 w-12 rounded-full" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-12" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-20" /></TableCell>
@@ -474,7 +479,7 @@ export function RequestLogsTabContent({
                 ) : logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={8}
+                          colSpan={9}
                       className="h-52 px-4 text-center text-sm text-muted-foreground"
                     >
                       {!serviceConnected
@@ -493,16 +498,19 @@ export function RequestLogsTabContent({
                       <TableCell className="px-4 py-3 align-top">
                         <RequestRouteInfoCell log={log} />
                       </TableCell>
-                      <TableCell className="px-4 py-3 align-top">
-                        <AccountKeyInfoCell
+                          <TableCell className="px-4 py-3 align-top">
+                            <AccountKeyInfoCell
                           log={log}
                           accountLabel={resolveAccountDisplayName(log, accountNameMap)}
                           accountNameMap={accountNameMap}
                           apiKeyMap={apiKeyMap}
                           aggregateApiMap={aggregateApiMap}
-                        />
-                      </TableCell>
-                      <TableCell className="px-4 py-3 align-top">
+                            />
+                          </TableCell>
+                          <TableCell className="px-4 py-3 align-top">
+                            <ClientIpCell log={log} />
+                          </TableCell>
+                          <TableCell className="px-4 py-3 align-top">
                         <ModelEffortCell log={log} />
                       </TableCell>
                       <TableCell className="px-4 py-3 align-top">

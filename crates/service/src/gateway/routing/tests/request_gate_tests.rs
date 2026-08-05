@@ -138,3 +138,68 @@ fn acquire_waits_until_previous_guard_released() {
         "expected waiter to block, actual wait: {waited:?}"
     );
 }
+
+#[test]
+fn lock_with_max_running_allows_configured_parallel_guards() {
+    let _guard = crate::test_env_guard();
+    let lock = Arc::new(RequestGateLock::new().with_max_running(2));
+
+    let first = lock
+        .try_acquire()
+        .expect("lock should not be poisoned")
+        .expect("first guard");
+    let second = lock
+        .try_acquire()
+        .expect("lock should not be poisoned")
+        .expect("second guard");
+    assert!(
+        lock.try_acquire()
+            .expect("lock should not be poisoned")
+            .is_none(),
+        "third guard should wait while max running is reached"
+    );
+
+    drop(first);
+    let third = lock
+        .try_acquire()
+        .expect("lock should not be poisoned")
+        .expect("slot released");
+    drop(second);
+    drop(third);
+}
+
+#[test]
+fn client_ip_gate_lock_limits_same_ip_to_four_running() {
+    let _guard = crate::test_env_guard();
+    clear_request_gate_locks_for_tests();
+    let lock = client_ip_gate_lock("192.168.1.20");
+    let mut guards = Vec::new();
+
+    for _ in 0..CLIENT_IP_GATE_MAX_RUNNING {
+        guards.push(
+            lock.try_acquire()
+                .expect("lock should not be poisoned")
+                .expect("ip slot"),
+        );
+    }
+    assert!(
+        lock.try_acquire()
+            .expect("lock should not be poisoned")
+            .is_none(),
+        "same IP should be queued after max running slots"
+    );
+
+    let other_ip_lock = client_ip_gate_lock("192.168.1.21");
+    let other_ip_guard = other_ip_lock
+        .try_acquire()
+        .expect("lock should not be poisoned")
+        .expect("different IP has independent slots");
+
+    drop(guards.pop());
+    let released_slot = lock
+        .try_acquire()
+        .expect("lock should not be poisoned")
+        .expect("released IP slot");
+    drop(released_slot);
+    drop(other_ip_guard);
+}
