@@ -9,6 +9,7 @@ mod aggregate_api;
 mod apikey;
 pub(crate) mod app_settings;
 mod auth;
+pub mod client_ip;
 mod codex_model_catalog;
 mod codex_profile;
 mod codex_runtime;

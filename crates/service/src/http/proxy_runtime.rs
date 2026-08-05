@@ -1,5 +1,5 @@
 use axum::body::{to_bytes, Body};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Request as HttpRequest, Response, StatusCode};
 use axum::routing::{any, get, post};
 use axum::Router;
@@ -15,6 +15,7 @@ use std::task::{Context, Poll};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
+use std::net::SocketAddr;
 
 use crate::http::proxy_bridge::run_proxy_server;
 #[cfg(test)]
@@ -177,6 +178,12 @@ fn build_local_backend_client() -> Result<Client, reqwest::Error> {
     Client::builder().no_proxy().build()
 }
 
+fn build_outbound_proxy_headers(headers: &HeaderMap, peer_addr: SocketAddr) -> HeaderMap {
+    let mut outbound_headers = filter_request_headers(headers);
+    crate::client_ip::set_forwarded_client_ip_header(&mut outbound_headers, peer_addr);
+    outbound_headers
+}
+
 fn env_usize_or(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -324,6 +331,10 @@ async fn proxy_handler(
 ) -> Response<Body> {
     let started = std::time::Instant::now();
     let (mut parts, body) = request.into_parts();
+    let peer_addr = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| *addr);
     let deferred_policy = crate::http::middleware::defer_gateway_policy(parts.uri.path());
     let limits = crate::http::middleware::RequestLimits::from_extensions(&parts.extensions);
     // Bound requests retained while the body is read/decompressed/classified.
@@ -382,7 +393,10 @@ async fn proxy_handler(
         }
     }
 
-    let mut outbound_headers = filter_request_headers(&parts.headers);
+    let mut outbound_headers = match peer_addr {
+        Some(peer_addr) => build_outbound_proxy_headers(&parts.headers, peer_addr),
+        None => filter_request_headers(&parts.headers),
+    };
     let read_limit = if request_body_limit == 0 {
         usize::MAX
     } else {

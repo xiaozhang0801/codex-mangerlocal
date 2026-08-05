@@ -710,6 +710,7 @@ pub(in super::super) async fn proxy_validated_request(
 ) -> Result<(), String> {
     let LocalValidationResult {
         trace_id,
+        client_ip: _client_ip,
         incoming_headers,
         storage,
         original_path,
