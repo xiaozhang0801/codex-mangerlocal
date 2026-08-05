@@ -36,6 +36,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -80,12 +88,81 @@ import {
 import { formatLocalMinuteFromSeconds } from "@/lib/utils/time";
 import { formatCompactNumber } from "@/lib/utils/usage";
 import type { ApiKeyOwner, AppUser } from "@/types";
+import type { ClientIpUsageSummary } from "@/types/request-log";
 
 const ROTATION_STRATEGY_LABELS: Record<string, string> = {
   account_rotation: "账号轮转",
   aggregate_api_rotation: "聚合API轮转",
   hybrid_rotation: "混合轮转（账号优先）",
 };
+
+type ClientIpUsageSortKey =
+  | "todayTokens"
+  | "totalTokens"
+  | "todayCost"
+  | "totalCost"
+  | "requestCount"
+  | "lastSeenAt"
+  | "clientIp";
+
+type ClientIpUsageRow = ClientIpUsageSummary & {
+  todayEstimatedCostUsd: number;
+};
+
+const CLIENT_IP_USAGE_SORT_OPTIONS: Array<{
+  value: ClientIpUsageSortKey;
+  label: string;
+}> = [
+  { value: "todayTokens", label: "今日 Token 高到低" },
+  { value: "totalTokens", label: "累计 Token 高到低" },
+  { value: "todayCost", label: "今日金额高到低" },
+  { value: "totalCost", label: "累计金额高到低" },
+  { value: "requestCount", label: "请求数高到低" },
+  { value: "lastSeenAt", label: "最近出现优先" },
+  { value: "clientIp", label: "IP 升序" },
+];
+
+function normalizeSortNumber(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function compareClientIpText(left: string, right: string): number {
+  return left.localeCompare(right, "zh-CN", {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function compareClientIpUsageRows(
+  left: ClientIpUsageRow,
+  right: ClientIpUsageRow,
+  sortKey: ClientIpUsageSortKey,
+): number {
+  if (sortKey === "clientIp") {
+    return compareClientIpText(left.clientIp, right.clientIp);
+  }
+
+  const valueOf = (row: ClientIpUsageRow) => {
+    switch (sortKey) {
+      case "todayTokens":
+        return normalizeSortNumber(row.todayTokens);
+      case "totalTokens":
+        return normalizeSortNumber(row.totalTokens);
+      case "todayCost":
+        return normalizeSortNumber(row.todayEstimatedCostUsd);
+      case "totalCost":
+        return normalizeSortNumber(row.estimatedCostUsd);
+      case "requestCount":
+        return normalizeSortNumber(row.requestCount);
+      case "lastSeenAt":
+        return normalizeSortNumber(row.lastSeenAt);
+      default:
+        return 0;
+    }
+  };
+  const valueDiff = valueOf(right) - valueOf(left);
+  return valueDiff || compareClientIpText(left.clientIp, right.clientIp);
+}
 
 function userCanOwnApiKey(user: AppUser): boolean {
   return user.role !== "admin";
@@ -194,6 +271,8 @@ export default function ApiKeysPage() {
   const [ccSwitchImportingId, setCcSwitchImportingId] = useState<string | null>(
     null,
   );
+  const [clientIpUsageSort, setClientIpUsageSort] =
+    useState<ClientIpUsageSortKey>("todayTokens");
   const [browserOrigin, setBrowserOrigin] = useState("");
   const { data: accountManagerStatus } = useQuery({
     queryKey: ["account-manager", "status"],
@@ -391,6 +470,13 @@ export default function ApiKeysPage() {
         todayEstimatedCostUsd: todayCostByClientIp.get(item.clientIp) ?? 0,
       })),
     [clientIpUsage?.items, todayCostByClientIp, todayTokensByClientIp],
+  );
+  const sortedClientIpUsageRows = useMemo(
+    () =>
+      [...clientIpUsageRows].sort((left, right) =>
+        compareClientIpUsageRows(left, right, clientIpUsageSort),
+      ),
+    [clientIpUsageRows, clientIpUsageSort],
   );
   const showOverviewLoading =
     isServiceReady && isPageActive && isUsageOverviewLoading;
@@ -711,9 +797,38 @@ export default function ApiKeysPage() {
                 {t("按客户端 IP 汇总，不按密钥拆分")}
               </p>
             </div>
-            <Badge variant="secondary" className="rounded-md px-2.5">
-              {t("共 {count} 条", { count: clientIpUsageRows.length })}
-            </Badge>
+            <div className="flex shrink-0 items-center gap-2">
+              <Select
+                value={clientIpUsageSort}
+                onValueChange={(value) =>
+                  setClientIpUsageSort(value as ClientIpUsageSortKey)
+                }
+              >
+                <SelectTrigger size="sm" className="w-[150px]">
+                  <SelectValue>
+                    {(value) =>
+                      t(
+                        CLIENT_IP_USAGE_SORT_OPTIONS.find(
+                          (option) => option.value === value,
+                        )?.label || "今日 Token 高到低",
+                      )
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectGroup>
+                    {CLIENT_IP_USAGE_SORT_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {t(option.label)}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Badge variant="secondary" className="rounded-md px-2.5">
+                {t("共 {count} 条", { count: clientIpUsageRows.length })}
+              </Badge>
+            </div>
           </div>
           <Table className="min-w-[860px]">
             <TableHeader>
@@ -738,7 +853,7 @@ export default function ApiKeysPage() {
                     <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                   </TableRow>
                 ))
-              ) : clientIpUsageRows.length === 0 ? (
+              ) : sortedClientIpUsageRows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="h-28 text-center">
                     <span className="text-sm text-muted-foreground">
@@ -747,7 +862,7 @@ export default function ApiKeysPage() {
                   </TableCell>
                 </TableRow>
               ) : (
-                clientIpUsageRows.map((item) => (
+                sortedClientIpUsageRows.map((item) => (
                   <TableRow key={item.clientIp}>
                     <TableCell>
                       <code className="inline-block max-w-[180px] truncate whitespace-nowrap rounded border border-primary/5 bg-muted/50 px-2 py-1 font-mono text-[10px] leading-4 text-primary">

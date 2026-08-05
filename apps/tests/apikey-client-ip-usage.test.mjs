@@ -26,3 +26,19 @@ test("API Keys page reads token usage as one row per client IP", async () => {
   assert.doesNotMatch(pageSource, /keyId:\s*item\.keyId/);
   assert.doesNotMatch(pageSource, /\[`${?item\.keyId}?:\${?item\.clientIp/);
 });
+
+test("API Keys page sorts LAN IP usage rows from a selectable order", async () => {
+  const pageSource = await readSource("src/app/apikeys/page.tsx");
+
+  assert.match(pageSource, /type ClientIpUsageSortKey/);
+  assert.match(pageSource, /CLIENT_IP_USAGE_SORT_OPTIONS/);
+  assert.match(pageSource, /useState<ClientIpUsageSortKey>\("todayTokens"\)/);
+  assert.match(pageSource, /sortedClientIpUsageRows/);
+  assert.match(pageSource, /clientIpUsageSort/);
+  assert.match(pageSource, /setClientIpUsageSort/);
+  assert.match(pageSource, /今日 Token 高到低/);
+  assert.match(pageSource, /累计金额高到低/);
+  assert.match(pageSource, /IP 升序/);
+  assert.match(pageSource, /<SelectItem[\s\S]*value={option\.value}/);
+  assert.match(pageSource, /sortedClientIpUsageRows\.map/);
+});
