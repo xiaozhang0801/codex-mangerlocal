@@ -4,7 +4,9 @@
 
 **Goal:** Restore ZhangHao's local CodexManager features on the current upstream version without changing the existing visual style or page layout.
 
-**Architecture:** Keep the upstream repository boundaries intact: Tauri/local release work stays under `apps/src-tauri` and `.github`, persistent IP/token data stays in `crates/core`, service/RPC/gateway behavior stays in `crates/service` and `crates/web`, and frontend wiring stays in `apps/src`. Preserve raw `key_id + client_ip` storage for permission filtering, but expose and render IP usage as one row per client IP.
+**Scope Update (2026-08-05):** User clarified that only the desktop App is required; service-mode Web UI is out of scope. During execution, skip any `crates/web`, `codexmanager-web`, and `transport-web-commands` tasks or validation steps in the original plan.
+
+**Architecture:** Keep the upstream repository boundaries intact: Tauri/local release work stays under `apps/src-tauri` and `.github`, persistent IP/token data stays in `crates/core`, service/RPC/gateway behavior needed by the desktop App stays in `crates/service`, and frontend App wiring stays in `apps/src`. Preserve raw `key_id + client_ip` storage for permission filtering, but expose and render IP usage as one row per client IP.
 
 **Tech Stack:** Rust, rusqlite, tiny_http, axum, Tauri v2, Next.js 16 static export, React 19, TanStack Query, Node test runner.
 
@@ -14,6 +16,7 @@
 
 - Do not stage or modify unrelated current work: `.gitignore` and `docs/zhanghao-local-features-migration.md` are pre-existing workspace changes.
 - Keep UI layout and styling intact. Add fields, hooks, and small in-place sections only where the current pages already have matching surfaces.
+- Do not implement or validate service-mode Web UI behavior for this migration.
 - For every task, run the focused failing test before implementation, then rerun it after implementation.
 - Use `Get-Content -Encoding UTF8` when reading Chinese or mixed-language files.
 - Use `apply_patch` for manual edits.
