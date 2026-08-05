@@ -36,6 +36,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -54,11 +62,13 @@ import {
 } from "@/hooks/useAppSession";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
+import { useLocalDayRange } from "@/hooks/useLocalDayRange";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
 import { accountClient } from "@/lib/api/account-client";
 import { appClient } from "@/lib/api/app-client";
+import { serviceClient } from "@/lib/api/service-client";
 import {
   buildGeminiGatewayEndpoint,
   buildOpenAiGatewayEndpoint,
@@ -78,6 +88,7 @@ import {
 import { formatLocalMinuteFromSeconds } from "@/lib/utils/time";
 import { formatCompactNumber } from "@/lib/utils/usage";
 import type { ApiKeyOwner, AppUser } from "@/types";
+import type { ClientIpUsageSummary } from "@/types/request-log";
 
 const ROTATION_STRATEGY_LABELS: Record<string, string> = {
   account_rotation: "账号轮转",
@@ -85,6 +96,74 @@ const ROTATION_STRATEGY_LABELS: Record<string, string> = {
   hybrid_rotation: "混合轮转（账号优先）",
   hybrid_aggregate_first_rotation: "混合轮转（聚合优先）",
 };
+
+type ClientIpUsageSortKey =
+  | "todayTokens"
+  | "totalTokens"
+  | "todayCost"
+  | "totalCost"
+  | "requestCount"
+  | "lastSeenAt"
+  | "clientIp";
+
+type ClientIpUsageRow = ClientIpUsageSummary & {
+  todayEstimatedCostUsd: number;
+};
+
+const CLIENT_IP_USAGE_SORT_OPTIONS: Array<{
+  value: ClientIpUsageSortKey;
+  label: string;
+}> = [
+  { value: "todayTokens", label: "今日 Token 高到低" },
+  { value: "totalTokens", label: "累计 Token 高到低" },
+  { value: "todayCost", label: "今日金额高到低" },
+  { value: "totalCost", label: "累计金额高到低" },
+  { value: "requestCount", label: "请求数高到低" },
+  { value: "lastSeenAt", label: "最近出现优先" },
+  { value: "clientIp", label: "IP 升序" },
+];
+
+function normalizeSortNumber(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function compareClientIpText(left: string, right: string): number {
+  return left.localeCompare(right, "zh-CN", {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function compareClientIpUsageRows(
+  left: ClientIpUsageRow,
+  right: ClientIpUsageRow,
+  sortKey: ClientIpUsageSortKey,
+): number {
+  if (sortKey === "clientIp") {
+    return compareClientIpText(left.clientIp, right.clientIp);
+  }
+
+  const valueOf = (row: ClientIpUsageRow) => {
+    switch (sortKey) {
+      case "todayTokens":
+        return normalizeSortNumber(row.todayTokens);
+      case "totalTokens":
+        return normalizeSortNumber(row.totalTokens);
+      case "todayCost":
+        return normalizeSortNumber(row.todayEstimatedCostUsd);
+      case "totalCost":
+        return normalizeSortNumber(row.estimatedCostUsd);
+      case "requestCount":
+        return normalizeSortNumber(row.requestCount);
+      case "lastSeenAt":
+        return normalizeSortNumber(row.lastSeenAt);
+      default:
+        return 0;
+    }
+  };
+  const valueDiff = valueOf(right) - valueOf(left);
+  return valueDiff || compareClientIpText(left.clientIp, right.clientIp);
+}
 
 function userCanOwnApiKey(user: AppUser): boolean {
   return user.role !== "admin";
@@ -178,6 +257,7 @@ export default function ApiKeysPage() {
   } = useApiKeys();
   const isPageActive = useDesktopPageActive("/apikeys/");
   const isUsageQueryEnabled = useDeferredDesktopActivation(isServiceReady);
+  const localDayRange = useLocalDayRange();
   usePageTransitionReady(
     "/apikeys/",
     !isServiceReady || (!isLoading && !isModelsLoading),
@@ -192,6 +272,8 @@ export default function ApiKeysPage() {
   const [ccSwitchImportingId, setCcSwitchImportingId] = useState<string | null>(
     null,
   );
+  const [clientIpUsageSort, setClientIpUsageSort] =
+    useState<ClientIpUsageSortKey>("todayTokens");
   const [browserOrigin, setBrowserOrigin] = useState("");
   const { data: accountManagerStatus } = useQuery({
     queryKey: ["account-manager", "status", serviceAddr || null],
@@ -347,6 +429,65 @@ export default function ApiKeysPage() {
   const costByKey = usageOverview?.costByKey || {};
   const todayUsageByKey = usageOverview?.todayUsageByKey || {};
   const todayCostByKey = usageOverview?.todayCostByKey || {};
+  const { data: clientIpUsage, isPending: isClientIpUsageLoading } = useQuery({
+    queryKey: ["apikey-client-ip-usage", serviceAddr || null],
+    queryFn: () => serviceClient.listClientIpUsage({ limit: 100 }),
+    enabled: isUsageQueryEnabled && isPageActive,
+    retry: 1,
+  });
+  const { data: todayClientIpUsage } = useQuery({
+    queryKey: [
+      "apikey-client-ip-usage",
+      "today",
+      serviceAddr || null,
+      localDayRange.dayStartTs,
+      localDayRange.dayEndTs,
+    ],
+    queryFn: () =>
+      serviceClient.listClientIpUsage({
+        startTs: localDayRange.dayStartTs,
+        endTs: localDayRange.dayEndTs,
+        limit: 100,
+      }),
+    enabled: isUsageQueryEnabled && isPageActive,
+    retry: 1,
+  });
+  const todayTokensByClientIp = useMemo(
+    () =>
+      new Map(
+        (todayClientIpUsage?.items ?? []).map((item) => [
+          item.clientIp,
+          item.totalTokens,
+        ]),
+      ),
+    [todayClientIpUsage?.items],
+  );
+  const todayCostByClientIp = useMemo(
+    () =>
+      new Map(
+        (todayClientIpUsage?.items ?? []).map((item) => [
+          item.clientIp,
+          item.estimatedCostUsd,
+        ]),
+      ),
+    [todayClientIpUsage?.items],
+  );
+  const clientIpUsageRows = useMemo(
+    () =>
+      (clientIpUsage?.items ?? []).map((item) => ({
+        ...item,
+        todayTokens: todayTokensByClientIp.get(item.clientIp) ?? 0,
+        todayEstimatedCostUsd: todayCostByClientIp.get(item.clientIp) ?? 0,
+      })),
+    [clientIpUsage?.items, todayCostByClientIp, todayTokensByClientIp],
+  );
+  const sortedClientIpUsageRows = useMemo(
+    () =>
+      [...clientIpUsageRows].sort((left, right) =>
+        compareClientIpUsageRows(left, right, clientIpUsageSort),
+      ),
+    [clientIpUsageRows, clientIpUsageSort],
+  );
   const showOverviewLoading =
     isServiceReady && isPageActive && isUsageOverviewLoading;
 
@@ -654,6 +795,119 @@ export default function ApiKeysPage() {
           </>
         )}
       </div>
+
+      <WorkPanel>
+        <CardContent className="p-0">
+          <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-semibold text-foreground">
+                {t("内网 IP 用量")}
+              </h2>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                {t("按客户端 IP 汇总，不按密钥拆分")}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Select
+                value={clientIpUsageSort}
+                onValueChange={(value) =>
+                  setClientIpUsageSort(value as ClientIpUsageSortKey)
+                }
+              >
+                <SelectTrigger size="sm" className="w-[150px]">
+                  <SelectValue>
+                    {(value) =>
+                      t(
+                        CLIENT_IP_USAGE_SORT_OPTIONS.find(
+                          (option) => option.value === value,
+                        )?.label || "今日 Token 高到低",
+                      )
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectGroup>
+                    {CLIENT_IP_USAGE_SORT_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {t(option.label)}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Badge variant="secondary" className="rounded-md px-2.5">
+                {t("共 {count} 条", { count: clientIpUsageRows.length })}
+              </Badge>
+            </div>
+          </div>
+          <Table className="min-w-[860px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("客户端 IP")}</TableHead>
+                <TableHead>{t("今日 Token / 金额")}</TableHead>
+                <TableHead>{t("累计 Token / 金额")}</TableHead>
+                <TableHead>{t("请求数")}</TableHead>
+                <TableHead>{t("成功 / 异常")}</TableHead>
+                <TableHead>{t("最近出现")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isClientIpUsageLoading ? (
+                Array.from({ length: 3 }).map((_, index) => (
+                  <TableRow key={index}>
+                    <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                  </TableRow>
+                ))
+              ) : sortedClientIpUsageRows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="h-28 text-center">
+                    <span className="text-sm text-muted-foreground">
+                      {t("暂无 IP 用量")}
+                    </span>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                sortedClientIpUsageRows.map((item) => (
+                  <TableRow key={item.clientIp}>
+                    <TableCell>
+                      <code className="inline-block max-w-[180px] truncate whitespace-nowrap rounded border border-primary/5 bg-muted/50 px-2 py-1 font-mono text-[10px] leading-4 text-primary">
+                        {item.clientIp}
+                      </code>
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      <div>{formatCompactTokenAmount(item.todayTokens)}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {formatQuotaLimitUsd(item.todayEstimatedCostUsd)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      <div>{formatCompactTokenAmount(item.totalTokens)}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {formatQuotaLimitUsd(item.estimatedCostUsd)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      {item.requestCount.toLocaleString("zh-CN")}
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums text-muted-foreground">
+                      {item.successCount.toLocaleString("zh-CN")} /{" "}
+                      {item.errorCount.toLocaleString("zh-CN")}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {formatLocalMinuteFromSeconds(item.lastSeenAt, t("从未出现"))}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </WorkPanel>
 
       <WorkPanel>
         <CardContent className="p-0">
