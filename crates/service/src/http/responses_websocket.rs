@@ -794,6 +794,10 @@ fn rewrite_client_frame(
         &context.api_key,
         context.prompt_cache_key.as_deref(),
     );
+    let rewritten_body = crate::gateway::align_existing_prompt_cache_key_with_native_anchor(
+        rewritten_body,
+        &context.incoming_headers,
+    );
     let mut rewritten_value = serde_json::from_slice::<Value>(&rewritten_body).map_err(|err| {
         WsSessionError::bad_gateway_bilingual(
             "重写 WebSocket 请求失败",

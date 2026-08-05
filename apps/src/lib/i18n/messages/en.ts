@@ -687,6 +687,12 @@ export const EN_MESSAGES: MessageCatalog = {
   "使用更明显的渐层背景、增强玻璃质感和更强层次感。":
     "Use a stronger gradient background, richer glass effect, and more visual depth.",
   界面主题: "Theme",
+  界面缩放: "Interface scale",
+  调整桌面主窗口的整体显示比例: "Adjust the overall scale of the desktop window.",
+  缩小界面: "Zoom out",
+  放大界面: "Zoom in",
+  界面缩放比例: "Interface scale",
+  恢复默认缩放: "Reset scale",
   "选择您喜爱的配色方案，适配不同工作心情":
     "Choose your preferred color theme for different moods.",
   企业蓝: "Enterprise Blue",

@@ -159,6 +159,7 @@ use request_rewrite::{
     apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope,
     apply_request_overrides_with_service_tier_and_prompt_cache_key_scope, compute_upstream_url,
 };
+pub(crate) use thread_anchor::align_existing_prompt_cache_key_with_native_anchor;
 pub(super) use thread_anchor::{
     resolve_fallback_thread_anchor, resolve_local_conversation_id_with_sticky_fallback,
 };

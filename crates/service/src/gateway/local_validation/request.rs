@@ -2283,6 +2283,8 @@ pub(super) fn build_local_validation_result(
             allow_codex_compat_rewrite,
         )
     };
+    body =
+        super::super::align_existing_prompt_cache_key_with_native_anchor(body, &incoming_headers);
     if should_normalize_compat_service_tier {
         body = normalize_compat_service_tier_for_codex_backend(body);
     }

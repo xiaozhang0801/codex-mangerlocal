@@ -1286,8 +1286,7 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
 }
 
 #[tokio::test]
-async fn official_responses_websocket_preserves_explicit_prompt_cache_key_when_session_anchor_exists(
-) {
+async fn official_responses_websocket_aligns_prompt_cache_key_with_resolved_session_anchor() {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-explicit-prompt-cache-key");
     let storage = init_test_storage(&db_path);
@@ -1351,11 +1350,20 @@ async fn official_responses_websocket_preserves_explicit_prompt_cache_key_when_s
     let payload: serde_json::Value =
         serde_json::from_str(&upstream_frame).expect("parse upstream frame");
     assert_eq!(payload["type"], "response.create");
-    assert_eq!(
-        payload
-            .get("prompt_cache_key")
-            .and_then(serde_json::Value::as_str),
-        Some("client_ws_thread_123")
+    let upstream_prompt_cache_key = payload
+        .get("prompt_cache_key")
+        .and_then(serde_json::Value::as_str)
+        .expect("resolved session anchor is forwarded as prompt_cache_key");
+    assert_ne!(upstream_prompt_cache_key, "client_ws_thread_123");
+    assert!(
+        upstream_prompt_cache_key
+            .split('-')
+            .map(str::len)
+            .eq([8, 4, 4, 4, 12])
+            && upstream_prompt_cache_key
+                .chars()
+                .all(|ch| ch == '-' || ch.is_ascii_hexdigit()),
+        "resolved session anchor should use the generated conversation id"
     );
 
     let client_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
