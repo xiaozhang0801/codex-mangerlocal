@@ -112,7 +112,14 @@ interface MetricCardProps {
   valueClassName?: string;
 }
 
-type AdminUsageRangePreset = "7d" | "14d" | "30d" | "custom";
+type AdminUsageRangePreset =
+  | "today"
+  | "1d"
+  | "3d"
+  | "7d"
+  | "14d"
+  | "30d"
+  | "custom";
 type ActiveRequestFilter = "all" | "running" | "queued";
 
 interface AdminUsageRangeValue {
@@ -177,6 +184,32 @@ function buildAdminUsagePresetRange(
   localDayStartTs: number,
   localDayEndTs: number,
 ): AdminUsageRangeValue {
+  if (preset === "today") {
+    return {
+      startTs: localDayStartTs,
+      endTs: localDayEndTs,
+      startInput: formatDateInputValueFromSeconds(localDayStartTs),
+      endInput: formatDateInputValueFromSeconds(
+        Math.max(localDayStartTs, localDayEndTs - 1),
+      ),
+    };
+  }
+
+  if (preset === "1d" || preset === "3d") {
+    const endTs = Math.min(Math.floor(Date.now() / 1000), localDayEndTs);
+    const startTs = Math.max(
+      0,
+      endTs - (preset === "1d" ? 1 : 3) * 86_400,
+    );
+
+    return {
+      startTs,
+      endTs,
+      startInput: formatDateInputValueFromSeconds(startTs),
+      endInput: formatDateInputValueFromSeconds(endTs),
+    };
+  }
+
   const days = preset === "14d" ? 14 : preset === "30d" ? 30 : 7;
   const todayStart = new Date(localDayStartTs * 1000);
   const startDate = new Date(
@@ -922,6 +955,9 @@ function AdminUsageAnalyticsCard({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
+                    <SelectItem value="today">{t("当天")}</SelectItem>
+                    <SelectItem value="1d">{t("最近 1 天")}</SelectItem>
+                    <SelectItem value="3d">{t("最近 3 天")}</SelectItem>
                     <SelectItem value="7d">{t("最近 7 天")}</SelectItem>
                     <SelectItem value="14d">{t("最近 14 天")}</SelectItem>
                     <SelectItem value="30d">{t("最近 30 天")}</SelectItem>
@@ -1057,7 +1093,7 @@ function AdminDashboard() {
       endInput: "",
     });
   const [adminUsageGranularity, setAdminUsageGranularity] =
-    useState<AdminUsageGranularity>("day");
+    useState<AdminUsageGranularity>("hour");
 
   useEffect(() => {
     if (adminUsageRangePreset === "custom") {

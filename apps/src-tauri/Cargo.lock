@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "CodexManagerLocal"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "chrono",
  "codexmanager-core",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "codexmanager-core"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "codexmanager-service"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -910,6 +910,7 @@ dependencies = [
  "env_logger",
  "eventsource-stream",
  "futures-util",
+ "hyper-util",
  "libc",
  "log",
  "os_info",

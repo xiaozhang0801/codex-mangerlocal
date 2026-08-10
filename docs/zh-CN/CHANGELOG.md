@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-08
+
+### Fixed
+
+- 修复同一团队下添加第二个账号会覆盖已有账号的问题，按登录主体隔离账号身份。
+- 流式请求遇到可切换的上游错误时，同一账号最多重试一次，仍失败后再切换账号，减少限频恶化。
+
 ## [0.5.2] - 2026-07-31
 
 ### Changed
@@ -452,7 +459,8 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/qxcnm/Codex-Manager/compare/v0.4.4...v0.5.0

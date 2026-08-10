@@ -43,7 +43,7 @@ pub use model_billing_v2::{
 };
 pub use model_catalog_v2::{
     ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
-    ManagedModelV2Upsert, ModelCatalogV2Stats, ModelPriceV2, ModelRouteV2,
+    ManagedModelV2Upsert, ModelCatalogV2Stats, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
 
@@ -2274,6 +2274,14 @@ impl Storage {
         self.apply_sql_migration(
             "128_login_sessions_group_name",
             include_str!("../../migrations/128_login_sessions_group_name.sql"),
+        )?;
+        self.apply_sql_migration(
+            "129_model_fast_policy",
+            include_str!("../../migrations/129_model_fast_policy.sql"),
+        )?;
+        self.apply_sql_migration(
+            "130_accounts_subject_identity",
+            include_str!("../../migrations/130_accounts_subject_identity.sql"),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;

@@ -21,10 +21,23 @@ test("管理员用量查询显式请求模型序列和时间粒度", async () =>
   assert.match(clientSource, /seriesBucketSeconds: params\?\.seriesBucketSeconds \?\? null/);
   assert.match(hookSource, /params\?\.seriesBucketSeconds \?\? null/);
   assert.match(pageSource, /includeSeries: true/);
+  assert.match(pageSource, /useState<AdminUsageGranularity>\("hour"\)/);
   assert.match(
     pageSource,
     /seriesBucketSeconds: adminUsageGranularity === "hour" \? 3_600 : 86_400/,
   );
+});
+
+test("管理员用量预设支持当天和短期滚动范围", async () => {
+  const pageSource = await readSource("src/app/page.tsx");
+
+  assert.match(pageSource, /\| "today"\r?\n  \| "1d"\r?\n  \| "3d"/);
+  assert.match(pageSource, /preset === "today"/);
+  assert.match(pageSource, /preset === "1d" \|\| preset === "3d"/);
+  assert.match(pageSource, /\(preset === "1d" \? 1 : 3\) \* 86_400/);
+  assert.match(pageSource, /<SelectItem value="today">\{t\("当天"\)\}<\/SelectItem>/);
+  assert.match(pageSource, /<SelectItem value="1d">\{t\("最近 1 天"\)\}<\/SelectItem>/);
+  assert.match(pageSource, /<SelectItem value="3d">\{t\("最近 3 天"\)\}<\/SelectItem>/);
 });
 
 test("模型曲线保留原日曲线回退并提供可访问交互", async () => {
@@ -52,6 +65,11 @@ test("模型曲线保留原日曲线回退并提供可访问交互", async () =>
   assert.match(chartSource, /<Brush/);
   assert.match(chartSource, /name: label/);
   assert.match(chartSource, /travellerWidth=\{16\}/);
+  assert.match(chartSource, /function finiteChartIndex/);
+  assert.match(chartSource, /Number\.isFinite\(nextWindow\.startIndex\)/);
+  assert.match(chartSource, /Number\.isFinite\(nextWindow\.endIndex\)/);
+  assert.match(chartSource, /const chartInstanceKey = \[/);
+  assert.match(chartSource, /<ComposedChart\r?\n\s+key=\{chartInstanceKey\}/);
   assert.match(chartSource, /aria-describedby="usage-chart-range-help usage-chart-visible-range"/);
   assert.match(chartSource, /aria-live="polite"/);
   assert.match(chartSource, /itemSorter=/);

@@ -877,6 +877,10 @@ pub(crate) fn current_upstream_stream_timeout_ms() -> u64 {
     runtime_config::current_upstream_stream_timeout_ms()
 }
 
+pub(crate) fn current_upstream_connect_timeout() -> std::time::Duration {
+    runtime_config::current_upstream_connect_timeout()
+}
+
 pub(crate) fn current_upstream_total_timeout_ms() -> u64 {
     runtime_config::current_upstream_total_timeout_ms()
 }

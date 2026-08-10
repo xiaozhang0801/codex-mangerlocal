@@ -94,12 +94,15 @@
   </tr>
   <tr>
     <td align="center" valign="middle" width="180">
-      <a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">
+      <a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=logo_brand_home_v3">
         <img src="assets/images/sponsors/aixiamo.jpg" alt="AI夏末 AIXiamo" width="120" />
       </a>
     </td>
     <td valign="top">
-      <strong><a href="https://www.aixiamo.com/chatgpt-pro?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=pro_owner">AIXiamo（独立 AI 订阅服务）</a></strong>：提供 ChatGPT Plus / Pro 国内充值；高频 Codex、深度研究和长任务用户可先<a href="https://www.aixiamo.com/tools/chatgpt-pro-plan-calculator?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=pro_calculator">比较 Pro 5x / 20x 并用用量选择器判断档位</a>。也覆盖 Claude Max、Google AI Pro（Gemini）和 SuperGrok；支持支付宝，无需海外银行卡，订单状态可查询。
+      <strong><a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=brand_home_v3">AIXiamo 官网｜国内 ChatGPT Plus / Pro 本人账号正规充值</a></strong><br />
+      <strong>Codex 额度不够，Plus 还是 Pro？</strong> 日常使用和普通 Codex 选 <a href="https://www.aixiamo.com/chatgpt-plus-domestic-recharge?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=plus_owner_v3">Plus</a>；经常触顶或高频长任务，再比较 <a href="https://www.aixiamo.com/chatgpt-pro?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=pro_owner_v3">Pro 5x / 20x</a>。<br />
+      支持支付宝、无需海外银行卡；不索取密码、验证码或恢复码，订单可查、中文售后，充值不成功经核验后全额退款。持续运营三年多，线上线下累计服务数万名用户；另有 Claude Pro / Max、Gemini（Google AI Pro）、Grok / SuperGrok 等主流 AI 会员。<br />
+      欢迎企业采购对接；<a href="https://www.aixiamo.com/articles/aixiamo-invoice-application-notice-2026?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=invoice_notice_v3">已完成订单支持申请开具发票，请先联系售后确认</a>。
     </td>
   </tr>
   <tr>
