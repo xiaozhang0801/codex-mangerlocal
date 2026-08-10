@@ -1,6 +1,9 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+const UPDATE_REPO_ENV_KEY: &str = "CODEXMANAGER_UPDATE_REPO";
+const LEGACY_AUTHOR_UPDATE_REPO: &str = "qxcnm/Codex-Manager";
+
 /// 函数 `env_override_default_value`
 ///
 /// 作者: gaohongshun
@@ -39,6 +42,15 @@ pub(super) fn env_override_default_snapshot() -> BTreeMap<String, String> {
     snapshot
 }
 
+fn migrate_legacy_env_override_value(key: &str, value: String) -> String {
+    if key.eq_ignore_ascii_case(UPDATE_REPO_ENV_KEY)
+        && value.trim().eq_ignore_ascii_case(LEGACY_AUTHOR_UPDATE_REPO)
+    {
+        return env_override_default_value(key);
+    }
+    value
+}
+
 /// 函数 `persisted_env_overrides`
 ///
 /// 作者: gaohongshun
@@ -73,6 +85,7 @@ fn persisted_env_overrides(mut normalized: BTreeMap<String, String>) -> BTreeMap
         };
         if let Some(value) = super::normalize::parse_saved_env_override_value(&raw_value) {
             if super::catalog::is_env_override_catalog_key(&key) || !value.is_empty() {
+                let value = migrate_legacy_env_override_value(&key, value);
                 normalized.insert(key, value);
             } else {
                 normalized.remove(&key);

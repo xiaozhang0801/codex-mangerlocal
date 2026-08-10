@@ -2235,6 +2235,57 @@ fn app_settings_get_drops_web_addr_from_persisted_env_snapshot() {
     });
 }
 
+#[test]
+fn app_settings_get_migrates_legacy_author_update_repo_env_override() {
+    with_temp_db(|db_path| {
+        let _env = override_env_vars(&[("CODEXMANAGER_UPDATE_REPO", None)]);
+        let storage = Storage::open(db_path).expect("open storage");
+        storage
+            .set_app_setting(
+                codexmanager_service::APP_SETTING_ENV_OVERRIDES_KEY,
+                &serde_json::to_string(&json!({
+                    "CODEXMANAGER_UPDATE_REPO": "qxcnm/Codex-Manager",
+                    "CODEXMANAGER_WEB_ROOT": "D:/tmp/web"
+                }))
+                .expect("serialize env overrides"),
+                now_ts(),
+            )
+            .expect("save env overrides");
+        drop(storage);
+
+        let snapshot = codexmanager_service::app_settings_get().expect("get app settings");
+
+        assert_eq!(
+            snapshot
+                .get("envOverrides")
+                .and_then(|value| value.get("CODEXMANAGER_UPDATE_REPO"))
+                .and_then(|value| value.as_str()),
+            Some("xiaozhang0801/codex-mangerlocal")
+        );
+        assert_eq!(
+            snapshot
+                .get("envOverrides")
+                .and_then(|value| value.get("CODEXMANAGER_WEB_ROOT"))
+                .and_then(|value| value.as_str()),
+            Some("D:/tmp/web")
+        );
+
+        let stored = read_env_overrides_map(db_path);
+        assert_eq!(
+            stored
+                .get("CODEXMANAGER_UPDATE_REPO")
+                .and_then(|value| value.as_str()),
+            Some("xiaozhang0801/codex-mangerlocal")
+        );
+        assert_eq!(
+            stored
+                .get("CODEXMANAGER_WEB_ROOT")
+                .and_then(|value| value.as_str()),
+            Some("D:/tmp/web")
+        );
+    });
+}
+
 /// 函数 `app_settings_get_seeds_full_env_override_snapshot`
 ///
 /// 作者: gaohongshun
