@@ -7,7 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+const TEST_LARGE_RESPONSES_WS_FRAME_BYTES: usize = 17 * 1024 * 1024;
 
 #[test]
 fn websocket_target_url_preserves_path_and_query() {
@@ -84,7 +87,10 @@ async fn tunnels_responses_websocket_to_service() {
             .accept()
             .await
             .expect("accept web gateway websocket");
-        let mut websocket = tokio_tungstenite::accept_hdr_async(
+        let upstream_config = WebSocketConfig::default()
+            .max_message_size(Some(TEST_LARGE_RESPONSES_WS_FRAME_BYTES * 2))
+            .max_frame_size(Some(TEST_LARGE_RESPONSES_WS_FRAME_BYTES * 2));
+        let mut websocket = tokio_tungstenite::accept_hdr_async_with_config(
             stream,
             move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
                   response: tokio_tungstenite::tungstenite::handshake::server::Response| {
@@ -104,6 +110,7 @@ async fn tunnels_responses_websocket_to_service() {
                 let _ = capture_tx.send(capture);
                 Ok(response)
             },
+            Some(upstream_config),
         )
         .await
         .expect("accept websocket handshake");
@@ -112,7 +119,10 @@ async fn tunnels_responses_websocket_to_service() {
             .await
             .expect("receive proxied websocket frame")
             .expect("read proxied websocket frame");
-        assert!(matches!(request, WsMessage::Text(ref text) if text.contains("response.create")));
+        assert!(matches!(request, WsMessage::Text(ref text)
+            if text.contains("response.create")
+                && text.contains("data:image/png;base64,")
+                && text.len() > 16 * 1024 * 1024));
         websocket
             .send(WsMessage::Text(
                 r#"{"type":"response.completed","response":{"id":"resp_web_proxy"}}"#.into(),
@@ -139,10 +149,23 @@ async fn tunnels_responses_websocket_to_service() {
         .expect("connect through web gateway");
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
 
+    let image_data = "A".repeat(TEST_LARGE_RESPONSES_WS_FRAME_BYTES);
+    let payload = serde_json::json!({
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_image",
+                "image_url": format!("data:image/png;base64,{image_data}")
+            }]
+        }]
+    })
+    .to_string();
+    assert!(payload.len() > 16 * 1024 * 1024);
     client
-        .send(WsMessage::Text(
-            r#"{"type":"response.create","model":"gpt-5.6-sol","input":"hello"}"#.into(),
-        ))
+        .send(WsMessage::Text(payload.into()))
         .await
         .expect("send client websocket frame");
     let response = tokio::time::timeout(Duration::from_secs(5), client.next())

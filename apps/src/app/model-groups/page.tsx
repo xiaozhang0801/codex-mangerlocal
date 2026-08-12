@@ -113,8 +113,17 @@ function modelDraftFromEntry(entry?: ModelGroupModel): ModelDraft {
   };
 }
 
-function groupModelCount(groupId: string, models: ModelGroupModel[]): number {
-  return models.filter((item) => item.groupId === groupId && item.enabled).length;
+function defaultGroupModelCount(models: ManagedModelV2[]): number {
+  return models.filter((model) => model.enabled && model.supportedInApi).length;
+}
+
+function groupModelCount(
+  group: ModelGroup,
+  models: ModelGroupModel[],
+  catalogModels: ManagedModelV2[],
+): number {
+  if (group.isDefault) return defaultGroupModelCount(catalogModels);
+  return models.filter((item) => item.groupId === group.id && item.enabled).length;
 }
 
 function groupUserCount(groupId: string, assignments: { groupId: string; status?: string }[]): number {
@@ -189,6 +198,7 @@ export default function ModelGroupsPage() {
     : null;
   const activeGroup = refreshedEditingGroup ?? editingGroup;
   const activeGroupId = activeGroup?.id ?? "";
+  const activeGroupIsDefault = activeGroup?.isDefault === true;
 
   useEffect(() => {
     if (!groupDialogOpen || !activeGroupId) return;
@@ -200,7 +210,13 @@ export default function ModelGroupsPage() {
     );
     const nextDrafts: Record<string, ModelDraft> = {};
     for (const model of catalogModels) {
-      nextDrafts[model.slug] = modelDraftFromEntry(bySlug.get(model.slug));
+      nextDrafts[model.slug] = activeGroupIsDefault
+        ? {
+            enabled: model.enabled && model.supportedInApi,
+            rateMultiplier: "",
+            note: "",
+          }
+        : modelDraftFromEntry(bySlug.get(model.slug));
     }
     const nextSelectedUserIds = userAssignments
       .filter((item) => item.groupId === activeGroupId && item.status === "active")
@@ -213,7 +229,14 @@ export default function ModelGroupsPage() {
     return () => {
       active = false;
     };
-  }, [activeGroupId, catalogModels, groupDialogOpen, groupModels, userAssignments]);
+  }, [
+    activeGroupId,
+    activeGroupIsDefault,
+    catalogModels,
+    groupDialogOpen,
+    groupModels,
+    userAssignments,
+  ]);
 
   const refreshAll = async () => {
     await Promise.all([
@@ -283,7 +306,11 @@ export default function ModelGroupsPage() {
     },
     onSuccess: async () => {
       await refreshAll();
-      toast.success(t("模型权限已保存"));
+      toast.success(
+        activeGroup?.isDefault
+          ? t("默认模型组自动包含所有启用模型")
+          : t("模型权限已保存"),
+      );
     },
     onError: (error) => toast.error(`${t("保存失败")}: ${getAppErrorMessage(error)}`),
   });
@@ -345,7 +372,12 @@ export default function ModelGroupsPage() {
   }
 
   const isRefreshing = groupsQuery.isFetching || modelsQuery.isFetching || usersQuery.isFetching;
-  const activeModelCount = activeGroup ? groupModelCount(activeGroup.id, groupModels) : 0;
+  const activeModelCount = activeGroup
+    ? groupModelCount(activeGroup, groupModels, catalogModels)
+    : 0;
+  const activeModelSummary = activeGroup?.isDefault
+    ? t("全部启用模型")
+    : `${activeModelCount} ${t("个模型")}`;
   const activeUserCount = activeGroup ? groupUserCount(activeGroup.id, userAssignments) : 0;
 
   return (
@@ -410,7 +442,7 @@ export default function ModelGroupsPage() {
                   </TableRow>
                 ) : (
                   groups.map((group) => {
-                    const modelCount = groupModelCount(group.id, groupModels);
+                    const modelCount = groupModelCount(group, groupModels, catalogModels);
                     const userCount = groupUserCount(group.id, userAssignments);
                     const multiplier = multiplierToText(group.rateMultiplierMillis) || "1";
                     return (
@@ -432,7 +464,9 @@ export default function ModelGroupsPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-sm">
-                          {modelCount} / {catalogModels.length || "-"}
+                          {group.isDefault
+                            ? t("全部启用")
+                            : `${modelCount} / ${catalogModels.length || "-"}`}
                         </TableCell>
                         <TableCell className="text-sm">{userCount}</TableCell>
                         <TableCell className="font-mono text-sm">{multiplier}x</TableCell>
@@ -509,7 +543,7 @@ export default function ModelGroupsPage() {
             <DialogTitle>{editingGroup ? t("管理模型组") : t("新建模型组")}</DialogTitle>
             <p className="text-sm text-muted-foreground">
               {editingGroup
-                ? `${activeGroup?.name ?? editingGroup.name} · ${activeModelCount} ${t("个模型")} · ${activeUserCount} ${t("个成员")}`
+                ? `${activeGroup?.name ?? editingGroup.name} · ${activeModelSummary} · ${activeUserCount} ${t("个成员")}`
                 : t("先保存基础信息，再继续配置模型权限和成员。")}
             </p>
           </DialogHeader>
@@ -637,12 +671,14 @@ export default function ModelGroupsPage() {
               <div className="flex max-h-[62vh] flex-col gap-4 overflow-hidden">
                 <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-background/35 p-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="text-sm text-muted-foreground">
-                    {t("启用后，该组成员才能调用对应平台模型；倍率为空时使用模型组默认倍率。")}
+                    {activeGroup?.isDefault
+                      ? t("默认模型组自动包含模型目录中所有启用且支持 API 的模型，不保存显式模型列表。")
+                      : t("启用后，该组成员才能调用对应平台模型；倍率为空时使用模型组默认倍率。")}
                   </div>
                   <Button
                     size="sm"
                     className="gap-2"
-                    disabled={!activeGroup || saveModels.isPending}
+                    disabled={!activeGroup || activeGroup.isDefault || saveModels.isPending}
                     onClick={() => saveModels.mutate()}
                   >
                     <Save className="h-4 w-4" />
@@ -673,6 +709,7 @@ export default function ModelGroupsPage() {
                               <TableCell>
                                 <Checkbox
                                   checked={draft.enabled}
+                                  disabled={activeGroup?.isDefault}
                                   onCheckedChange={(checked) =>
                                     setModelDrafts((current) => ({
                                       ...current,
@@ -694,6 +731,7 @@ export default function ModelGroupsPage() {
                                 <Input
                                   value={draft.rateMultiplier}
                                   placeholder={multiplierToText(activeGroup?.rateMultiplierMillis) || "1"}
+                                  disabled={activeGroup?.isDefault}
                                   onChange={(event) =>
                                     setModelDrafts((current) => ({
                                       ...current,

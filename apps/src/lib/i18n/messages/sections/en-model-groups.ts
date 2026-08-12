@@ -6,6 +6,8 @@ export const EN_MODEL_GROUPS_MESSAGES: MessageCatalog = {
   "模型组已保存": "Model group saved",
   "模型组已删除": "Model group deleted",
   "模型权限已保存": "Model permissions saved",
+  "默认模型组自动包含所有启用模型":
+    "The default model group automatically includes all enabled models",
   "成员分配已保存": "Member assignment saved",
   "确认删除该模型组？": "Delete this model group?",
   "只有管理员可以管理模型组": "Only administrators can manage model groups",
@@ -31,6 +33,8 @@ export const EN_MODEL_GROUPS_MESSAGES: MessageCatalog = {
     "Save the basic information first, then configure model permissions and members.",
   个模型: "models",
   个成员: "members",
+  全部启用模型: "All enabled models",
+  全部启用: "All enabled",
   描述: "Description",
   默认倍率: "Default multiplier",
   "设为新成员默认模型组": "Set as the default model group for new members",
@@ -38,6 +42,8 @@ export const EN_MODEL_GROUPS_MESSAGES: MessageCatalog = {
   "保存并继续": "Save and continue",
   "启用后，该组成员才能调用对应平台模型；倍率为空时使用模型组默认倍率。":
     "After enabling a model, members in this group can call that platform model. Empty multipliers use the model group's default.",
+  "默认模型组自动包含模型目录中所有启用且支持 API 的模型，不保存显式模型列表。":
+    "The default model group automatically includes every enabled API-supported model in the catalog and does not store an explicit model list.",
   "保存模型": "Save models",
   平台模型: "Platform model",
   计费模型: "Billing model",

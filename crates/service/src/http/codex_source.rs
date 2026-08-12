@@ -15,6 +15,10 @@ fn default_tool_choice() -> String {
     "auto".to_string()
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ResponseCreateWsRequest {
     pub model: String,
@@ -33,7 +37,10 @@ pub(crate) struct ResponseCreateWsRequest {
     pub reasoning: Option<Value>,
     #[serde(default)]
     pub store: bool,
-    #[serde(default)]
+    // WebSocket mode does not use the HTTP streaming transport flag. Keep the
+    // field while decoding HTTP compatibility requests, but never emit the
+    // default `false` value in a `response.create` WebSocket event.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub stream: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<String>,

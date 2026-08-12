@@ -171,10 +171,16 @@ pub(crate) fn set_model_group_models(
         storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let group_id = normalize_optional_text(Some(params.group_id.as_str()))
         .ok_or_else(|| "模型组 ID 不能为空".to_string())?;
-    let _ = storage
+    let group = storage
         .find_model_group(group_id.as_str())
         .map_err(|err| format!("read model group failed: {err}"))?
         .ok_or_else(|| "模型组不存在".to_string())?;
+    if group.is_default {
+        storage
+            .replace_model_group_models_v2(group_id.as_str(), &[])
+            .map_err(|err| format!("save model group models V2 failed: {err}"))?;
+        return result_from_storage(&storage);
+    }
     let now = now_ts();
     let mut seen = HashSet::new();
     let mut requested_slugs = Vec::new();

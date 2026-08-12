@@ -2,7 +2,9 @@ use bytes::Bytes;
 use codexmanager_core::storage::Account;
 use futures_util::StreamExt;
 use rand::Rng;
+use std::collections::HashMap;
 use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tiny_http::Request;
@@ -13,6 +15,124 @@ use tokio_tungstenite::tungstenite::http::header::{
 };
 
 use super::super::GatewayUpstreamResponse;
+
+const WEBSOCKET_UPSTREAM_RECOVERY_COOLDOWN: Duration = Duration::from_secs(30);
+const WEBSOCKET_UPSTREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const WEBSOCKET_UPSTREAM_COOLDOWN_ERROR: &str =
+    "WebSocket upstream recovery is cooling down; continuing with HTTP transport";
+
+#[derive(Debug, Default, Clone, Copy)]
+struct WebsocketUpstreamRecoveryState {
+    last_failure: Option<Instant>,
+    probe_in_flight: bool,
+}
+
+impl WebsocketUpstreamRecoveryState {
+    fn is_active(&self, now: Instant, cooldown: Duration) -> bool {
+        self.probe_in_flight
+            || self
+                .last_failure
+                .and_then(|failed_at| now.checked_duration_since(failed_at))
+                .is_some_and(|elapsed| elapsed < cooldown)
+    }
+
+    fn try_acquire_probe(&mut self, now: Instant, cooldown: Duration) -> bool {
+        if self.probe_in_flight {
+            return false;
+        }
+        if self
+            .last_failure
+            .and_then(|failed_at| now.checked_duration_since(failed_at))
+            .is_some_and(|elapsed| elapsed < cooldown)
+        {
+            return false;
+        }
+        self.probe_in_flight = true;
+        true
+    }
+
+    fn mark_failed(&mut self, failed_at: Instant) {
+        self.probe_in_flight = false;
+        self.last_failure = Some(failed_at);
+    }
+
+    fn mark_completed(&mut self) {
+        self.probe_in_flight = false;
+        self.last_failure = None;
+    }
+}
+
+static WEBSOCKET_UPSTREAM_RECOVERY_STATES: OnceLock<
+    Mutex<HashMap<String, WebsocketUpstreamRecoveryState>>,
+> = OnceLock::new();
+
+fn websocket_upstream_recovery_states(
+) -> &'static Mutex<HashMap<String, WebsocketUpstreamRecoveryState>> {
+    WEBSOCKET_UPSTREAM_RECOVERY_STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn websocket_upstream_recovery_key(account_id: &str, ws_url: &str) -> String {
+    format!("{account_id}\n{ws_url}")
+}
+
+fn mark_websocket_upstream_recovery_failed(key: &str) {
+    let mut states = websocket_upstream_recovery_states()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    states
+        .entry(key.to_string())
+        .or_default()
+        .mark_failed(Instant::now());
+}
+
+fn mark_websocket_upstream_recovery_completed(key: &str) {
+    let mut states = websocket_upstream_recovery_states()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(mut state) = states.remove(key) {
+        state.mark_completed();
+    }
+}
+
+struct WebsocketUpstreamRecoveryLease {
+    key: String,
+    completed: bool,
+}
+
+impl WebsocketUpstreamRecoveryLease {
+    fn try_acquire(account_id: &str, ws_url: &str) -> Option<Self> {
+        let key = websocket_upstream_recovery_key(account_id, ws_url);
+        let mut states = websocket_upstream_recovery_states()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        states.retain(|_, state| state.is_active(now, WEBSOCKET_UPSTREAM_RECOVERY_COOLDOWN));
+        let state = states.entry(key.clone()).or_default();
+        if !state.try_acquire_probe(now, WEBSOCKET_UPSTREAM_RECOVERY_COOLDOWN) {
+            return None;
+        }
+        Some(Self {
+            key,
+            completed: false,
+        })
+    }
+
+    fn mark_completed(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.completed = true;
+        mark_websocket_upstream_recovery_completed(self.key.as_str());
+    }
+}
+
+impl Drop for WebsocketUpstreamRecoveryLease {
+    fn drop(&mut self) {
+        if !self.completed {
+            mark_websocket_upstream_recovery_failed(self.key.as_str());
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestCompression {
@@ -1057,7 +1177,7 @@ fn send_upstream_request_with_compression_override(
             Ok(resp) => Some(GatewayUpstreamResponse::Stream(resp)),
             Err(ws_err) => {
                 // Redact query/fragment from the URL to avoid leaking sensitive
-                // parameters in warn-level logs.
+                // parameters in transport logs.
                 let redacted_url = reqwest::Url::parse(target_url)
                     .map(|mut u| {
                         u.set_query(None);
@@ -1065,13 +1185,22 @@ fn send_upstream_request_with_compression_override(
                         u.to_string()
                     })
                     .unwrap_or_else(|_| "<unparseable url>".to_string());
-                log::warn!(
+                if ws_err == WEBSOCKET_UPSTREAM_COOLDOWN_ERROR {
+                    log::info!(
+                        "event=gateway_websocket_upstream_cooldown_to_http path={} account_id={} target_url={}",
+                        request_ctx.request_path,
+                        account.id,
+                        redacted_url
+                    );
+                } else {
+                    log::warn!(
                         "event=gateway_websocket_upstream_fallback_to_http path={} account_id={} target_url={} err={}",
                         request_ctx.request_path,
                         account.id,
                         redacted_url,
                         ws_err
                     );
+                }
                 None // fall through to the full HTTP async-stream retry below
             }
         }
@@ -1346,24 +1475,75 @@ fn insert_websocket_upstream_header(
 }
 
 fn is_websocket_upstream_terminal_text(text: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return false;
-    };
-    let Some(event_type) = value
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-    else {
-        return false;
-    };
     matches!(
-        event_type.to_ascii_lowercase().as_str(),
+        websocket_upstream_event_type(text)
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
         "response.completed"
             | "response.done"
             | "response.failed"
             | "response.incomplete"
             | "error"
     )
+}
+
+fn websocket_upstream_event_type(text: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(|event_type| event_type.trim().to_string())
+        })
+}
+
+fn is_websocket_upstream_connection_limit_text(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    let error_code = value
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(serde_json::Value::as_str);
+    let error_message = value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(serde_json::Value::as_str);
+    error_code.is_some_and(|code| code.eq_ignore_ascii_case("websocket_connection_limit_reached"))
+        || error_message.is_some_and(|message| {
+            message
+                .to_ascii_lowercase()
+                .contains("responses websocket connection limit reached")
+        })
+}
+
+fn is_websocket_upstream_transport_healthy_terminal_text(text: &str) -> bool {
+    is_websocket_upstream_terminal_text(text) && !is_websocket_upstream_connection_limit_text(text)
+}
+
+fn websocket_upstream_sse_event(text: &str) -> String {
+    match websocket_upstream_event_type(text) {
+        Some(event_type) if !event_type.is_empty() => {
+            format!("event: {event_type}\ndata: {text}\n\n")
+        }
+        _ => format!("data: {text}\n\n"),
+    }
+}
+
+#[cfg(test)]
+fn is_websocket_upstream_completed_text(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(|event_type| event_type.eq_ignore_ascii_case("response.completed"))
+        })
+        .unwrap_or(false)
 }
 
 fn websocket_upstream_request_text_from_http_body(
@@ -1373,10 +1553,15 @@ fn websocket_upstream_request_text_from_http_body(
         return Ok(None);
     }
 
-    let request: crate::http::codex_source::ResponseCreateWsRequest =
+    let mut request: crate::http::codex_source::ResponseCreateWsRequest =
         serde_json::from_slice(request_body.as_ref()).map_err(|err| {
             format!("request body is not a valid WebSocket response.create payload: {err}")
         })?;
+    // This adapter is only a bounded transport probe. Its upstream frame still
+    // follows the official WebSocket response.create shape, so HTTP-only
+    // transport controls must not cross the WebSocket boundary.
+    request.stream = false;
+    request.extra.remove("background");
     serde_json::to_string(&crate::http::codex_source::ResponsesWsRequest::ResponseCreate(request))
         .map(Some)
         .map_err(|err| format!("serialize WebSocket response.create payload failed: {err}"))
@@ -1398,6 +1583,11 @@ fn send_websocket_upstream_request(
     } else {
         target_url.to_string()
     };
+    let Some(recovery_lease) =
+        WebsocketUpstreamRecoveryLease::try_acquire(account_id, ws_url.as_str())
+    else {
+        return Err(WEBSOCKET_UPSTREAM_COOLDOWN_ERROR.to_string());
+    };
     let request_headers = request_headers.to_vec();
     let proxy_url =
         super::super::super::current_websocket_proxy_url_for_account(account_id, ws_url.as_str())?;
@@ -1408,6 +1598,7 @@ fn send_websocket_upstream_request(
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
     thread::spawn(move || {
+        let mut recovery_lease = recovery_lease;
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1444,6 +1635,10 @@ fn send_websocket_upstream_request(
                     if meta_tx.send(Ok(())).is_err() {
                         return;
                     }
+                    let mut heartbeat = tokio::time::interval_at(
+                        tokio::time::Instant::now() + WEBSOCKET_UPSTREAM_HEARTBEAT_INTERVAL,
+                        WEBSOCKET_UPSTREAM_HEARTBEAT_INTERVAL,
+                    );
                     // body_text was pre-validated as UTF-8 before this thread was spawned.
                     if let Some(text) = body_text {
                         let send_result = tokio::select! {
@@ -1467,6 +1662,20 @@ fn send_websocket_upstream_request(
                                     .max(Duration::from_millis(100));
                                 let read_result = tokio::select! {
                                     _ = &mut cancel_rx => return,
+                                    _ = heartbeat.tick() => {
+                                        if let Err(err) = ws_stream
+                                            .send(Message::Ping(Vec::new().into()))
+                                            .await
+                                        {
+                                            let _ = body_tx.send(
+                                                super::super::GatewayByteStreamItem::Error(
+                                                    format!("WebSocket heartbeat send error: {err}"),
+                                                ),
+                                            );
+                                            return;
+                                        }
+                                        continue;
+                                    }
                                     result = tokio::time::timeout(remaining, ws_stream.next()) => result,
                                 };
                                 match read_result {
@@ -1483,6 +1692,20 @@ fn send_websocket_upstream_request(
                             }
                             None => tokio::select! {
                                 _ = &mut cancel_rx => return,
+                                _ = heartbeat.tick() => {
+                                    if let Err(err) = ws_stream
+                                        .send(Message::Ping(Vec::new().into()))
+                                        .await
+                                    {
+                                        let _ = body_tx.send(
+                                            super::super::GatewayByteStreamItem::Error(
+                                                format!("WebSocket heartbeat send error: {err}"),
+                                            ),
+                                        );
+                                        return;
+                                    }
+                                    continue;
+                                }
                                 message = ws_stream.next() => message,
                             },
                         };
@@ -1498,7 +1721,7 @@ fn send_websocket_upstream_request(
                                 return;
                             }
                             Some(Ok(Message::Text(text))) => {
-                                let sse = format!("data: {text}\n\n");
+                                let sse = websocket_upstream_sse_event(text.as_ref());
                                 if body_tx
                                     .send(super::super::GatewayByteStreamItem::Chunk(Bytes::from(
                                         sse.into_bytes(),
@@ -1506,6 +1729,9 @@ fn send_websocket_upstream_request(
                                     .is_err()
                                 {
                                     return;
+                                }
+                                if is_websocket_upstream_transport_healthy_terminal_text(text.as_ref()) {
+                                    recovery_lease.mark_completed();
                                 }
                                 if is_websocket_upstream_terminal_text(text.as_ref()) {
                                     let _ = body_tx.send(super::super::GatewayByteStreamItem::Eof);

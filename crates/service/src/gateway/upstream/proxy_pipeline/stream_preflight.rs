@@ -28,8 +28,13 @@ enum PrefixDecision {
 pub(in super::super) enum StreamPreflightOutcome {
     Ready(GatewayUpstreamResponse),
     Failover(String),
+    StatusFailover { status_code: u16, message: String },
     RetryUsageNotice(String),
     TransportFailover(String),
+}
+
+fn should_prefetch_actionable_error_body(status_code: u16) -> bool {
+    matches!(status_code, 401 | 403 | 429)
 }
 
 fn is_actionable_gateway_error(message: &str) -> bool {
@@ -79,6 +84,27 @@ fn actionable_message_from_error_event(value: &Value) -> Option<String> {
             .find(|message| is_actionable_gateway_error(message))
             .map(str::to_string)
     })
+}
+
+fn actionable_message_from_error_body(body: &[u8]) -> Option<String> {
+    let parsed = serde_json::from_slice::<Value>(body).ok();
+    if let Some(message) = parsed
+        .as_ref()
+        .and_then(actionable_message_from_error_event)
+    {
+        return Some(message);
+    }
+
+    let text = std::str::from_utf8(body).ok()?.trim();
+    (!text.is_empty() && is_actionable_gateway_error(text)).then(|| text.to_string())
+}
+
+fn summarize_non_200_status_failover(status_code: u16, body: Option<&[u8]>) -> String {
+    let body_hint = body
+        .and_then(|body| crate::gateway::summarize_upstream_error_hint_from_body(status_code, body))
+        .map(|hint| format!(" body={hint}"))
+        .unwrap_or_default();
+    format!("upstream non-200 status={status_code}{body_hint}")
 }
 
 fn is_strong_usage_limit_delta(message: &str) -> bool {
@@ -332,10 +358,37 @@ fn preflight_stream_response_with_timeouts(
     idle_timeout: Option<Duration>,
     wall_clock_timeout: Option<Duration>,
 ) -> StreamPreflightOutcome {
+    let status_code = response.status().as_u16();
+    if has_more_candidates && !(200..=299).contains(&status_code) {
+        if should_prefetch_actionable_error_body(status_code) {
+            return match response.into_buffered() {
+                Ok((body, _response)) => actionable_message_from_error_body(body.as_ref())
+                    .map(StreamPreflightOutcome::Failover)
+                    .unwrap_or_else(|| StreamPreflightOutcome::StatusFailover {
+                        status_code,
+                        message: summarize_non_200_status_failover(
+                            status_code,
+                            Some(body.as_ref()),
+                        ),
+                    }),
+                Err(err) => StreamPreflightOutcome::StatusFailover {
+                    status_code,
+                    message: format!(
+                        "upstream non-200 status={status_code}; read response body failed: {err}"
+                    ),
+                },
+            };
+        }
+        return StreamPreflightOutcome::StatusFailover {
+            status_code,
+            message: summarize_non_200_status_failover(status_code, None),
+        };
+    }
+
     if !upstream_is_stream
         || !has_more_candidates
         || !request_path.starts_with("/v1/responses")
-        || response.status().as_u16() >= 400
+        || status_code >= 400
         || !is_sse_stream_response(&response)
     {
         return StreamPreflightOutcome::Ready(response);

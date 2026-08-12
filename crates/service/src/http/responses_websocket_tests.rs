@@ -232,6 +232,20 @@ fn websocket_connect_error_detects_invalid_agent_identity_task_body() {
 }
 
 #[test]
+fn websocket_connect_error_detects_connection_limit_body() {
+    let mut response = super::WsClientResponse::new(Some(
+        br#"{"type":"error","status":400,"error":{"code":"websocket_connection_limit_reached"}}"#
+            .to_vec(),
+    ));
+    *response.status_mut() = axum::http::StatusCode::BAD_REQUEST;
+    let err = super::WsConnectError::from_tungstenite(tokio_tungstenite::tungstenite::Error::Http(
+        Box::new(response),
+    ));
+
+    assert!(err.is_websocket_connection_limit_reached());
+}
+
+#[test]
 fn inspect_ws_terminal_event_infers_usage_limit_status_without_explicit_status() {
     let event = inspect_ws_terminal_event(
         r#"{"type":"error","error":{"message":"You've hit your usage limit."}}"#,
@@ -267,6 +281,18 @@ fn inspect_ws_terminal_event_recognizes_usage_limit_code_without_message() {
     assert_eq!(event.status_code, 429);
     assert_eq!(event.error.as_deref(), Some("usage_limit_reached"));
     assert!(event.is_usage_limit);
+}
+
+#[test]
+fn inspect_ws_terminal_event_recognizes_websocket_connection_limit() {
+    let event = inspect_ws_terminal_event(
+        r#"{"type":"error","status":400,"error":{"code":"websocket_connection_limit_reached","message":"Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue."}}"#,
+    )
+    .expect("terminal event");
+
+    assert_eq!(event.status_code, 400);
+    assert!(event.is_websocket_connection_limit);
+    assert!(!event.is_usage_limit);
 }
 
 #[test]
@@ -622,7 +648,6 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
         "reasoning",
         "service_tier",
         "store",
-        "stream",
         "text",
         "tool_choice",
         "tools",
@@ -636,6 +661,8 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
     assert_eq!(value["instructions"], "  stay exactly\n");
     assert_eq!(value["previous_response_id"], "resp_previous");
     assert_eq!(value["generate"], false);
+    assert!(object.get("stream").is_none());
+    assert!(object.get("background").is_none());
     assert_eq!(value["reasoning"]["context"], "current_turn");
     assert_eq!(value["reasoning"]["summary"], "auto");
     assert_eq!(value["client_metadata"]["source"], "ws-snapshot");

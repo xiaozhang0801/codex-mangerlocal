@@ -7,11 +7,22 @@ use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame as UpstreamCloseFrame;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+// A Responses response.create frame can contain several inline image data URLs. Match the
+// service-side bounded limit so the Web UI bridge cannot truncate a valid frame first.
+const GATEWAY_WS_MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
+
+fn gateway_websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(GATEWAY_WS_MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(GATEWAY_WS_MAX_MESSAGE_BYTES))
+}
 
 pub(super) fn target_url(service_addr: &str, uri: &axum::http::Uri) -> String {
     let service_addr = service_addr.trim().trim_end_matches('/');
@@ -203,7 +214,9 @@ pub(super) async fn proxy(state: Arc<AppState>, mut parts: axum::http::request::
     let target_url = target_url(state.service_addr.as_str(), &parts.uri);
     let incoming_headers = parts.headers.clone();
     let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
-        Ok(upgrade) => upgrade,
+        Ok(upgrade) => upgrade
+            .max_message_size(GATEWAY_WS_MAX_MESSAGE_BYTES)
+            .max_frame_size(GATEWAY_WS_MAX_MESSAGE_BYTES),
         Err(err) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -234,7 +247,7 @@ pub(super) async fn proxy(state: Arc<AppState>, mut parts: axum::http::request::
 
     let connect_result = tokio::time::timeout(
         CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async(upstream_request),
+        connect_async_with_config(upstream_request, Some(gateway_websocket_config()), false),
     )
     .await;
     let (upstream, upstream_response) = match connect_result {

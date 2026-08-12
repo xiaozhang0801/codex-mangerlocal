@@ -1617,6 +1617,39 @@ fn set_model_group_models_validates_requested_catalog_slugs_only() {
 }
 
 #[test]
+fn set_model_group_models_treats_default_group_as_all_enabled_models() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-default-model-group-all-enabled");
+    set_web_auth_mode("accounts").expect("enable accounts mode");
+    let storage = storage_helpers::open_storage().expect("open storage");
+    let group_id = storage
+        .default_model_group_id()
+        .expect("read default model group")
+        .expect("default model group");
+    drop(storage);
+
+    let result = set_model_group_models(ModelGroupModelsSetParams {
+        group_id: group_id.clone(),
+        models: vec![ModelGroupModelUpsertParams {
+            platform_model_slug: "gpt-5.4-mini".to_string(),
+            enabled: Some(true),
+            rate_multiplier_millis: Some(1200),
+            billing_model_slug: None,
+            note: Some("ignored for default group".to_string()),
+        }],
+    })
+    .expect("default model group setModels is a no-op");
+
+    assert!(result
+        .groups
+        .iter()
+        .any(|item| item.id == group_id && item.is_default));
+    assert!(!result.models.iter().any(|item| item.group_id == group_id));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
 fn set_model_group_users_batches_member_validation_and_dedupes() {
     let _guard = test_env_guard();
     let db_path = setup_dashboard_test_db("codexmanager-model-group-users-batch-validation");

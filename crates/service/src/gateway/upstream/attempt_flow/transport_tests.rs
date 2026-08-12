@@ -825,6 +825,50 @@ fn websocket_upstream_terminal_detection_parses_json_type() {
 }
 
 #[test]
+fn websocket_upstream_recovery_requires_one_probe_and_completed_event() {
+    let start = Instant::now();
+    let cooldown = Duration::from_secs(30);
+    let mut state = super::WebsocketUpstreamRecoveryState::default();
+
+    assert!(state.try_acquire_probe(start, cooldown));
+    assert!(
+        !state.try_acquire_probe(start + Duration::from_secs(1), cooldown),
+        "only one recovery probe may be in flight"
+    );
+
+    state.mark_failed(start);
+    assert!(
+        !state.try_acquire_probe(start + Duration::from_secs(29), cooldown),
+        "failed probe must keep subsequent requests on HTTP during cooldown"
+    );
+    assert!(state.try_acquire_probe(start + cooldown, cooldown));
+    state.mark_completed();
+    assert!(
+        state.try_acquire_probe(start + cooldown, cooldown),
+        "response.completed must clear the cooldown after the probe"
+    );
+
+    state.mark_failed(start + cooldown);
+    assert!(
+        !state.try_acquire_probe(start + cooldown + Duration::from_secs(1), cooldown),
+        "an incomplete recovery must continue using HTTP"
+    );
+}
+
+#[test]
+fn websocket_upstream_recovery_success_is_only_response_completed() {
+    assert!(super::is_websocket_upstream_completed_text(
+        r#"{"type":"response.completed"}"#
+    ));
+    assert!(!super::is_websocket_upstream_completed_text(
+        r#"{"type":"response.done"}"#
+    ));
+    assert!(!super::is_websocket_upstream_completed_text(
+        r#"{"type":"response.failed"}"#
+    ));
+}
+
+#[test]
 fn websocket_upstream_request_text_from_http_body_wraps_response_create() {
     let body = Bytes::from_static(
         br#"{"model":"codex","input":"hello","stream":true,"reasoning":{"effort":"high"}}"#,
@@ -850,7 +894,7 @@ fn websocket_upstream_request_text_from_http_body_wraps_response_create() {
     );
     assert_eq!(
         value.get("stream").and_then(serde_json::Value::as_bool),
-        Some(true)
+        None
     );
     assert_eq!(
         value
@@ -875,14 +919,14 @@ fn websocket_upstream_request_text_from_http_body_rejects_invalid_payload() {
 }
 
 #[test]
-fn send_websocket_upstream_request_builds_valid_handshake_and_stops_on_done() {
+fn send_websocket_upstream_request_builds_valid_handshake_and_stops_on_completed() {
     let _env_lock = crate::test_env_guard();
     let _reload_guard = RuntimeConfigReloadGuard;
     let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
     let _proxy_list_guard = EnvGuard::set("CODEXMANAGER_PROXY_LIST", "");
     crate::gateway::reload_runtime_config_from_env();
     let (url, headers_rx, frame_rx, handle) =
-        spawn_mock_websocket_upstream(r#"{"type":"response.done"}"#);
+        spawn_mock_websocket_upstream(r#"{"type":"response.completed"}"#);
     let body = Bytes::from(r#"{"model":"codex","input":"hello"}"#);
     let response = super::send_websocket_upstream_request(
         url.as_str(),
@@ -899,7 +943,7 @@ fn send_websocket_upstream_request_builds_valid_handshake_and_stops_on_done() {
     let response_body = response.read_all_bytes().expect("read websocket body");
     assert_eq!(
         response_body.as_ref(),
-        b"data: {\"type\":\"response.done\"}\n\n"
+        b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
     );
 
     let headers = headers_rx
@@ -947,6 +991,38 @@ fn send_websocket_upstream_request_builds_valid_handshake_and_stops_on_done() {
 }
 
 #[test]
+fn send_websocket_upstream_request_does_not_cooldown_after_application_failure() {
+    let _env_lock = crate::test_env_guard();
+    let _reload_guard = RuntimeConfigReloadGuard;
+    let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    let _proxy_list_guard = EnvGuard::set("CODEXMANAGER_PROXY_LIST", "");
+    crate::gateway::reload_runtime_config_from_env();
+    let (url, _headers_rx, _frame_rx, handle) =
+        spawn_mock_websocket_upstream(r#"{"type":"response.failed"}"#);
+    let body = Bytes::from(r#"{"model":"codex","input":"hello"}"#);
+
+    let response = super::send_websocket_upstream_request(
+        url.as_str(),
+        "acct_ws_incomplete_probe",
+        Some(Instant::now() + Duration::from_secs(5)),
+        &[],
+        &body,
+    )
+    .expect("incomplete websocket probe still returns its terminal event");
+    let response_body = response
+        .read_all_bytes()
+        .expect("read incomplete websocket probe body");
+    assert!(String::from_utf8_lossy(response_body.as_ref()).contains("response.failed"));
+
+    assert!(
+        super::is_websocket_upstream_transport_healthy_terminal_text(
+            r#"{"type":"response.failed"}"#
+        )
+    );
+    handle.join().expect("join incomplete websocket upstream");
+}
+
+#[test]
 fn send_websocket_upstream_request_uses_system_environment_proxy() {
     let _env_lock = crate::test_env_guard();
     let _reload_guard = RuntimeConfigReloadGuard;
@@ -984,7 +1060,7 @@ fn send_websocket_upstream_request_uses_system_environment_proxy() {
         .expect("read proxy websocket body");
     assert_eq!(
         response_body.as_ref(),
-        b"data: {\"type\":\"response.completed\"}\n\n"
+        b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
     );
     assert_eq!(
         connect_rx

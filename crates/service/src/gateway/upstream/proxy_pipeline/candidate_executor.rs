@@ -605,6 +605,23 @@ pub(in super::super) fn execute_candidate_sequence(
                             Some(attempted_account_ids.as_slice()),
                         );
                     }
+                    StreamPreflightOutcome::StatusFailover {
+                        status_code,
+                        message,
+                    } => {
+                        super::super::super::mark_account_cooldown_for_status(
+                            &account.id,
+                            status_code,
+                        );
+                        super::super::super::record_route_quality(&account.id, status_code);
+                        attempt_trace.last_attempt_error = Some(message);
+                        record_failover_attempt(
+                            &mut attempt_trace,
+                            &mut last_attempt_url,
+                            &mut last_attempt_error,
+                        );
+                        continue;
+                    }
                     StreamPreflightOutcome::RetryUsageNotice(message) => {
                         // Some Codex-compatible upstreams encode quota exhaustion as assistant
                         // output followed by an incomplete terminal sequence. Retry it before

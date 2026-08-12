@@ -26,6 +26,19 @@ fn json_stream_response(body: &'static str) -> GatewayUpstreamResponse {
     ))
 }
 
+fn json_stream_response_with_status(
+    status: reqwest::StatusCode,
+    body: &'static str,
+) -> GatewayUpstreamResponse {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
+        status,
+        headers,
+        GatewayByteStream::from_bytes(Bytes::from_static(body.as_bytes())),
+    ))
+}
+
 fn stream_response_from_items(items: Vec<GatewayByteStreamItem>) -> GatewayUpstreamResponse {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
@@ -244,6 +257,75 @@ fn preflight_leaves_successful_json_response_untouched() {
     let StreamPreflightOutcome::Ready(response) = outcome else {
         panic!("successful JSON must bypass SSE preflight");
     };
+    let (replayed, _) = response.into_buffered().expect("buffer JSON response");
+    assert_eq!(replayed.as_ref(), body.as_bytes());
+}
+
+#[test]
+fn preflight_fails_over_on_json_usage_limit_error_response() {
+    let body = r#"{"error":{"message":"The usage limit has been reached.","type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+    let outcome = preflight_stream_response(
+        json_stream_response_with_status(reqwest::StatusCode::TOO_MANY_REQUESTS, body),
+        "/v1/responses",
+        false,
+        true,
+    );
+    assert!(matches!(
+        outcome,
+        StreamPreflightOutcome::Failover(message) if message.contains("usage limit")
+            || message == "usage_limit_reached"
+    ));
+}
+
+#[test]
+fn preflight_fails_over_on_any_non_2xx_when_more_candidates_exist() {
+    let body = r#"{"error":{"message":"upstream temporarily unavailable"}}"#;
+    let outcome = preflight_stream_response(
+        json_stream_response_with_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body),
+        "/v1/responses",
+        false,
+        true,
+    );
+    assert!(matches!(
+        outcome,
+        StreamPreflightOutcome::StatusFailover {
+            status_code: 500,
+            message,
+        } if message.contains("status=500")
+    ));
+}
+
+#[test]
+fn preflight_delivers_2xx_success_status_when_more_candidates_exist() {
+    let body = r#"{"id":"created_elsewhere"}"#;
+    let outcome = preflight_stream_response(
+        json_stream_response_with_status(reqwest::StatusCode::CREATED, body),
+        "/v1/responses",
+        false,
+        true,
+    );
+    let StreamPreflightOutcome::Ready(response) = outcome else {
+        panic!("2xx response must be delivered");
+    };
+    assert_eq!(response.status(), reqwest::StatusCode::CREATED);
+    let (replayed, _) = response.into_buffered().expect("buffer JSON response");
+    assert_eq!(replayed.as_ref(), body.as_bytes());
+}
+
+#[test]
+fn preflight_delivers_json_usage_limit_error_when_no_more_candidates() {
+    let body =
+        r#"{"error":{"message":"The usage limit has been reached.","type":"usage_limit_reached"}}"#;
+    let outcome = preflight_stream_response(
+        json_stream_response_with_status(reqwest::StatusCode::TOO_MANY_REQUESTS, body),
+        "/v1/responses",
+        false,
+        false,
+    );
+    let StreamPreflightOutcome::Ready(response) = outcome else {
+        panic!("last candidate error must be delivered");
+    };
+    assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
     let (replayed, _) = response.into_buffered().expect("buffer JSON response");
     assert_eq!(replayed.as_ref(), body.as_bytes());
 }

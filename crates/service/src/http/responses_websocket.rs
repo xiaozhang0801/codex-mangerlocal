@@ -9,13 +9,14 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::IpAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::{
     Request as WsClientRequest, Response as WsClientResponse,
 };
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 use tokio_tungstenite::{client_async_tls_with_config, connect_async_tls_with_config};
 
@@ -39,6 +40,16 @@ const RESPONSES_WS_ERROR_CODE: &str = "responses_websocket_error";
 const RESPONSES_WS_CONTEXT_REBASE_ERROR_CODE: &str = "responses_websocket_context_rebase_failed";
 const RESPONSES_WEBSOCKETS_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const MAX_BUFFERED_WS_PREAMBLE_EVENTS: usize = 16;
+// Resumed image-heavy turns are serialized as one response.create text frame. Keep the
+// transport bounded, but large enough to match the existing 256 MiB compressed-body safety cap.
+const RESPONSES_WS_MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
+// Keep both WebSocket legs active across long turns; TCP keepalive does not prevent
+// application-layer proxy/NAT idle eviction.
+const RESPONSES_WS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
+const RESPONSES_WS_REQUEST_IN_FLIGHT_CODE: &str = "response_in_flight";
+const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE: &str =
+    "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
 
 #[derive(Clone)]
 struct WsRequestContext {
@@ -54,6 +65,8 @@ struct PreparedClientFrame {
     text: String,
     client_model: Option<String>,
     model: Option<String>,
+    previous_response_id: Option<String>,
+    store: bool,
     model_source: Option<String>,
     client_reasoning_effort: Option<String>,
     reasoning_effort: Option<String>,
@@ -69,7 +82,9 @@ struct PendingWsRequestState {
     log: PendingWsRequestLog,
     prepared: PreparedClientFrame,
     forwarded_upstream_event: bool,
-    retry_after_idle_upstream_disconnect: bool,
+    forwarded_non_preamble_event: bool,
+    replayed_after_upstream_disconnect: bool,
+    suppress_replayed_preamble: bool,
     buffered_upstream_preamble: Vec<String>,
     buffer_retry_preamble: bool,
     attempted_account_ids: HashSet<String>,
@@ -137,6 +152,19 @@ impl WsConnectError {
             self.status_code.unwrap_or_default(),
             &self.response_body,
         ) || crate::agent_identity::is_agent_identity_task_invalid_error(&self.message)
+    }
+
+    fn is_websocket_connection_limit_reached(&self) -> bool {
+        if self
+            .message
+            .to_ascii_lowercase()
+            .contains("websocket connection limit reached")
+        {
+            return true;
+        }
+        let body = String::from_utf8_lossy(&self.response_body).to_ascii_lowercase();
+        body.contains(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
+            || body.contains(&WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE.to_ascii_lowercase())
     }
 }
 
@@ -273,9 +301,11 @@ pub(super) async fn upgrade_responses_websocket(request: HttpRequest<Body>) -> R
         }
     };
 
-    ws.on_upgrade(move |socket| async move {
-        run_responses_websocket_session(socket, context).await;
-    })
+    ws.max_message_size(RESPONSES_WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(RESPONSES_WS_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            run_responses_websocket_session(socket, context).await;
+        })
 }
 
 async fn run_responses_websocket_session(mut socket: WebSocket, context: WsRequestContext) {
@@ -324,11 +354,13 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
     first_log.route_strategy = Some(upstream.route_strategy.to_string());
     first_log.route_source = Some(upstream.route_source.to_string());
     let first_attempted_account_ids = HashSet::from([upstream.account_id.clone()]);
-    let first_pending = PendingWsRequestState {
+    let mut first_pending = PendingWsRequestState {
         log: first_log,
         prepared: prepared_first.clone(),
         forwarded_upstream_event: false,
-        retry_after_idle_upstream_disconnect: false,
+        forwarded_non_preamble_event: false,
+        replayed_after_upstream_disconnect: false,
+        suppress_replayed_preamble: false,
         buffered_upstream_preamble: Vec::new(),
         buffer_retry_preamble: should_buffer_ws_retry_preamble(
             &upstream,
@@ -340,6 +372,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         retried_missing_tool_call_context: false,
     };
 
+    let mut completed_tool_calls = CompletedWsToolCallCache::default();
     if let Err(err) = upstream
         .stream
         .send(UpstreamMessage::Text(
@@ -347,35 +380,75 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         ))
         .await
     {
-        finalize_ws_request_log(
-            &context,
-            &first_pending.log,
-            Some(upstream.account_id.as_str()),
-            Some(upstream.upstream_url.as_str()),
-            502,
-            crate::gateway::RequestLogUsage::default(),
-            Some(crate::gateway::bilingual_error(
-                "发送上游 WebSocket 首帧失败",
-                format!("send first upstream websocket frame failed: {err}"),
-            )),
+        let previous_account_id = upstream.account_id.clone();
+        log::warn!(
+            "event=responses_ws_initial_stale_send account_id={} frame_bytes={} err={err}",
+            previous_account_id,
+            first_pending.prepared.text.len(),
         );
-        send_ws_error_and_close(
-            &mut socket,
-            WsSessionError::bad_gateway_bilingual(
-                "发送上游 WebSocket 首帧失败",
-                format!("send first upstream websocket frame failed: {err}"),
-            ),
-            context.prefer_raw_errors,
+        let _ = upstream.stream.close(None).await;
+        match reconnect_upstream_for_pending_request(
+            &context,
+            &mut first_pending,
+            Some(previous_account_id.as_str()),
+            &completed_tool_calls,
         )
-        .await;
-        return;
+        .await
+        {
+            Ok(replacement) => {
+                log::info!(
+                    "event=responses_ws_upstream_reconnected previous_account_id={} account_id={} reason=initial_send",
+                    previous_account_id,
+                    replacement.account_id,
+                );
+                upstream = replacement;
+            }
+            Err(err) => {
+                let log_error = crate::gateway::bilingual_error(
+                    "上游 WebSocket 首帧失败后的有限恢复失败",
+                    format!(
+                        "initial upstream websocket send recovery failed: {}",
+                        err.message
+                    ),
+                );
+                let session_error = WsSessionError::new(err.status, err.code, log_error.clone());
+                finalize_ws_request_log(
+                    &context,
+                    &first_pending.log,
+                    Some(previous_account_id.as_str()),
+                    None,
+                    session_error.status,
+                    crate::gateway::RequestLogUsage::default(),
+                    Some(log_error),
+                );
+                send_ws_error_and_close(&mut socket, session_error, context.prefer_raw_errors)
+                    .await;
+                return;
+            }
+        }
     }
     let mut pending_request = Some(first_pending);
-    let mut completed_tool_calls = CompletedWsToolCallCache::default();
-    let mut upstream_completed_response = false;
+    let mut heartbeat = responses_ws_heartbeat_interval();
 
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                if let Err(err) = socket.send(Message::Ping(Vec::new().into())).await {
+                    log::info!("event=responses_ws_client_heartbeat_failed err={err}");
+                    let _ = upstream.stream.close(None).await;
+                    break;
+                }
+                if let Err(err) = upstream
+                    .stream
+                    .send(UpstreamMessage::Ping(Vec::new().into()))
+                    .await
+                {
+                    log::info!(
+                        "event=responses_ws_upstream_heartbeat_failed account_id={} err={err}",
+                        upstream.account_id,
+                    );
+                }
+            }
             maybe_client = socket.recv() => {
                 let Some(client_result) = maybe_client else {
                     let _ = upstream.stream.close(None).await;
@@ -385,19 +458,26 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                     Ok(Message::Text(text)) => {
                         match rewrite_client_frame(text.as_str(), &context) {
                             Ok(prepared) => {
-                                if let Some(previous_pending) = pending_request.take() {
-                                    finalize_ws_request_log(
-                                        &context,
-                                        &previous_pending.log,
-                                        Some(upstream.account_id.as_str()),
-                                        Some(upstream.upstream_url.as_str()),
-                                        499,
-                                        crate::gateway::RequestLogUsage::default(),
-                                        Some(crate::gateway::bilingual_error(
-                                            "WebSocket 请求在完成前被覆盖",
-                                            "websocket request superseded before completion",
-                                        )),
+                                if pending_request.is_some() {
+                                    log::warn!(
+                                        "event=responses_ws_request_rejected_while_in_flight account_id={} upstream_url={}",
+                                        upstream.account_id,
+                                        upstream.upstream_url,
                                     );
+                                    send_ws_error(
+                                        &mut socket,
+                                        WsSessionError::new(
+                                            400,
+                                            RESPONSES_WS_REQUEST_IN_FLIGHT_CODE,
+                                            crate::gateway::bilingual_error(
+                                                "当前 WebSocket 响应尚未完成",
+                                                "another response is already in flight on this websocket connection",
+                                            ),
+                                        ),
+                                        context.prefer_raw_errors,
+                                    )
+                                    .await;
+                                    continue;
                                 }
                                 let attempted_account_ids =
                                     HashSet::from([upstream.account_id.clone()]);
@@ -416,8 +496,9 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     ),
                                     prepared,
                                     forwarded_upstream_event: false,
-                                    retry_after_idle_upstream_disconnect:
-                                        upstream_completed_response,
+                                    forwarded_non_preamble_event: false,
+                                    replayed_after_upstream_disconnect: false,
+                                    suppress_replayed_preamble: false,
                                     buffered_upstream_preamble: Vec::new(),
                                     buffer_retry_preamble,
                                     attempted_account_ids,
@@ -441,8 +522,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     .await
                                     {
                                         Ok(replacement) => {
-                                            current_pending.retry_after_idle_upstream_disconnect =
-                                                false;
                                             log::info!(
                                                 "event=responses_ws_upstream_reconnected previous_account_id={} account_id={} reason=stale_send",
                                                 previous_account_id,
@@ -470,7 +549,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         }
                                     }
                                 }
-                                upstream_completed_response = false;
                                 pending_request = Some(current_pending);
                             }
                             Err(err) => {
@@ -486,24 +564,23 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                     Ok(Message::Pong(payload)) => {
                         let _ = upstream.stream.send(UpstreamMessage::Pong(payload)).await;
                     }
-                    Ok(Message::Binary(bytes)) => {
-                        if let Err(err) = upstream.stream.send(UpstreamMessage::Binary(bytes)).await {
-                            send_ws_error_and_close(
-                                &mut socket,
-                                WsSessionError::bad_gateway_bilingual(
-                                    "发送上游 WebSocket 二进制消息失败",
-                                    format!("send upstream websocket binary failed: {err}"),
-                                ),
-                                context.prefer_raw_errors,
-                            ).await;
-                            break;
-                        }
+                    Ok(Message::Binary(_)) => {
+                        send_ws_error(
+                            &mut socket,
+                            WsSessionError::bad_request_bilingual(
+                                "Responses WebSocket 只接受 response.create 文本帧",
+                                "Responses WebSocket accepts response.create text frames only",
+                            ),
+                            context.prefer_raw_errors,
+                        )
+                        .await;
                     }
                     Ok(Message::Close(_)) => {
                         let _ = upstream.stream.close(None).await;
                         break;
                     }
                     Err(err) => {
+                        log::warn!("event=responses_ws_client_receive_failed err={err}");
                         send_ws_error_and_close(
                             &mut socket,
                             WsSessionError::bad_request_bilingual(
@@ -520,7 +597,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
             maybe_upstream = upstream.stream.next() => {
                 let Some(upstream_result) = maybe_upstream else {
                     if pending_request.is_some() {
-                        let retry_result = retry_pending_request_after_idle_upstream_disconnect(
+                        let retry_result = retry_pending_request_after_upstream_disconnect(
                             &context,
                             &mut upstream,
                             pending_request
@@ -532,7 +609,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                         .await;
                         match retry_result {
                             Ok(true) => {
-                                upstream_completed_response = false;
                                 continue;
                             }
                             Ok(false) => {}
@@ -594,9 +670,8 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 previous_account_id,
                                 replacement.account_id,
                             );
-                            upstream = replacement;
-                            upstream_completed_response = false;
-                            pending_request = Some(pending);
+                                upstream = replacement;
+                                pending_request = Some(pending);
                             continue;
                         }
                         Ok(None) => break,
@@ -610,6 +685,84 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                     Ok(UpstreamMessage::Text(text)) => {
                         completed_tool_calls.observe_upstream_event(text.as_str());
                         if let Some(terminal) = inspect_ws_terminal_event(text.as_str()) {
+                            if terminal.is_websocket_connection_limit {
+                                if let Some(pending) = pending_request.as_mut() {
+                                    let previous_account_id = upstream.account_id.clone();
+                                    let _ = upstream.stream.close(None).await;
+                                    match retry_pending_request_after_upstream_disconnect(
+                                        &context,
+                                        &mut upstream,
+                                        pending,
+                                        &completed_tool_calls,
+                                        "connection_limit_reached",
+                                    )
+                                    .await
+                                    {
+                                        Ok(true) => {
+                                            log::info!(
+                                                "event=responses_ws_connection_limit_recovered previous_account_id={} account_id={}",
+                                                previous_account_id,
+                                                upstream.account_id,
+                                            );
+                                            continue;
+                                        }
+                                        Ok(false) => {}
+                                        Err(err) => {
+                                            let log_error = err.message.clone();
+                                            if let Some(pending) = pending_request.take() {
+                                                finalize_ws_request_log(
+                                                    &context,
+                                                    &pending.log,
+                                                    Some(upstream.account_id.as_str()),
+                                                    Some(upstream.upstream_url.as_str()),
+                                                    err.status,
+                                                    crate::gateway::RequestLogUsage::default(),
+                                                    Some(log_error),
+                                                );
+                                            }
+                                            send_ws_error_and_close(
+                                                &mut socket,
+                                                err,
+                                                context.prefer_raw_errors,
+                                            )
+                                            .await;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    let previous_account_id = upstream.account_id.clone();
+                                    let _ = upstream.stream.close(None).await;
+                                    match wait_for_client_request_and_reconnect_upstream(
+                                        &mut socket,
+                                        &context,
+                                        previous_account_id.as_str(),
+                                        &completed_tool_calls,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some((replacement, pending))) => {
+                                            log::info!(
+                                                "event=responses_ws_connection_limit_recovered previous_account_id={} account_id={} reason=idle",
+                                                previous_account_id,
+                                                replacement.account_id,
+                                            );
+                                            upstream = replacement;
+                                            pending_request = Some(pending);
+                                            continue;
+                                        }
+                                        Ok(None) => break,
+                                        Err(err) => {
+                                            send_ws_error_and_close(
+                                                &mut socket,
+                                                err,
+                                                context.prefer_raw_errors,
+                                            )
+                                            .await;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             apply_ws_terminal_account_follow_up(
                                 upstream.account_id.as_str(),
                                 &terminal,
@@ -680,11 +833,15 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 log::warn!("event=responses_ws_client_send_terminal_failed err={err}");
                                 break;
                             }
-                            upstream_completed_response = true;
                             continue;
                         }
 
                         if let Some(pending) = pending_request.as_mut() {
+                            if pending.suppress_replayed_preamble
+                                && should_buffer_ws_upstream_preamble(text.as_str(), 0)
+                            {
+                                continue;
+                            }
                             let should_buffer_preamble = pending.buffer_retry_preamble
                                 && should_buffer_ws_upstream_preamble(
                                 text.as_str(),
@@ -700,7 +857,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 log::warn!("event=responses_ws_client_send_preamble_failed err={err}");
                                 break;
                             }
-                            mark_ws_first_response(pending);
+                            mark_ws_forwarded_event(pending, text.as_str());
                         }
                         if let Err(err) = socket
                             .send(Message::Text(text.to_string().into()))
@@ -717,6 +874,8 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 break;
                             }
                             mark_ws_first_response(pending);
+                            pending.forwarded_non_preamble_event = true;
+                            pending.suppress_replayed_preamble = false;
                         }
                         if let Err(err) = socket.send(Message::Binary(bytes)).await {
                             log::warn!("event=responses_ws_client_send_binary_failed err={err}");
@@ -731,7 +890,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                     }
                     Ok(UpstreamMessage::Close(_)) => {
                         if pending_request.is_some() {
-                            let retry_result = retry_pending_request_after_idle_upstream_disconnect(
+                            let retry_result = retry_pending_request_after_upstream_disconnect(
                                 &context,
                                 &mut upstream,
                                 pending_request
@@ -743,7 +902,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             .await;
                             match retry_result {
                                 Ok(true) => {
-                                    upstream_completed_response = false;
                                     continue;
                                 }
                                 Ok(false) => {}
@@ -806,7 +964,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     replacement.account_id,
                                 );
                                 upstream = replacement;
-                                upstream_completed_response = false;
                                 pending_request = Some(pending);
                                 continue;
                             }
@@ -820,7 +977,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                     Ok(UpstreamMessage::Frame(_)) => {}
                     Err(read_err) => {
                         if pending_request.is_some() {
-                            let retry_result = retry_pending_request_after_idle_upstream_disconnect(
+                            let retry_result = retry_pending_request_after_upstream_disconnect(
                                 &context,
                                 &mut upstream,
                                 pending_request
@@ -832,7 +989,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             .await;
                             match retry_result {
                                 Ok(true) => {
-                                    upstream_completed_response = false;
                                     continue;
                                 }
                                 Ok(false) => {}
@@ -894,9 +1050,8 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     previous_account_id,
                                     replacement.account_id,
                                 );
-                                upstream = replacement;
-                                upstream_completed_response = false;
-                                pending_request = Some(pending);
+                            upstream = replacement;
+                            pending_request = Some(pending);
                                 continue;
                             }
                             Ok(None) => break,
@@ -995,9 +1150,22 @@ fn authorize_websocket_request(headers: &HeaderMap) -> Result<WsRequestContext, 
 }
 
 async fn receive_initial_request(socket: &mut WebSocket) -> Result<Option<String>, WsSessionError> {
+    let mut heartbeat = responses_ws_heartbeat_interval();
     loop {
-        let Some(message) = socket.recv().await else {
-            return Ok(None);
+        let message = tokio::select! {
+            maybe_message = socket.recv() => {
+                let Some(message) = maybe_message else {
+                    return Ok(None);
+                };
+                message
+            }
+            _ = heartbeat.tick() => {
+                if let Err(err) = socket.send(Message::Ping(Vec::new().into())).await {
+                    log::info!("event=responses_ws_client_heartbeat_failed_during_wait err={err}");
+                    return Ok(None);
+                }
+                continue;
+            }
         };
         match message {
             Ok(Message::Text(text)) => return Ok(Some(text.to_string())),
@@ -1013,6 +1181,7 @@ async fn receive_initial_request(socket: &mut WebSocket) -> Result<Option<String
                 ));
             }
             Err(err) => {
+                log::warn!("event=responses_ws_client_initial_receive_failed err={err}");
                 return Err(WsSessionError::bad_request_bilingual(
                     "接收首个 WebSocket 帧失败",
                     format!("receive initial websocket frame failed: {err}"),
@@ -1020,6 +1189,13 @@ async fn receive_initial_request(socket: &mut WebSocket) -> Result<Option<String
             }
         }
     }
+}
+
+fn responses_ws_heartbeat_interval() -> tokio::time::Interval {
+    tokio::time::interval_at(
+        tokio::time::Instant::now() + RESPONSES_WS_HEARTBEAT_INTERVAL,
+        RESPONSES_WS_HEARTBEAT_INTERVAL,
+    )
 }
 
 fn rewrite_client_frame(
@@ -1066,6 +1242,12 @@ fn rewrite_client_frame(
         .and_then(|value| value.get("effort"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    // `stream` and `background` are HTTP transport controls. Responses
+    // WebSocket mode sends response.create events directly and does not use
+    // either field, even when the incoming Codex-compatible payload contains
+    // them.
+    object.remove("stream");
+    object.remove("background");
     let previous_response_id = object.remove("previous_response_id");
     let generate = object.remove("generate");
     let client_metadata = object.remove("client_metadata");
@@ -1097,6 +1279,10 @@ fn rewrite_client_frame(
             "rewritten websocket payload must be a JSON object",
         ));
     };
+    // Keep the transport-field boundary after gateway rewriting as well: a
+    // downstream override must not reintroduce HTTP-only WebSocket fields.
+    rewritten_object.remove("stream");
+    rewritten_object.remove("background");
     if let Some(previous_response_id) = previous_response_id {
         rewritten_object.insert("previous_response_id".to_string(), previous_response_id);
     }
@@ -1157,6 +1343,8 @@ fn rewrite_client_frame(
         text,
         client_model: client_model_for_log,
         model: Some(request.model),
+        previous_response_id: request.previous_response_id,
+        store: request.store,
         model_source,
         client_reasoning_effort: client_reasoning_for_log,
         reasoning_effort,
@@ -1372,6 +1560,11 @@ async fn reconnect_upstream_for_pending_request(
     previous_account_id: Option<&str>,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
+    if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
+        return Err(WsSessionError::context_rebase_failed(
+            "无法在新 WebSocket 连接中恢复 store=false 的 previous_response_id；请重新发送完整上下文",
+        ));
+    }
     let mut replacement =
         connect_upstream_websocket_with_timeout(context, pending.prepared.model.as_deref()).await?;
     if previous_account_id.is_some_and(|account_id| account_id != replacement.account_id) {
@@ -1416,18 +1609,42 @@ async fn reconnect_upstream_for_pending_request(
     Ok(replacement)
 }
 
-async fn retry_pending_request_after_idle_upstream_disconnect(
+async fn retry_pending_request_after_upstream_disconnect(
     context: &WsRequestContext,
     upstream: &mut ConnectedUpstreamWebsocket,
     pending: &mut PendingWsRequestState,
     completed_tool_calls: &CompletedWsToolCallCache,
     reason: &str,
 ) -> Result<bool, WsSessionError> {
-    if pending.forwarded_upstream_event || !pending.retry_after_idle_upstream_disconnect {
+    if pending.forwarded_non_preamble_event || pending.replayed_after_upstream_disconnect {
         return Ok(false);
     }
 
-    pending.retry_after_idle_upstream_disconnect = false;
+    // A continuation sent with store=false depends on the old upstream
+    // connection's in-memory previous-response cache. A replacement upstream
+    // connection cannot safely replay only that incremental input. Let the
+    // client establish a new connection and provide the full context instead
+    // of silently creating a partial or duplicated continuation.
+    if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
+        return Err(WsSessionError::context_rebase_failed(
+            "无法安全恢复 store=false 的增量 WebSocket 请求；请在新连接中重新发送完整上下文",
+        ));
+    }
+
+    // Once a continuation has emitted a preamble, replaying the same request
+    // can duplicate an already accepted turn. The only exception retained for
+    // compatibility is a request without previous_response_id, where the
+    // bounded preamble replay remains deduplicated before reaching the client.
+    if pending.prepared.previous_response_id.is_some() && pending.forwarded_upstream_event {
+        return Err(WsSessionError::context_rebase_failed(
+            "上游 WebSocket 已接受增量请求，无法安全重放；请使用新的 response.create 继续",
+        ));
+    }
+
+    let suppress_replayed_preamble = pending.forwarded_upstream_event;
+    pending.replayed_after_upstream_disconnect = true;
+    pending.suppress_replayed_preamble = suppress_replayed_preamble;
+    pending.buffered_upstream_preamble.clear();
     let previous_account_id = upstream.account_id.clone();
     let replacement = reconnect_upstream_for_pending_request(
         context,
@@ -1460,7 +1677,9 @@ async fn wait_for_client_request_and_reconnect_upstream(
         log: begin_ws_request_log(context, &prepared, "unresolved", "upstream_reconnect"),
         prepared,
         forwarded_upstream_event: false,
-        retry_after_idle_upstream_disconnect: false,
+        forwarded_non_preamble_event: false,
+        replayed_after_upstream_disconnect: false,
+        suppress_replayed_preamble: false,
         buffered_upstream_preamble: Vec::new(),
         buffer_retry_preamble: false,
         attempted_account_ids: HashSet::new(),
@@ -1516,6 +1735,28 @@ async fn connect_account_upstream_websocket(
             Ok((stream, _)) => return Ok(stream),
             Err(err) => err,
         };
+    if first_error.is_websocket_connection_limit_reached() {
+        log::info!(
+            "event=responses_ws_connection_limit_handshake_retry account_id={}",
+            account.id,
+        );
+        let retry_request = build_upstream_websocket_request(
+            ws_url,
+            account,
+            &authorization,
+            context,
+            strip_session_affinity,
+        )
+        .map_err(|err| err.message)?;
+        return connect_upstream_websocket_request_detailed(
+            retry_request,
+            ws_url,
+            proxy_url.as_deref(),
+        )
+        .await
+        .map(|(stream, _)| stream)
+        .map_err(|err| format!("{err} (after websocket connection limit recovery)"));
+    }
     if !first_error.is_unauthorized() {
         return Err(first_error.to_string());
     }
@@ -1793,17 +2034,28 @@ pub(crate) async fn connect_upstream_websocket_request_detailed(
 > {
     ensure_rustls_crypto_provider();
     let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) else {
-        return connect_async_tls_with_config(request, None, false, None)
-            .await
-            .map_err(WsConnectError::from_tungstenite);
+        return connect_async_tls_with_config(
+            request,
+            Some(responses_ws_transport_config()),
+            false,
+            None,
+        )
+        .await
+        .map_err(WsConnectError::from_tungstenite);
     };
 
     let stream = connect_websocket_proxy_tcp(ws_url, proxy_url)
         .await
         .map_err(WsConnectError::from_message)?;
-    client_async_tls_with_config(request, stream, None, None)
+    client_async_tls_with_config(request, stream, Some(responses_ws_transport_config()), None)
         .await
         .map_err(WsConnectError::from_tungstenite)
+}
+
+fn responses_ws_transport_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(RESPONSES_WS_MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(RESPONSES_WS_MAX_MESSAGE_BYTES))
 }
 
 async fn connect_websocket_proxy_tcp(ws_url: &str, proxy_url: &str) -> Result<TcpStream, String> {
@@ -2326,6 +2578,14 @@ fn mark_ws_first_response(pending: &mut PendingWsRequestState) {
     pending.buffer_retry_preamble = false;
 }
 
+fn mark_ws_forwarded_event(pending: &mut PendingWsRequestState, text: &str) {
+    mark_ws_first_response(pending);
+    if !should_buffer_ws_upstream_preamble(text, 0) {
+        pending.forwarded_non_preamble_event = true;
+        pending.suppress_replayed_preamble = false;
+    }
+}
+
 fn finalize_ws_request_log(
     context: &WsRequestContext,
     pending: &PendingWsRequestLog,
@@ -2431,6 +2691,7 @@ struct WsTerminalEvent {
     usage: crate::gateway::RequestLogUsage,
     error: Option<String>,
     is_usage_limit: bool,
+    is_websocket_connection_limit: bool,
 }
 
 fn should_rotate_ws_upstream(status_code: u16) -> bool {
@@ -2488,6 +2749,11 @@ async fn try_retry_ws_request_after_terminal(
     } else if is_previous_response_not_found_terminal(terminal) {
         if strip_previous_response_id_from_ws_text(pending.prepared.text.as_str()).is_none() {
             return Ok(false);
+        }
+        if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
+            return Err(WsSessionError::context_rebase_failed(
+                "previous_response_id 在新 WebSocket 连接中不可用；store=false 时必须重新发送完整上下文",
+            ));
         }
         retry_text = Some(rebase_ws_request_for_account_change(
             pending.prepared.text.as_str(),
@@ -2668,29 +2934,48 @@ fn inspect_ws_terminal_event(text: &str) -> Option<WsTerminalEvent> {
             usage: parse_ws_usage(&value),
             error: error.or(Some(usage_limit_signal)),
             is_usage_limit: true,
+            is_websocket_connection_limit: false,
         });
     }
+    let is_websocket_connection_limit =
+        is_websocket_connection_limit_error(error_code.as_deref(), error.as_deref());
     match event_type.as_str() {
         "response.completed" | "response.done" => Some(WsTerminalEvent {
             status_code: 200,
             usage: parse_ws_usage(&value),
             error: None,
             is_usage_limit: false,
+            is_websocket_connection_limit: false,
         }),
         "response.failed" | "error" => Some(WsTerminalEvent {
             status_code: infer_ws_terminal_status(&value, error.as_deref()),
             usage: parse_ws_usage(&value),
             error: error.or(error_code),
             is_usage_limit: false,
+            is_websocket_connection_limit,
         }),
         "response.incomplete" => Some(WsTerminalEvent {
             status_code: 502,
             usage: parse_ws_usage(&value),
             error: error.or_else(|| Some("连接中断（可能是网络波动或客户端主动取消）".to_string())),
             is_usage_limit: false,
+            is_websocket_connection_limit: false,
         }),
         _ => None,
     }
+}
+
+fn is_websocket_connection_limit_error(
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+) -> bool {
+    error_code
+        .is_some_and(|code| code.eq_ignore_ascii_case(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE))
+        || error_message.is_some_and(|message| {
+            message
+                .to_ascii_lowercase()
+                .contains("responses websocket connection limit reached")
+        })
 }
 
 fn is_previous_response_not_found_terminal(terminal: &WsTerminalEvent) -> bool {
@@ -2947,21 +3232,32 @@ fn ensure_rustls_crypto_provider() {
     });
 }
 
+fn ws_error_payload(err: WsSessionError, prefer_raw_errors: bool) -> Message {
+    let message = crate::gateway::error_message_for_client(prefer_raw_errors, err.message);
+    Message::Text(
+        json!({
+            "type": "error",
+            "status": err.status,
+            "error": {
+                "code": err.code,
+                "message": message,
+            }
+        })
+        .to_string()
+        .into(),
+    )
+}
+
+async fn send_ws_error(socket: &mut WebSocket, err: WsSessionError, prefer_raw_errors: bool) {
+    let _ = socket.send(ws_error_payload(err, prefer_raw_errors)).await;
+}
+
 async fn send_ws_error_and_close(
     socket: &mut WebSocket,
     err: WsSessionError,
     prefer_raw_errors: bool,
 ) {
-    let message = crate::gateway::error_message_for_client(prefer_raw_errors, err.message);
-    let payload = json!({
-        "type": "error",
-        "status": err.status,
-        "error": {
-            "code": err.code,
-            "message": message,
-        }
-    });
-    let _ = socket.send(Message::Text(payload.to_string().into())).await;
+    send_ws_error(socket, err, prefer_raw_errors).await;
     let _ = socket.close().await;
 }
 
