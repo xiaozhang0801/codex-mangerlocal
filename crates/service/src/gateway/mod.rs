@@ -51,6 +51,24 @@ pub(crate) fn prefers_raw_errors_for_tiny_http_request(request: &tiny_http::Requ
     })
 }
 
+pub(crate) fn load_active_gateway_api_key(
+    storage: &codexmanager_core::storage::Storage,
+    platform_key: &str,
+    request_url: &str,
+) -> Result<codexmanager_core::storage::ApiKey, (u16, String)> {
+    local_validation::load_active_api_key_for_platform_key(storage, platform_key, request_url)
+        .map_err(|err| (err.status_code, err.message))
+}
+
+pub(crate) fn load_active_gateway_api_key_by_id(
+    storage: &codexmanager_core::storage::Storage,
+    key_id: &str,
+    request_url: &str,
+) -> Result<codexmanager_core::storage::ApiKey, (u16, String)> {
+    local_validation::load_active_api_key_for_id(storage, key_id, request_url)
+        .map_err(|err| (err.status_code, err.message))
+}
+
 pub(crate) fn error_message_for_client(
     _prefers_raw_errors: bool,
     message: impl Into<String>,
@@ -65,7 +83,7 @@ pub(crate) fn error_message_for_client(
 mod anchor_fingerprint;
 mod concurrency;
 #[path = "routing/conversation_binding.rs"]
-mod conversation_binding;
+pub(crate) mod conversation_binding;
 #[path = "routing/cooldown.rs"]
 mod cooldown;
 mod error_response;
@@ -155,7 +173,8 @@ pub(crate) use request_log::{
 #[cfg(test)]
 use request_rewrite::apply_request_overrides_with_service_tier_and_prompt_cache_key;
 use request_rewrite::{
-    apply_codex_candidate_transport_rules, apply_request_overrides_for_deferred_aggregate,
+    apply_codex_candidate_transport_rules, apply_external_dynamic_tools_transport_rules,
+    apply_request_overrides_for_deferred_aggregate,
     apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope,
     apply_request_overrides_with_service_tier_and_prompt_cache_key_scope, compute_upstream_url,
 };
@@ -426,6 +445,7 @@ pub(crate) use selection::{
 };
 #[cfg(test)]
 use token_exchange::account_token_exchange_lock;
+pub(crate) use token_exchange::api_key_exchange_client_id;
 use token_exchange::resolve_openai_bearer_token;
 use upstream::proxy::proxy_validated_request;
 
@@ -1078,6 +1098,7 @@ pub(crate) struct GatewayRoutedCandidates {
     )>,
     pub(crate) route_strategy: &'static str,
     pub(crate) route_source: &'static str,
+    pub(crate) conversation_routing: Option<conversation_binding::ConversationRoutingContext>,
 }
 
 pub(crate) fn gateway_collect_routed_candidates_with_log_source(
@@ -1104,7 +1125,122 @@ pub(crate) fn gateway_collect_routed_candidates_with_log_source(
         candidates,
         route_strategy: application.strategy_label,
         route_source: application.source,
+        conversation_routing: None,
     })
+}
+
+pub(crate) fn gateway_collect_routed_candidates_for_ws(
+    storage: &codexmanager_core::storage::Storage,
+    key_id: &str,
+    model: Option<&str>,
+    route_conversation_id: Option<&str>,
+    route_conversation_source: Option<conversation_binding::RouteConversationSource>,
+) -> Result<GatewayRoutedCandidates, String> {
+    let api_key = storage
+        .find_api_key_by_id(key_id)
+        .map_err(|err| format!("read api key routing config failed: {err}"))?
+        .ok_or_else(|| "api key not found".to_string())?;
+    let account_group_filter = storage
+        .find_api_key_account_group_filter(key_id)
+        .map_err(|err| format!("read api key account group filter failed: {err}"))?;
+    let mut candidates = upstream::support::candidates::prepare_gateway_candidates(
+        storage,
+        model,
+        account_group_filter.as_deref(),
+        api_key.account_plan_filter.as_deref(),
+        LowQuotaCandidateMode::NormalOnly,
+    )?;
+
+    // HTTP candidate execution treats runtime cooldown as a hard skip whenever another
+    // candidate exists. A persistent WebSocket must not keep using the current account after
+    // a 429/401/403 cooldown is recorded, so the WS pool excludes all cooled-down accounts
+    // before routing and failover.
+    candidates.retain(|(account, _)| !is_account_in_cooldown(account.id.as_str()));
+
+    let conversation_binding = match route_conversation_id {
+        Some(conversation_id) => conversation_binding::load_conversation_binding(
+            storage,
+            api_key.key_hash.as_str(),
+            Some(conversation_id),
+        )?,
+        None => None,
+    };
+    let conversation_routing = route_conversation_source.and_then(|source| {
+        conversation_binding::prepare_conversation_routing_with_source(
+            api_key.key_hash.as_str(),
+            route_conversation_id,
+            conversation_binding.as_ref(),
+            &mut candidates,
+            source,
+        )
+    });
+    let account_binding_counts = if thread_aware_account_distribution_enabled()
+        && conversation_routing.as_ref().is_some_and(|routing| {
+            routing.existing_binding.is_none() && routing.source.allows_initial_binding_create()
+        }) {
+        match storage.active_conversation_binding_account_counts(api_key.key_hash.as_str()) {
+            Ok(counts) => Some(counts),
+            Err(err) => {
+                log::warn!("load conversation binding account counts for websocket failed: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let rotation_plan = conversation_binding::apply_candidate_rotation(
+        &mut candidates,
+        conversation_routing.as_ref(),
+        key_id,
+        model,
+        account_binding_counts.as_ref(),
+    );
+    Ok(GatewayRoutedCandidates {
+        candidates,
+        route_strategy: rotation_plan.strategy_label,
+        route_source: rotation_plan.source.as_str(),
+        conversation_routing,
+    })
+}
+
+pub(crate) fn gateway_ws_account_requires_switch(
+    routed: &GatewayRoutedCandidates,
+    current_account_id: &str,
+) -> bool {
+    if !routed
+        .candidates
+        .iter()
+        .any(|(account, _)| account.id == current_account_id)
+    {
+        return true;
+    }
+
+    // A turn-state-only or otherwise unbound WebSocket has no conversation routing context,
+    // but an explicitly preferred account still applies to it. The routed source is already
+    // computed from the fresh preference snapshot above, so do not let the persistent socket
+    // keep using a formerly selected non-preferred account.
+    if routed.route_source == "manual_preferred_account" {
+        return routed
+            .candidates
+            .first()
+            .is_some_and(|(account, _)| account.id != current_account_id);
+    }
+
+    let Some(routing) = routed.conversation_routing.as_ref() else {
+        return false;
+    };
+    if routing
+        .manual_preferred_account_id
+        .as_deref()
+        .is_some_and(|account_id| account_id != current_account_id)
+    {
+        return true;
+    }
+    routing.bound_account_selectable
+        && routing
+            .existing_binding
+            .as_ref()
+            .is_some_and(|binding| binding.account_id != current_account_id)
 }
 
 /// 函数 `gateway_record_failover_attempt`
@@ -1171,11 +1307,22 @@ pub(crate) fn gateway_token_exchange_client_id() -> String {
     runtime_config::token_exchange_client_id()
 }
 
+pub(crate) struct GatewayWsRoutingPreparation {
+    pub(crate) incoming_headers: IncomingHeaderSnapshot,
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) route_conversation_id: Option<String>,
+    pub(crate) route_conversation_source: Option<conversation_binding::RouteConversationSource>,
+}
+
 pub(crate) fn gateway_resolve_ws_prompt_cache_key(
     storage: &codexmanager_core::storage::Storage,
     api_key: &codexmanager_core::storage::ApiKey,
     incoming_headers: &IncomingHeaderSnapshot,
-) -> Result<(IncomingHeaderSnapshot, Option<String>), String> {
+) -> Result<GatewayWsRoutingPreparation, String> {
+    let has_native_conversation_id = incoming_headers
+        .conversation_id()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
     let local_conversation_id =
         resolve_local_conversation_id_with_sticky_fallback(incoming_headers, true);
     let conversation_binding = conversation_binding::load_conversation_binding(
@@ -1190,7 +1337,19 @@ pub(crate) fn gateway_resolve_ws_prompt_cache_key(
         local_conversation_id.as_deref(),
         conversation_binding.as_ref(),
     );
-    Ok((incoming_headers, prompt_cache_key))
+    let route_conversation_source = if has_native_conversation_id {
+        Some(conversation_binding::RouteConversationSource::NativeConversation)
+    } else if local_conversation_id.is_some() {
+        Some(conversation_binding::RouteConversationSource::StickyFallback)
+    } else {
+        None
+    };
+    Ok(GatewayWsRoutingPreparation {
+        incoming_headers,
+        prompt_cache_key,
+        route_conversation_id: local_conversation_id,
+        route_conversation_source,
+    })
 }
 
 /// 函数 `gateway_rewrite_ws_responses_body`

@@ -215,6 +215,17 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
     [initializeService]
   );
 
+  const initializeOrStartService = useCallback(
+    async (addr: string) => {
+      try {
+        return await initializeService(addr, 0);
+      } catch {
+        return startAndInitializeService(addr);
+      }
+    },
+    [initializeService, startAndInitializeService],
+  );
+
   const applyConnectedServiceState = useCallback(
     (
       addr: string,
@@ -304,7 +315,7 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
         setDesktopStartupSettled(false);
         const connectToDesktopService = isTrayPreview
           ? initializeService(addr, TRAY_PREVIEW_SERVICE_INITIALIZE_RETRIES)
-          : startAndInitializeService(addr);
+          : initializeOrStartService(addr);
         void connectToDesktopService
           .then((initializeResult) => {
             applyConnectedServiceState(addr, initializeResult.version, settings.lowTransparency);
@@ -339,6 +350,7 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
   }, [
     applyConnectedServiceState,
     initializeService,
+    initializeOrStartService,
     isTrayPreview,
     markDesktopShellReady,
     setAppSettings,

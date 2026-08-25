@@ -5,6 +5,30 @@
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-23
+
+### Fixed
+
+- 修复关闭启动时显示主界面后，桌面恢复到前台时服务短暂不可用的问题。
+- 启动和恢复流程现在会合并窗口导航，等待首页就绪后再显示窗口，并优先复用已初始化的服务，减少重复启动和预热请求。
+
+## [0.5.4] - 2026-08-23
+
+### Changed
+
+- 发布版本提升到 `0.5.4`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+- 对齐 Responses WebSocket 官方语义：增加有界心跳与恢复、连接上限续接、大图像帧支持、压缩协商回退、首帧/前导事件安全重放和账号重新选择，并在恢复耗尽后保留 HTTP fallback。
+- 提高 CI 的 Cargo Git 依赖获取稳定性：使用 CLI fetch、网络重试、锁定依赖预取和缓存，但不重试实际构建或测试失败。
+- 更新 AIXiamo 赞助入口、教程链接和相关说明。
+
+### Fixed
+
+- 修复关闭启动时显示主界面后，桌面主窗口初始化、刷新和服务自动启动不可靠的问题。
+- 修复切换到直连 OpenAI 后历史对话仍引用 `cm` provider 的兼容性问题；直连模式现在明确使用内置 `openai` provider，并避免切换时扫描重写整个 Codex 历史目录。
+- 兼容 Codex 0.149 的托管网关认证，自动为 `cm` provider 写入 `requires_openai_auth`，避免请求缺少 API key。
+- 修复 Responses WebSocket 早期断连、连接时限、首帧失败、前导事件续接、`store=false` 上下文和账号资格变化等场景下的错误恢复；已产生实质输出后不会静默重复请求。
+- 修复部分非成功上游响应的账号切换和默认模型组路由语义。
+
 ## [0.5.3] - 2026-08-08
 
 ### Fixed
@@ -459,7 +483,8 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.0...v0.5.1

@@ -61,6 +61,35 @@ pub(super) fn load_active_api_key(
         ));
     };
 
+    ensure_active_api_key(storage, api_key, request_url, debug)
+}
+
+pub(super) fn load_active_api_key_by_id(
+    storage: &Storage,
+    key_id: &str,
+    request_url: &str,
+) -> Result<ApiKey, super::LocalValidationError> {
+    let api_key = storage.find_api_key_by_id(key_id).map_err(|err| {
+        super::LocalValidationError::new(
+            500,
+            crate::gateway::bilingual_error("读取存储失败", format!("storage read failed: {err}")),
+        )
+    })?;
+    let Some(api_key) = api_key else {
+        return Err(super::LocalValidationError::new(
+            403,
+            crate::gateway::bilingual_error("API Key 不存在", "api key not found"),
+        ));
+    };
+    ensure_active_api_key(storage, api_key, request_url, false)
+}
+
+fn ensure_active_api_key(
+    storage: &Storage,
+    api_key: ApiKey,
+    request_url: &str,
+    debug: bool,
+) -> Result<ApiKey, super::LocalValidationError> {
     if api_key.status != "active" {
         if debug {
             log::warn!(

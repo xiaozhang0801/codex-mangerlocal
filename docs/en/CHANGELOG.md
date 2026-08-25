@@ -5,6 +5,30 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-23
+
+### Fixed
+
+- Fixed a brief period where the service was unavailable when restoring the desktop window after startup-with-main-window was disabled.
+- Streamlined startup and restore by coalescing window navigation, waiting for the home page before showing the window, reusing an initialized service first, and removing duplicate warmup requests.
+
+## [0.5.4] - 2026-08-23
+
+### Changed
+
+- Bumped the release version to `0.5.4` and synchronized the workspace, frontend package, Tauri desktop metadata, and lockfiles.
+- Aligned Responses WebSocket behavior with the official semantics: bounded heartbeats and recovery, connection-limit continuation, large image frames, compression-negotiation fallback, safe first-frame/preamble replay, and account reselection while preserving HTTP fallback after the recovery budget is exhausted.
+- Improved CI reliability for Cargo Git dependencies with CLI fetches, network retries, locked dependency prefetching, and caching without retrying real build or test failures.
+- Updated AIXiamo sponsor entry points, tutorial links, and related copy.
+
+### Fixed
+
+- Fixed unreliable desktop main-window initialization, refresh, and automatic service startup when the launch-with-main-window option is disabled.
+- Fixed direct OpenAI account switching when historical conversations still reference the `cm` provider. Direct mode now explicitly uses the built-in `openai` provider and avoids scanning and rewriting the entire Codex history directory during the switch.
+- Added Codex 0.149 compatibility for the managed gateway by ensuring the `cm` provider sends `requires_openai_auth`, avoiding missing-API-key requests.
+- Fixed Responses WebSocket recovery for early disconnects, connection limits, failed first frames, preamble continuation, `store=false` context, and changing account eligibility; requests are never silently duplicated after substantive output has been sent.
+- Fixed account failover for some non-success upstream responses and corrected default model-group routing semantics.
+
 ## [0.5.3] - 2026-08-08
 
 ### Fixed
@@ -459,7 +483,8 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Changed
 - The operation area of ​​the account management page is integrated into a single "Account Operation" drop-down menu, replacing the stack of multiple buttons on the right, making the interface more concise.
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.0...v0.5.1

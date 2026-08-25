@@ -75,6 +75,22 @@ impl LocalValidationError {
     }
 }
 
+pub(super) fn load_active_api_key_for_platform_key(
+    storage: &codexmanager_core::storage::Storage,
+    platform_key: &str,
+    request_url: &str,
+) -> Result<codexmanager_core::storage::ApiKey, LocalValidationError> {
+    auth::load_active_api_key(storage, platform_key, request_url, false)
+}
+
+pub(super) fn load_active_api_key_for_id(
+    storage: &codexmanager_core::storage::Storage,
+    key_id: &str,
+    request_url: &str,
+) -> Result<codexmanager_core::storage::ApiKey, LocalValidationError> {
+    auth::load_active_api_key_by_id(storage, key_id, request_url)
+}
+
 /// 函数 `prepare_local_request`
 ///
 /// 作者: gaohongshun

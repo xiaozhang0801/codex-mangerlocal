@@ -8,9 +8,6 @@ use tauri::{
     LogicalSize, PhysicalPosition, PhysicalRect, Rect, Size, WebviewUrl, WebviewWindowBuilder,
 };
 
-#[cfg(debug_assertions)]
-use tauri::Url;
-
 use super::state::{APP_EXIT_REQUESTED, KEEP_ALIVE_FOR_LIGHTWEIGHT_CLOSE, KEEP_WINDOW_UI_MOUNTED};
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
@@ -19,12 +16,9 @@ const TRAY_PREVIEW_WIDTH: f64 = 360.0;
 const TRAY_PREVIEW_HEIGHT: f64 = 430.0;
 const TRAY_PREVIEW_MARGIN: f64 = 8.0;
 static SHOW_MAIN_WINDOW_PENDING: AtomicBool = AtomicBool::new(false);
-static MAIN_WINDOW_CREATED_ONCE: AtomicBool = AtomicBool::new(false);
 
 struct MainWindowHandle {
     window: tauri::WebviewWindow,
-    created: bool,
-    created_after_initial: bool,
 }
 
 /// 函数 `show_main_window`
@@ -49,12 +43,6 @@ fn show_main_window(app: &tauri::AppHandle) -> bool {
     let Some(main_window) = ensure_main_window(app) else {
         return false;
     };
-    if should_navigate_created_main_window_to_app(
-        main_window.created,
-        main_window.created_after_initial,
-    ) {
-        navigate_main_window_to_app(&main_window.window);
-    }
     reveal_main_window(&main_window.window)
 }
 
@@ -69,6 +57,17 @@ pub(crate) fn initialize_main_window(app: &tauri::AppHandle) -> bool {
         log::info!("main window initialized in the background");
     }
     initialized
+}
+
+pub(crate) fn request_initialize_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let app = app.clone();
+    let app_for_callback = app.clone();
+    app.run_on_main_thread(move || {
+        if !initialize_main_window(&app_for_callback) {
+            log::warn!("initialize main window request completed without creating a window");
+        }
+    })
+    .map_err(|err| format!("schedule main window initialization failed: {err}"))
 }
 
 fn reveal_main_window(window: &tauri::WebviewWindow) -> bool {
@@ -123,25 +122,6 @@ pub(crate) fn request_show_main_window(app: &tauri::AppHandle) -> Result<(), Str
         }
     });
     Ok(())
-}
-
-pub(crate) fn navigate_main_window_to_startup_app(app: &tauri::AppHandle) -> Result<(), String> {
-    let app_handle = app.clone();
-    let app_for_callback = app_handle.clone();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    if let Err(err) = app_handle.run_on_main_thread(move || {
-        let Some(window) = app_for_callback.get_webview_window(MAIN_WINDOW_LABEL) else {
-            let _ = sender.send(Err("main window is missing".to_string()));
-            return;
-        };
-        let result = navigate_window_to_app_url(&window).map_err(|err| err.to_string());
-        let _ = sender.send(result);
-    }) {
-        return Err(format!("schedule startup app navigation failed: {err}"));
-    }
-    receiver
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .map_err(|err| format!("startup app navigation callback timed out: {err}"))?
 }
 
 pub(crate) fn dismiss_tray_preview_window(app: &tauri::AppHandle) {
@@ -213,12 +193,7 @@ pub(crate) fn toggle_tray_preview_window(
 /// 返回函数执行结果
 fn ensure_main_window(app: &tauri::AppHandle) -> Option<MainWindowHandle> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        MAIN_WINDOW_CREATED_ONCE.store(true, Ordering::Release);
-        return Some(MainWindowHandle {
-            window,
-            created: false,
-            created_after_initial: false,
-        });
+        return Some(MainWindowHandle { window });
     }
 
     let mut config = app
@@ -230,10 +205,6 @@ fn ensure_main_window(app: &tauri::AppHandle) -> Option<MainWindowHandle> {
         .cloned()
         .or_else(|| app.config().app.windows.first().cloned())?;
     config.label = MAIN_WINDOW_LABEL.to_string();
-    #[cfg(debug_assertions)]
-    {
-        config.url = startup_loading_url();
-    }
 
     let builder = match WebviewWindowBuilder::from_config(app, &config) {
         Ok(builder) => builder,
@@ -242,78 +213,25 @@ fn ensure_main_window(app: &tauri::AppHandle) -> Option<MainWindowHandle> {
             return None;
         }
     };
-
     match builder
         .on_page_load(|window, payload| {
-            if payload.event() != PageLoadEvent::Finished {
-                return;
-            }
-            if window.label() != MAIN_WINDOW_LABEL {
-                return;
-            }
-            log::info!("main window page loaded: {}", payload.url());
-            if should_navigate_loaded_main_window_to_app(payload.url().path()) {
-                navigate_main_window_to_app(&window);
+            if payload.event() == PageLoadEvent::Finished && window.label() == MAIN_WINDOW_LABEL {
+                log::info!("main window page loaded: {}", payload.url());
             }
         })
         .build()
     {
         Ok(window) => {
-            let created_after_initial = MAIN_WINDOW_CREATED_ONCE.swap(true, Ordering::AcqRel);
-            Some(MainWindowHandle {
-                window,
-                created: true,
-                created_after_initial,
-            })
+            Some(MainWindowHandle { window })
         }
         Err(err) => {
             if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                MAIN_WINDOW_CREATED_ONCE.store(true, Ordering::Release);
-                return Some(MainWindowHandle {
-                    window,
-                    created: false,
-                    created_after_initial: false,
-                });
+                return Some(MainWindowHandle { window });
             }
             log::warn!("create main window failed: {}", err);
             None
         }
     }
-}
-
-fn should_navigate_created_main_window_to_app(created: bool, created_after_initial: bool) -> bool {
-    cfg!(debug_assertions) && created && created_after_initial
-}
-
-fn should_navigate_loaded_main_window_to_app(path: &str) -> bool {
-    cfg!(debug_assertions) && path == "/startup.html"
-}
-
-fn navigate_main_window_to_app(window: &tauri::WebviewWindow) {
-    if let Err(err) = navigate_window_to_app_url(window) {
-        log::warn!(
-            "navigate main window from startup page to app failed: {}",
-            err
-        );
-    }
-}
-
-#[cfg(debug_assertions)]
-fn startup_loading_url() -> WebviewUrl {
-    WebviewUrl::App("startup.html".into())
-}
-
-#[cfg(debug_assertions)]
-fn navigate_window_to_app_url(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    let url = Url::parse("http://127.0.0.1:3005/")
-        .expect("hard-coded dev server startup url must be valid");
-    log::info!("navigating main window to dev app root");
-    window.navigate(url)
-}
-
-#[cfg(not(debug_assertions))]
-fn navigate_window_to_app_url(_window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    Ok(())
 }
 
 fn ensure_tray_preview_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
@@ -449,10 +367,7 @@ fn resolve_tray_preview_position(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        resolve_tray_preview_position, should_navigate_created_main_window_to_app,
-        should_navigate_loaded_main_window_to_app,
-    };
+    use super::resolve_tray_preview_position;
     use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalRect, PhysicalSize, Rect};
 
     #[test]
@@ -489,25 +404,4 @@ mod tests {
         assert!(position.y >= 8);
     }
 
-    #[test]
-    fn created_main_window_navigation_is_only_for_recreated_windows() {
-        assert!(!should_navigate_created_main_window_to_app(false, true));
-        assert!(!should_navigate_created_main_window_to_app(true, false));
-        #[cfg(debug_assertions)]
-        assert!(should_navigate_created_main_window_to_app(true, true));
-        #[cfg(not(debug_assertions))]
-        assert!(!should_navigate_created_main_window_to_app(true, true));
-    }
-
-    #[test]
-    fn loaded_startup_page_navigates_to_the_dev_app() {
-        #[cfg(debug_assertions)]
-        {
-            assert!(should_navigate_loaded_main_window_to_app("/startup.html"));
-            assert!(!should_navigate_loaded_main_window_to_app("/"));
-            assert!(!should_navigate_loaded_main_window_to_app("/tray-preview/"));
-        }
-        #[cfg(not(debug_assertions))]
-        assert!(!should_navigate_loaded_main_window_to_app("/startup.html"));
-    }
 }

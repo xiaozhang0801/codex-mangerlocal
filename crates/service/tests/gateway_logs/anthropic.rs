@@ -825,9 +825,14 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
     });
     let err_body = serde_json::to_string(&first_response).expect("serialize first response");
     let ok_body = serde_json::to_string(&second_response).expect("serialize second response");
-    // A 404 can trigger alternate-path + stateless retries before failover. Force those retries to
-    // also 404 so the gateway actually fails over to wsB.
+    // A 404 can trigger alternate-path + stateless retries, and the candidate executor gives the
+    // same account one final retry before failover. Force both rounds to 404 so the gateway
+    // actually fails over to wsB.
     let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
+        (404, err_body.clone()),
+        (404, err_body.clone()),
+        (404, err_body.clone()),
+        (404, err_body.clone()),
         (404, err_body.clone()),
         (404, err_body.clone()),
         (404, err_body.clone()),
@@ -941,7 +946,7 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
     assert_eq!(status, 200, "gateway response: {response_body}");
 
     let mut captured = Vec::new();
-    for idx in 0..5 {
+    for idx in 0..9 {
         captured.push(
             upstream_rx
                 .recv_timeout(Duration::from_secs(2))
@@ -1042,9 +1047,14 @@ fn gateway_claude_failover_same_workspace_preserves_session_affinity_headers() {
     });
     let err_body = serde_json::to_string(&first_response).expect("serialize first response");
     let ok_body = serde_json::to_string(&second_response).expect("serialize second response");
-    // A 404 can trigger alternate-path + stateless retries before failover. Force those retries to
-    // also 404 so the gateway actually fails over to the 2nd account (same workspace scope).
+    // A 404 can trigger alternate-path + stateless retries, and the candidate executor gives the
+    // same account one final retry before failover. Force both rounds to 404 so the gateway
+    // actually fails over to the 2nd account (same workspace scope).
     let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
+        (404, err_body.clone()),
+        (404, err_body.clone()),
+        (404, err_body.clone()),
+        (404, err_body.clone()),
         (404, err_body.clone()),
         (404, err_body.clone()),
         (404, err_body.clone()),
@@ -1135,7 +1145,7 @@ fn gateway_claude_failover_same_workspace_preserves_session_affinity_headers() {
     assert_eq!(status, 200, "gateway response: {response_body}");
 
     let mut captured = Vec::new();
-    for idx in 0..5 {
+    for idx in 0..9 {
         captured.push(
             upstream_rx
                 .recv_timeout(Duration::from_secs(2))

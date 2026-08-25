@@ -37,12 +37,16 @@ test("后台保活由新的窗口常驻设置决定", async () => {
   );
 });
 
-test("预加载的托盘界面只连接服务而不会重启服务", async () => {
+test("桌面恢复优先复用服务，托盘预览只连接服务", async () => {
   const source = await readSource("src/components/layout/app-bootstrap.tsx");
 
   assert.match(
     source,
-    /const connectToDesktopService = isTrayPreview\s*\? initializeService\(addr, TRAY_PREVIEW_SERVICE_INITIALIZE_RETRIES\)\s*: startAndInitializeService\(addr\)/,
+    /const initializeOrStartService = useCallback\([\s\S]*?return await initializeService\(addr, 0\);[\s\S]*?return startAndInitializeService\(addr\)/,
+  );
+  assert.match(
+    source,
+    /const connectToDesktopService = isTrayPreview\s*\? initializeService\(addr, TRAY_PREVIEW_SERVICE_INITIALIZE_RETRIES\)\s*: initializeOrStartService\(addr\)/,
   );
   assert.match(source, /TRAY_PREVIEW_SERVICE_INITIALIZE_RETRIES = 40/);
 });

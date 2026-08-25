@@ -58,7 +58,7 @@ fn api_key_remaining_quota_usage_scopes_stats_to_limited_keys() {
     assert!(
         details.iter().any(|detail| {
             detail.contains("search s")
-                && detail.contains("idx_request_token_stats_success_key_model_created_at")
+                && detail.contains("idx_request_token_stats_key_id_created_at")
                 && detail.contains("key_id=?")
         }),
         "expected limited-key raw usage lookup by key index, got {details:?}"

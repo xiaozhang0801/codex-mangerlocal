@@ -2,11 +2,11 @@ use crate::commands::settings::sync_window_runtime_state_from_settings;
 
 use super::state::TRAY_AVAILABLE;
 use super::window::{
-    initialize_main_window, navigate_main_window_to_startup_app, request_show_main_window,
+    request_initialize_main_window, request_show_main_window,
 };
 
 #[cfg(debug_assertions)]
-const DEV_SERVER_STARTUP_URL: &str = "http://127.0.0.1:3005/startup.html";
+const DEV_SERVER_APP_URL: &str = "http://127.0.0.1:3005/";
 #[cfg(debug_assertions)]
 const DEV_SERVER_READY_TIMEOUT_MS: u64 = 60_000;
 #[cfg(debug_assertions)]
@@ -38,35 +38,24 @@ pub(crate) fn sync_startup_window_state() {
 pub(crate) fn schedule_startup_main_window(app: &tauri::AppHandle) {
     let tray_available = TRAY_AVAILABLE.load(std::sync::atomic::Ordering::Relaxed);
     let configured = codexmanager_service::current_show_main_window_on_startup_setting();
-    if startup_main_window_action(configured, tray_available)
-        == StartupMainWindowAction::InitializeHidden
-    {
-        log::info!("startup main window remains hidden by app setting while initializing");
-        if !initialize_main_window(app) {
-            log::warn!("startup main window failed to initialize in the background");
-            return;
-        }
-        schedule_startup_app_navigation(app.clone());
-        return;
-    }
-
+    let action = startup_main_window_action(configured, tray_available);
     let app = app.clone();
     std::thread::spawn(move || {
-        if let Err(err) = request_show_main_window(&app) {
-            log::warn!("startup show main window request failed: {}", err);
-            return;
+        wait_for_startup_webview_content();
+        match action {
+            StartupMainWindowAction::InitializeHidden => {
+                log::info!("startup main window remains hidden by app setting after frontend is ready");
+                if let Err(err) = request_initialize_main_window(&app) {
+                    log::warn!("startup main window initialization request failed: {}", err);
+                }
+            }
+            StartupMainWindowAction::Show => {
+                if let Err(err) = request_show_main_window(&app) {
+                    log::warn!("startup show main window request failed: {}", err);
+                }
+            }
         }
-        wait_for_startup_app_navigation(&app);
     });
-}
-
-fn schedule_startup_app_navigation(app: tauri::AppHandle) {
-    std::thread::spawn(move || wait_for_startup_app_navigation(&app));
-}
-
-fn wait_for_startup_app_navigation(app: &tauri::AppHandle) {
-    wait_for_startup_webview_content();
-    navigate_main_window_to_startup_app_when_ready(app);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,20 +70,6 @@ fn startup_main_window_action(configured: bool, tray_available: bool) -> Startup
     } else {
         StartupMainWindowAction::InitializeHidden
     }
-}
-
-fn navigate_main_window_to_startup_app_when_ready(app: &tauri::AppHandle) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() <= deadline {
-        match navigate_main_window_to_startup_app(app) {
-            Ok(()) => return,
-            Err(err) => {
-                log::debug!("startup app navigation is not ready yet: {}", err);
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-    }
-    log::warn!("startup app navigation timed out because main window was not ready");
 }
 
 #[cfg(debug_assertions)]
@@ -113,9 +88,9 @@ fn wait_for_startup_webview_content() {
     };
 
     while std::time::Instant::now() <= deadline {
-        match client.get(DEV_SERVER_STARTUP_URL).send() {
+        match client.get(DEV_SERVER_APP_URL).send() {
             Ok(response) if response.status().is_success() => {
-                log::info!("dev server startup page is ready before app navigation");
+                log::info!("dev server app page is ready before main window creation");
                 return;
             }
             Ok(response) => {
@@ -134,7 +109,7 @@ fn wait_for_startup_webview_content() {
     }
 
     log::warn!(
-        "dev server startup page readiness timed out after {}ms; navigating app anyway",
+        "dev server app page readiness timed out after {}ms; creating main window anyway",
         DEV_SERVER_READY_TIMEOUT_MS
     );
 }
