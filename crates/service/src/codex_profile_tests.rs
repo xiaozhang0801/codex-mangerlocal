@@ -17,6 +17,18 @@ fn cleanup_profile(dir: &Path) {
     let _ = fs::remove_dir_all(dir);
 }
 
+fn provider_http_header<'a>(provider: &'a Table, name: &str) -> Option<&'a str> {
+    let headers = provider.get("http_headers")?;
+    if let Some(table) = headers.as_table() {
+        return table.get(name).and_then(Item::as_str);
+    }
+    headers
+        .as_value()
+        .and_then(Value::as_inline_table)
+        .and_then(|inline| inline.get(name))
+        .and_then(Value::as_str)
+}
+
 struct EnvGuard {
     key: &'static str,
     original: Option<std::ffi::OsString>,
@@ -166,6 +178,7 @@ name = "Other"
         "http://127.0.0.1:48770/v1",
         &managed_catalog,
         true,
+        "cm-managed-key",
     )
     .expect("patch gateway");
 
@@ -174,16 +187,39 @@ name = "Other"
     assert!(output.contains("name = \"CodexManager\""));
     assert!(output.contains("base_url = \"http://127.0.0.1:48770/v1\""));
     assert!(output.contains("wire_api = \"responses\""));
-    assert!(output.contains("requires_openai_auth = true"));
+    assert!(!output.contains("requires_openai_auth"));
     assert!(output.contains("supports_websockets = true"));
+    assert!(output.contains("experimental_bearer_token = \"cm-managed-key\""));
+    assert!(!output.contains("[model_providers.cm.auth]"));
     assert!(output.contains("model_catalog_json = \"/tmp/codexmanager/gateway-models.json\""));
     assert!(output.contains("[model_providers.other]"));
+    let doc = parse_config(&output).expect("parse gateway config");
+    let provider = doc
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(PROVIDER_ID))
+        .and_then(Item::as_table)
+        .expect("managed provider");
+    assert_eq!(
+        provider_http_header(
+            provider,
+            crate::gateway::X_OPENAI_ACTOR_AUTHORIZATION_HEADER
+        ),
+        Some(crate::gateway::CODEXMANAGER_IMAGE_EXTENSION_ACTOR_AUTHORIZATION)
+    );
+    assert_eq!(
+        provider
+            .get("experimental_bearer_token")
+            .and_then(Item::as_str),
+        Some("cm-managed-key")
+    );
 
     let without_websocket = patch_config_for_gateway(
         Some(output),
         "http://127.0.0.1:48770/v1",
         &managed_catalog,
         false,
+        "cm-managed-key",
     )
     .expect("disable gateway websocket");
     assert!(without_websocket.contains("supports_websockets = false"));
@@ -202,6 +238,7 @@ requires_openai_auth = false
 supports_websockets = false
 experimental_bearer_token = "custom-key"
 custom_header = "custom-value"
+http_headers = { "x-existing-header" = "keep", "x-openai-actor-authorization" = "stale" }
 "#;
 
     let managed_catalog = PathBuf::from("/tmp/codexmanager/gateway-models.json");
@@ -210,6 +247,7 @@ custom_header = "custom-value"
         "http://127.0.0.1:48770/v1",
         &managed_catalog,
         true,
+        "cm-managed-key",
     )
     .expect("patch gateway");
     let doc = parse_config(&output).expect("parse patched gateway config");
@@ -228,7 +266,7 @@ custom_header = "custom-value"
         provider
             .get("experimental_bearer_token")
             .and_then(Item::as_str),
-        Some("custom-key")
+        Some("cm-managed-key")
     );
     assert_eq!(
         provider.get("custom_header").and_then(Item::as_str),
@@ -242,13 +280,22 @@ custom_header = "custom-value"
         provider.get("wire_api").and_then(Item::as_str),
         Some("responses")
     );
-    assert_eq!(
-        provider.get("requires_openai_auth").and_then(Item::as_bool),
-        Some(true)
-    );
+    assert!(provider.get("requires_openai_auth").is_none());
+    assert!(provider.get("auth").is_none());
     assert_eq!(
         provider.get("supports_websockets").and_then(Item::as_bool),
         Some(true)
+    );
+    assert_eq!(
+        provider_http_header(provider, "x-existing-header"),
+        Some("keep")
+    );
+    assert_eq!(
+        provider_http_header(
+            provider,
+            crate::gateway::X_OPENAI_ACTOR_AUTHORIZATION_HEADER
+        ),
+        Some(crate::gateway::CODEXMANAGER_IMAGE_EXTENSION_ACTOR_AUTHORIZATION)
     );
 }
 
@@ -288,6 +335,7 @@ fn invalid_toml_is_rejected() {
         "http://x/v1",
         Path::new("/tmp/gateway-models.json"),
         false,
+        "cm-managed-key",
     )
     .is_err());
 }
@@ -312,6 +360,12 @@ fn rotation_strategy_selects_catalog_ownership() {
         ),
         crate::codex_model_catalog::GatewayCatalogPolicy::Managed
     );
+    assert_eq!(
+        crate::codex_model_catalog::gateway_catalog_policy_for_rotation_strategy(
+            crate::apikey_profile::ROTATION_HYBRID_AGGREGATE_FIRST
+        ),
+        crate::codex_model_catalog::GatewayCatalogPolicy::Managed
+    );
 }
 
 #[test]
@@ -320,6 +374,10 @@ fn api_key_candidates_expose_route_and_catalog_ownership() {
         (crate::apikey_profile::ROTATION_ACCOUNT, "official"),
         (crate::apikey_profile::ROTATION_AGGREGATE_API, "managed"),
         (crate::apikey_profile::ROTATION_HYBRID, "managed"),
+        (
+            crate::apikey_profile::ROTATION_HYBRID_AGGREGATE_FIRST,
+            "managed",
+        ),
     ] {
         let candidate = api_key_candidate(ApiKeyCodexProfileCandidate {
             id: format!("key-{rotation_strategy}"),
@@ -666,6 +724,7 @@ experimental_bearer_token = "cm-key"
         account_id: Some("acc-1".to_string()),
         api_key_id: None,
         gateway_base_url: None,
+        supports_websockets: None,
         provider_id: PROVIDER_ID.to_string(),
         updated_at: now_ts(),
     };
@@ -734,6 +793,7 @@ fn write_profile_files_uses_internal_marker() {
         account_id: None,
         api_key_id: Some("key-1".to_string()),
         gateway_base_url: Some("http://localhost:48760/v1".to_string()),
+        supports_websockets: Some(false),
         provider_id: PROVIDER_ID.to_string(),
         previous_model_catalog_json: None,
         updated_at: now_ts(),
@@ -765,6 +825,7 @@ fn legacy_marker_migrates_to_internal_marker() {
         account_id: Some("acc-1".to_string()),
         api_key_id: None,
         gateway_base_url: None,
+        supports_websockets: None,
         provider_id: PROVIDER_ID.to_string(),
         updated_at: now_ts(),
     };

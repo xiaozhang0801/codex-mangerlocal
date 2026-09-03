@@ -5,6 +5,26 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-09-02
+
+### Added
+
+- Added an administrator-only **Test account** workflow that sends real text or image-model requests upstream and streams progress, results, and cancellation through Tauri events or Web SSE isolated by an unguessable `testId`. Account status is written back with a `status + updated_at` CAS so stale tests cannot overwrite newer state, and `banned`, `disabled`, or `inactive` accounts are never restored automatically (#452).
+- Added **Hybrid rotation (aggregate API first)**. Aggregate APIs are tried first and the request falls back to the account pool only after every candidate fails without consuming the request; aggregate-only models cannot bypass their bound route (#454).
+- Added upstream model discovery and selective association from aggregate APIs into model catalog V2 routes without restoring the legacy source tables or automatic association pipeline.
+
+### Changed
+
+- Bumped the release version to `0.5.6` and synchronized the workspace, frontend package, Tauri desktop metadata, and lockfiles.
+- Improved prompt-cache/cache-affinity routing by partitioning `prompt_cache_key` or root session IDs by platform key, protocol, and model, atomically converging concurrent cold starts, reusing one account across parent/child and streaming requests, and rebinding only after successful failover. The administrator dashboard now also shows cache hit rate.
+
+### Fixed
+
+- Fixed false failures when testing aggregate APIs whose suppliers enforce strict client validation. Probes now emulate the official Codex client identity by default or use a configured custom `User-Agent`, without changing normal route forwarding (#451).
+- Fixed Codex Device Code login lifecycle, cancellation, and browser-callback races, and synchronized managed gateway-profile authentication and WebSocket capability.
+- Fixed detection and routing of native Codex image-generation requests. Extension requests can reach the Codex image endpoint with the required identity headers, while ordinary OpenAI-compatible clients retain the compatibility-adapter path.
+- The desktop updater now removes completed or stale release directories while preserving a pending release and updater logs.
+
 ## [0.5.5] - 2026-08-23
 
 ### Fixed

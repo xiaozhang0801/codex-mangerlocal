@@ -2370,7 +2370,7 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
     assert_eq!(first_payload["store"], true);
     assert_eq!(first_payload["service_tier"], "priority");
     assert_eq!(first_payload["generate"], false);
-    assert!(first_payload.get("prompt_cache_key").is_none());
+    assert_eq!(first_payload["prompt_cache_key"], "session_ws_1");
 
     let first_client_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
         .await
@@ -2447,7 +2447,7 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         "turn_meta_ws_1"
     );
     assert!(second_payload.get("service_tier").is_none());
-    assert!(second_payload.get("prompt_cache_key").is_none());
+    assert_eq!(second_payload["prompt_cache_key"], "session_ws_1");
 
     let second_client_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
         .await
@@ -4416,7 +4416,7 @@ async fn official_responses_websocket_replays_follow_up_accepted_by_closing_upst
 }
 
 #[tokio::test]
-async fn official_responses_websocket_aligns_prompt_cache_key_with_resolved_session_anchor() {
+async fn official_responses_websocket_preserves_explicit_prompt_cache_key() {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-explicit-prompt-cache-key");
     let storage = init_test_storage(&db_path);
@@ -4483,18 +4483,8 @@ async fn official_responses_websocket_aligns_prompt_cache_key_with_resolved_sess
     let upstream_prompt_cache_key = payload
         .get("prompt_cache_key")
         .and_then(serde_json::Value::as_str)
-        .expect("resolved session anchor is forwarded as prompt_cache_key");
-    assert_ne!(upstream_prompt_cache_key, "client_ws_thread_123");
-    assert!(
-        upstream_prompt_cache_key
-            .split('-')
-            .map(str::len)
-            .eq([8, 4, 4, 4, 12])
-            && upstream_prompt_cache_key
-                .chars()
-                .all(|ch| ch == '-' || ch.is_ascii_hexdigit()),
-        "resolved session anchor should use the generated conversation id"
-    );
+        .expect("explicit prompt_cache_key is forwarded");
+    assert_eq!(upstream_prompt_cache_key, "client_ws_thread_123");
 
     let client_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
         .await

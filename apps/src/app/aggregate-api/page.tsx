@@ -8,9 +8,11 @@ import {
   Eye,
   EyeOff,
   Gauge,
+  Link as LinkIcon,
   PencilLine,
   Plus,
   RefreshCw,
+  Settings2,
   ShieldCheck,
   Trash2,
   Unplug,
@@ -19,10 +21,21 @@ import { toast } from "sonner";
 
 import { PageHeader, MetricCard, PageWorkspace } from "@/components/layout/page-workspace";
 import { AggregateApiModal } from "@/components/modals/aggregate-api-modal";
+import { AggregateApiModelAssociationModal } from "@/components/modals/aggregate-api-model-association-modal";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -51,6 +64,8 @@ import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { accountClient } from "@/lib/api/account-client";
+import { appClient } from "@/lib/api/app-client";
+import { getAppErrorMessage } from "@/lib/api/transport";
 import { aggregateApiProviderMatchesFilter } from "@/lib/aggregate-api-provider";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
@@ -60,6 +75,7 @@ import type {
   AggregateApi,
   AggregateApiBalanceSnapshot,
   AggregateApiSecretResult,
+  AggregateApiFetchedModel,
 } from "@/types/api-key";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -112,6 +128,8 @@ export default function AggregateApiPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
+  const appSettings = useAppStore((state) => state.appSettings);
+  const setAppSettings = useAppStore((state) => state.setAppSettings);
   const { canAccessManagementRpc } = useRuntimeCapabilities();
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
   const isPageActive = useDesktopPageActive("/aggregate-api/");
@@ -132,6 +150,13 @@ export default function AggregateApiPage() {
     null,
   );
   const [togglingApiId, setTogglingApiId] = useState<string | null>(null);
+  const [associationApiId, setAssociationApiId] = useState<string | null>(null);
+  const [associationItems, setAssociationItems] = useState<AggregateApiFetchedModel[]>([]);
+  const [fetchingModelsApiId, setFetchingModelsApiId] = useState<string | null>(null);
+  const [associatingModels, setAssociatingModels] = useState(false);
+  const [probeSettingsOpen, setProbeSettingsOpen] = useState(false);
+  const [probeUserAgentMode, setProbeUserAgentMode] = useState("codex");
+  const [probeUserAgent, setProbeUserAgent] = useState("");
 
   const { data: aggregateApis = [], isLoading } = useQuery({
     queryKey: ["aggregate-apis"],
@@ -146,9 +171,12 @@ export default function AggregateApiPage() {
     if (isPageActive) return;
     const frameId = window.requestAnimationFrame(() => {
       setModalOpen(false);
+      setAssociationApiId(null);
+      setAssociationItems([]);
       setEditingId(null);
       setDeleteId(null);
       setRevealedSecrets({});
+      setProbeSettingsOpen(false);
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [isPageActive]);
@@ -210,6 +238,29 @@ export default function AggregateApiPage() {
     },
   });
 
+  const probeSettingsMutation = useMutation({
+    mutationFn: () =>
+      appClient.setSettings({
+        aggregateApiProbeUserAgentMode: probeUserAgentMode,
+        aggregateApiProbeUserAgent: probeUserAgent.trim(),
+      }),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(["app-settings-snapshot"], settings);
+      setAppSettings(settings);
+      setProbeSettingsOpen(false);
+      toast.success(t("连通性测试设置已更新"));
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("更新连通性测试设置失败")}: ${getAppErrorMessage(error)}`);
+    },
+  });
+
+  const openProbeSettings = () => {
+    setProbeUserAgentMode(appSettings.aggregateApiProbeUserAgentMode || "codex");
+    setProbeUserAgent(appSettings.aggregateApiProbeUserAgent || "");
+    setProbeSettingsOpen(true);
+  };
+
   const balanceMutation = useMutation({
     mutationFn: (apiId: string) => accountClient.refreshAggregateApiBalance(apiId),
     onMutate: (apiId) => setRefreshingBalanceId(apiId),
@@ -264,13 +315,65 @@ export default function AggregateApiPage() {
     }
   };
 
+  const associationApi = associationApiId
+    ? aggregateApis.find((api) => api.id === associationApiId) || null
+    : null;
+
+  const openAssociation = async (apiId: string) => {
+    setFetchingModelsApiId(apiId);
+    try {
+      const result = await accountClient.fetchAggregateApiModels(apiId);
+      setAssociationApiId(apiId);
+      setAssociationItems(result.items);
+    } catch (error) {
+      toast.error(`${t("拉取模型失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setFetchingModelsApiId(null);
+    }
+  };
+
+  const associateModels = async (upstreamModels: string[]) => {
+    if (!associationApiId) return;
+    setAssociatingModels(true);
+    try {
+      const selectedSet = new Set(upstreamModels);
+      const displayNames = Object.fromEntries(
+        associationItems
+          .filter((item) => selectedSet.has(item.upstreamModel) && item.displayName)
+          .map((item) => [item.upstreamModel, item.displayName as string]),
+      );
+      const result = await accountClient.associateAggregateApiModels(
+        associationApiId,
+        upstreamModels,
+        displayNames,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
+        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+        queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
+      ]);
+      toast.success(t("关联完成：新增模型 {created}，追加 route {added}，未变更 {unchanged}", {
+        created: result.createdModels.length,
+        added: result.addedRoutes.length,
+        unchanged: result.unchangedRoutes.length,
+      }));
+      setAssociationApiId(null);
+      setAssociationItems([]);
+    } catch (error) {
+      toast.error(`${t("关联模型失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setAssociatingModels(false);
+    }
+  };
+
   return (
     <>
       <PageWorkspace>
         <PageHeader
           eyebrow={t("显式路由")}
           title={t("聚合 API")}
-          description={t("这里只管理上游连接；模型路由在“模型管理”中显式配置，页面不会访问供应商 `/models`。")}
+          description={t("不会自动发现上游模型；管理员可主动拉取并选择性关联到模型目录 V2。")}
           actions={
             <Button
               size="sm"
@@ -302,18 +405,36 @@ export default function AggregateApiPage() {
                   {t("连通性测试只使用已配置路由对应的模型。")}
                 </p>
               </div>
-              <Select value={providerFilter} onValueChange={(value) => setProviderFilter(value || "all")}>
-                <SelectTrigger className="h-9 w-[150px]"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectGroup>
-                  <SelectItem value="all">{t("全部类型")}</SelectItem>
-                  <SelectItem value="codex">Codex</SelectItem>
-                  <SelectItem value="claude">Claude</SelectItem>
-                  <SelectItem value="gemini">Gemini</SelectItem>
-                  <SelectItem value="compatible">
-                    {t("通用兼容（Codex + Claude）")}
-                  </SelectItem>
-                </SelectGroup></SelectContent>
-              </Select>
+              <div className="flex items-center gap-2">
+                <Select value={providerFilter} onValueChange={(value) => setProviderFilter(value || "all")}>
+                  <SelectTrigger className="h-9 w-[150px]"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectGroup>
+                    <SelectItem value="all">{t("全部类型")}</SelectItem>
+                    <SelectItem value="codex">Codex</SelectItem>
+                    <SelectItem value="claude">Claude</SelectItem>
+                    <SelectItem value="gemini">Gemini</SelectItem>
+                    <SelectItem value="compatible">
+                      {t("通用兼容（Codex + Claude）")}
+                    </SelectItem>
+                  </SelectGroup></SelectContent>
+                </Select>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        aria-label={t("连通性测试设置")}
+                        onClick={openProbeSettings}
+                      />
+                    }
+                  >
+                    <Settings2 className="h-4 w-4" />
+                  </TooltipTrigger>
+                  <TooltipContent>{t("连通性测试设置")}</TooltipContent>
+                </Tooltip>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -435,6 +556,14 @@ export default function AggregateApiPage() {
                           </TableCell>
                           <TableCell>
                             <div className="flex justify-end gap-1">
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={<Button type="button" variant="ghost" size="icon" aria-label={t("拉取并关联模型")} disabled={fetchingModelsApiId === api.id} onClick={() => void openAssociation(api.id)} />}
+                                >
+                                  <LinkIcon className={`h-4 w-4 ${fetchingModelsApiId === api.id ? "animate-pulse" : ""}`} />
+                                </TooltipTrigger>
+                                <TooltipContent>{t("拉取并关联模型")}</TooltipContent>
+                              </Tooltip>
                               <Button type="button" variant="ghost" size="icon" aria-label={t("编辑聚合 API")} onClick={() => { setEditingId(api.id); setModalOpen(true); }}>
                                 <PencilLine className="h-4 w-4" />
                               </Button>
@@ -459,6 +588,100 @@ export default function AggregateApiPage() {
         onOpenChange={setModalOpen}
         aggregateApi={editingApi}
         defaultSort={defaultCreateSort}
+      />
+
+      <Dialog open={probeSettingsOpen} onOpenChange={setProbeSettingsOpen}>
+        <DialogContent className="glass-card sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>{t("连通性测试设置")}</DialogTitle>
+            <DialogDescription>
+              {t("设置 Codex 类型 route 执行连通性测试时使用的客户端标识。")}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-5 py-2">
+            <div className="grid gap-2">
+              <Label>{t("测试客户端")}</Label>
+              <Select
+                value={probeUserAgentMode}
+                onValueChange={(value) => setProbeUserAgentMode(value || "codex")}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue>
+                    {(value) =>
+                      String(value || "") === "custom"
+                        ? t("自定义 User-Agent")
+                        : t("Codex 官方客户端（默认）")
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="codex">{t("Codex 官方客户端（默认）")}</SelectItem>
+                    <SelectItem value="custom">{t("自定义 User-Agent")}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {probeUserAgentMode === "codex"
+                  ? t("发送官方格式的 User-Agent、originator 和 Codex 客户端指纹请求头。")
+                  : t("仅使用指定的 User-Agent，不附加 Codex 客户端指纹。")}
+              </p>
+            </div>
+
+            {probeUserAgentMode === "custom" ? (
+              <div className="grid gap-2">
+                <Label htmlFor="aggregate-api-probe-user-agent">User-Agent</Label>
+                <Input
+                  id="aggregate-api-probe-user-agent"
+                  className="font-mono"
+                  value={probeUserAgent}
+                  maxLength={512}
+                  placeholder="Custom-Client/1.0"
+                  onChange={(event) => setProbeUserAgent(event.target.value)}
+                />
+                {!probeUserAgent.trim() ? (
+                  <p className="text-xs text-destructive">{t("请输入自定义 User-Agent")}</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setProbeSettingsOpen(false)}
+              disabled={probeSettingsMutation.isPending}
+            >
+              {t("取消")}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => probeSettingsMutation.mutate()}
+              disabled={
+                probeSettingsMutation.isPending
+                || (probeUserAgentMode === "custom" && !probeUserAgent.trim())
+              }
+            >
+              {probeSettingsMutation.isPending ? t("保存中...") : t("保存")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AggregateApiModelAssociationModal
+        open={Boolean(associationApiId)}
+        onOpenChange={(open) => {
+          if (!open && !associatingModels) {
+            setAssociationApiId(null);
+            setAssociationItems([]);
+          }
+        }}
+        aggregateApi={associationApi}
+        items={associationItems}
+        isSaving={associatingModels}
+        onAssociate={associateModels}
       />
 
       <ConfirmDialog

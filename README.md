@@ -41,11 +41,20 @@
     <img
       src="https://cdn3.ldstatic.com/original/4X/d/1/4/d146c68151340881c884d95e0da4acdf369258c6.png"
       alt="LINUX DO"
-      width="100"
-      hight="100"
+      height="52"
+    />
+  </a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://xuanwu.openatom.org/articles/project/codex-manager/" title="旋武社区">
+    <img
+      src="https://xuanwu.openatom.org/logo.png"
+      alt="旋武社区"
+      height="52"
     />
   </a>
 </p>
+
+**CodexManager 已加入 [旋武社区](https://xuanwu.openatom.org/articles/project/codex-manager/)**，这是由开放原子开源基金会孵化运营的 Rust 技术社区。
 
 ## 源码说明：
 > 本产品完全由本人指挥+AI打造 Codex（98%） Gemini (2%) 如果在使用过程中产生问题请友好交流，因为开源只是觉得有人能用的上，基本功能也没什么问题，不喜勿喷。
@@ -74,13 +83,29 @@
 <table>
   <tr>
     <td align="center" valign="middle" width="180">
-      <a href="https://vmcardio.com/zh/register?code=045237">
+      <a href="https://vmcardio.com/zh/register?code=OPK6X2DSLW">
         <img src="assets/images/sponsors/vmcard.jpg" alt="VMCard" width="120" />
       </a>
     </td>
     <td valign="top">
-      <strong><a href="https://vmcardio.com/zh/register?code=045237">VMCard 企业级虚拟卡发卡平台</a></strong>，面向 AI 账号平台、AI API 服务商及规模化订阅团队，提供专属美国 Visa 卡段、API 批量发卡及企业级用卡管理。<br />
+      <strong><a href="https://vmcardio.com/zh/register?code=OPK6X2DSLW">VMCard 企业级虚拟卡发卡平台</a></strong>，面向 AI 账号平台、AI API 服务商及规模化订阅团队，提供专属美国 Visa 卡段、API 批量发卡及企业级用卡管理。<br />
       全网最低结算汇率，满足企业长期、规模化支付需求。商务合作：<a href="https://t.me/Vmcardio_yuki">@Vmcardio_yuki</a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="middle" width="180">
+      <a href="https://88api.ai/sign-up?aff=OceE">
+        <img src="assets/images/sponsors/88api.png" alt="88API" width="120" />
+      </a>
+    </td>
+    <td valign="top">
+      <strong><a href="https://88api.ai/sign-up?aff=OceE">88API 全模型聚合平台</a></strong><br />
+      🧠 聚合 GPT、Claude、Gemini、Grok、DeepSeek、Kimi、GLM 等语言与编程模型；<br />
+      🎨 图片模型：GPT-Image、Gemini、Grok 等；<br />
+      🎬 视频模型：Seedance、Veo、MiniMax Hailuo H3、Kling、Grok 等；<br />
+      🎙️ 语音能力：Whisper、TTS 等。从文案、出图、改图，到视频生成与配音。<br />
+      🎁 新用户注册送体验额度，可以检测模型能力。站内有人工客服值守！<br />
+      👉 海外企业资质运营，稳定不跑路，提供正规发票，充值比例 1:1。
     </td>
   </tr>
   <tr>
@@ -179,7 +204,7 @@
 - 授权登录：支持 `chatgpt.com` 浏览器授权与 Device Code 登录；浏览器授权仍可手动粘贴回调地址完成解析
 - 平台 Key：随机生成或自定义固定 Key、禁用、删除、模型绑定、推理等级、服务等级（跟随请求 / Fast / Flex）；可绑定自定义账号分组，并与账号计划筛选取交集后仅在授权池内轮转
 - 模型管理：模型目录 V2 是唯一运行时真相源；支持 builtin/custom、整数三价与长上下文阶梯价、账号池/聚合 API route、instructions policy、本地 JSON preview/commit，以及桌面/Web 主动导出 Codex 缓存
-- 聚合 API：管理第三方最小转发上游，支持创建、编辑、余额和基于已配置 V2 route 的连通性测试；不会请求供应商 `/models` 或维护供应商模型池
+- 聚合 API：管理第三方最小转发上游，支持创建、编辑、余额和基于已配置 V2 route 的连通性测试；不会自动发现供应商模型，管理员可主动拉取并选择性关联到模型目录 V2，不维护旧供应商模型池
 - 插件中心：路由为 `/plugins/`，支持内置精选、企业私有、自定义源三种市场模式，并提供插件清单、任务、日志与 Rhai 对接接口
 - Skills 与插件：`/skills/` 按“Skills 安装 / Codex 插件安装”分栏。Skills 安装提供内置及自定义 GitHub 技能仓库、仓库刷新与单 Skill 安装、skills.sh 搜索安装、ZIP / 目录导入和已安装管理；Codex 插件安装保留原生 Marketplace 的完整插件安装流程，`.system` 内置 Skill 始终只读
 - 项目启动（桌面端）：收藏本机项目目录；Windows / macOS 通过 ChatGPT Codex App 打开对应工作区，“会话”继续使用本机 CodexManager profile 在新终端中打开 `resume` 选择器
@@ -188,15 +213,6 @@
 - 本地服务：自动拉起、可自定义端口与监听地址
 - 本地网关：为 Codex CLI、Gemini CLI、Claude Code 和第三方工具提供统一 OpenAI 兼容入口；Gemini 请求可转发到 `/v1/responses`，并兼容 SSE、tools、MCP、skill、请求总超时与流式空闲超时等调用链路
 - 图片生成：默认按官方 Codex 行为为 `/v1/responses` 自动注入 `image_generation` tool，并支持显式 tool 透传、`/v1/images/generations` 与 `/v1/images/edits` 兼容入口，默认图片工具模型为 `gpt-image-2`
-
-## 生态搭配
-
-### OpenCowork
-
-- 仓库地址：[AIDotNet/OpenCowork](https://github.com/AIDotNet/OpenCowork)
-- 搭配方式：使用 OpenCowork 承接本地文件操作、多 Agent 协作、消息平台接入与桌面执行能力，再由 CodexManager 统一管理 Codex 账号、用量、平台 Key 与本地网关入口。
-- 适合场景：当您希望把“执行工作台 / 办公协同”和“账号池管理 / 网关入口”拆开时，这两个项目可以形成互补组合。
-- 推荐理解：**OpenCowork 更偏执行与落地，CodexManager 更偏管理与网关。**
 
 ## 截图
 ![仪表盘](assets/images/dashboard.png)

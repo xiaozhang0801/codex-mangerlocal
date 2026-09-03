@@ -19,6 +19,7 @@ export interface CodexProfileStatus {
   selectedAccountId: string | null;
   selectedApiKeyId: string | null;
   gatewayBaseUrl: string | null;
+  supportsWebsockets: boolean;
   providerId: string;
   hasBackup: boolean;
   lastAppliedAt: number | null;

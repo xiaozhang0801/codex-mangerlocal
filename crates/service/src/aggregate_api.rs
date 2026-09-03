@@ -1,11 +1,17 @@
 use codexmanager_core::rpc::types::{
-    AggregateApiBalanceRefreshResult, AggregateApiBalanceSnapshot, AggregateApiCreateResult,
-    AggregateApiSecretResult, AggregateApiSummary, AggregateApiTestResult,
+    AggregateApiAssociateModelsResult, AggregateApiBalanceRefreshResult,
+    AggregateApiBalanceSnapshot, AggregateApiCreateResult, AggregateApiFetchModelsResult,
+    AggregateApiFetchedModel, AggregateApiSecretResult, AggregateApiSummary,
+    AggregateApiTestResult,
 };
-use codexmanager_core::storage::{now_ts, AggregateApi};
+use codexmanager_core::storage::{
+    now_ts, AggregateApi, ManagedModelV2, ManagedModelV2Upsert, ModelFastPolicyV2, ModelPriceV2,
+    ModelRouteV2,
+};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::time::Instant;
 
@@ -25,6 +31,8 @@ const AGGREGATE_API_BALANCE_TEMPLATE_CUSTOM: &str = "custom";
 const CUSTOM_BALANCE_AUTH_PROVIDER_BEARER: &str = "provider_bearer";
 const CUSTOM_BALANCE_AUTH_BALANCE_BEARER: &str = "balance_bearer";
 const CUSTOM_BALANCE_AUTH_NONE: &str = "none";
+const MAX_FETCHED_MODELS: usize = 500;
+const MAX_MODELS_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1340,12 +1348,27 @@ fn build_gemini_probe_body() -> serde_json::Value {
 /// # 返回
 /// 返回函数执行结果
 fn add_codex_probe_headers(
-    builder: reqwest::blocking::RequestBuilder,
+    mut builder: reqwest::blocking::RequestBuilder,
 ) -> Result<reqwest::blocking::RequestBuilder, String> {
+    let mode = crate::app_settings::current_aggregate_api_probe_user_agent_mode();
+    if mode == crate::app_settings::AGGREGATE_API_PROBE_USER_AGENT_MODE_CODEX {
+        let request_id = gateway::next_trace_id();
+        builder = builder
+            .header("user-agent", gateway::current_codex_user_agent())
+            .header("originator", gateway::current_wire_originator())
+            .header("session-id", request_id.as_str())
+            .header("thread-id", request_id.as_str())
+            .header("x-client-request-id", request_id.as_str())
+            .header("x-codex-window-id", format!("{request_id}:0"));
+    } else {
+        let user_agent = crate::app_settings::current_aggregate_api_probe_user_agent();
+        if user_agent.is_empty() {
+            return Err("aggregate api probe custom user agent is required".to_string());
+        }
+        builder = builder.header("user-agent", user_agent);
+    }
     Ok(builder
         .header("accept", "application/json")
-        .header("user-agent", gateway::current_codex_user_agent())
-        .header("originator", gateway::current_wire_originator())
         .header("accept-encoding", "identity"))
 }
 
@@ -2023,6 +2046,323 @@ pub(crate) fn read_aggregate_api_secret(api_id: &str) -> Result<AggregateApiSecr
         auth_type,
         username: None,
         password: None,
+    })
+}
+
+fn model_id_from_value(value: &Value) -> Option<String> {
+    ["id", "model", "slug", "name"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(|item| item.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn model_display_name_from_value(value: &Value) -> Option<String> {
+    ["displayName", "display_name", "title", "name"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(|item| item.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_fetched_model_id(raw: &str, gemini: bool) -> Option<String> {
+    let mut value = raw.trim();
+    if gemini {
+        value = value.strip_prefix("models/").unwrap_or(value);
+    }
+    if value.is_empty()
+        || value.len() > 200
+        || value
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn parse_fetched_models(body: &Value, gemini: bool) -> Vec<(String, Option<String>)> {
+    let candidates = body
+        .as_array()
+        .cloned()
+        .or_else(|| body.get("data").and_then(Value::as_array).cloned())
+        .or_else(|| body.get("models").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+    for value in candidates {
+        let Some(raw_id) = model_id_from_value(&value) else {
+            continue;
+        };
+        let Some(upstream_model) = normalize_fetched_model_id(raw_id.as_str(), gemini) else {
+            continue;
+        };
+        let key = upstream_model.to_ascii_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+        let display_name = model_display_name_from_value(&value).and_then(|display_name| {
+            if gemini {
+                normalize_fetched_model_id(display_name.as_str(), true)
+            } else {
+                Some(display_name)
+            }
+        });
+        items.push((upstream_model, display_name));
+        if items.len() >= MAX_FETCHED_MODELS {
+            break;
+        }
+    }
+    items
+}
+
+fn read_models_response(response: reqwest::blocking::Response) -> Result<Value, String> {
+    let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|length| length as usize > MAX_MODELS_RESPONSE_BYTES)
+    {
+        return Err("models response is too large".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|err| format!("models request failed: {err}"))?;
+    if bytes.len() > MAX_MODELS_RESPONSE_BYTES {
+        return Err("models response is too large".to_string());
+    }
+    if !status.is_success() {
+        let detail = short_error_body(String::from_utf8_lossy(bytes.as_ref()).as_ref());
+        return if detail.is_empty() {
+            Err(format!("models http_status={}", status.as_u16()))
+        } else {
+            Err(format!("models http_status={}; {detail}", status.as_u16()))
+        };
+    }
+    serde_json::from_slice(bytes.as_ref())
+        .map_err(|_| "models response is not valid JSON".to_string())
+}
+
+fn models_endpoint(api: &AggregateApi, provider_type: &str) -> String {
+    let suffix = "/models";
+    if provider_type == AGGREGATE_API_PROVIDER_GEMINI {
+        let base = api.url.trim().trim_end_matches('/');
+        if base.ends_with("/v1beta/models") {
+            base.to_string()
+        } else if base.ends_with("/v1beta") {
+            format!("{base}{suffix}")
+        } else if base.ends_with("/v1") {
+            format!("{}{}", base.trim_end_matches("/v1"), "/v1beta/models")
+        } else {
+            format!("{base}/v1beta/models")
+        }
+    } else {
+        normalize_probe_url(api.url.as_str(), suffix)
+    }
+}
+
+pub(crate) fn fetch_aggregate_api_models(
+    api_id: &str,
+) -> Result<AggregateApiFetchModelsResult, String> {
+    if api_id.trim().is_empty() {
+        return Err("aggregate api id required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let api_with_secrets = storage
+        .find_aggregate_api_with_secrets_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    let api = api_with_secrets.api;
+    let secret = api_with_secrets
+        .secret_value
+        .ok_or_else(|| "aggregate api secret not found".to_string())?;
+    let provider_type = normalize_provider_type_value(api.provider_type.as_str());
+    let client = gateway::upstream_client_for_aggregate_url(api.url.as_str());
+    let url = models_endpoint(&api, provider_type.as_str());
+    let builder = client.get(url.as_str());
+    let (builder, updated_url) = apply_probe_auth(builder, url.clone(), &api, secret.as_str())?;
+    let response = if updated_url == url {
+        builder.send()
+    } else {
+        let rebuilt = client.get(updated_url.as_str());
+        let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, &api, secret.as_str())?;
+        rebuilt.send()
+    }
+    .map_err(|err| format!("models request failed: {err}"))?;
+    let body = read_models_response(response)?;
+    let parsed = parse_fetched_models(&body, provider_type == AGGREGATE_API_PROVIDER_GEMINI);
+    let existing = storage
+        .list_managed_models_v2(true)
+        .map_err(|err| format!("read model catalog V2 failed: {err}"))?;
+    let mut items = Vec::with_capacity(parsed.len());
+    for (upstream_model, display_name) in parsed {
+        let model = existing
+            .iter()
+            .find(|model| model.slug.eq_ignore_ascii_case(upstream_model.as_str()));
+        let already_linked = model.is_some_and(|model| {
+            model.routes.iter().any(|route| {
+                route.source_kind == "aggregate_api"
+                    && route.source_id == api_id
+                    && route
+                        .upstream_model
+                        .eq_ignore_ascii_case(upstream_model.as_str())
+            })
+        });
+        items.push(AggregateApiFetchedModel {
+            upstream_model,
+            display_name,
+            existing_model_slug: model.map(|model| model.slug.clone()),
+            already_linked,
+        });
+    }
+    Ok(AggregateApiFetchModelsResult {
+        api_id: api_id.to_string(),
+        provider_type,
+        fetched_at: now_ts(),
+        items,
+    })
+}
+
+pub(crate) fn associate_aggregate_api_models(
+    api_id: &str,
+    upstream_models: Vec<String>,
+    display_names: BTreeMap<String, String>,
+) -> Result<AggregateApiAssociateModelsResult, String> {
+    if api_id.trim().is_empty() {
+        return Err("aggregate api id required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let api = storage
+        .find_aggregate_api_by_id(api_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "aggregate api not found".to_string())?;
+    let provider_type = normalize_provider_type_value(api.provider_type.as_str());
+    let mut requested = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in upstream_models {
+        let Some(model) = normalize_fetched_model_id(
+            raw.as_str(),
+            provider_type == AGGREGATE_API_PROVIDER_GEMINI,
+        ) else {
+            return Err("invalid upstream model id".to_string());
+        };
+        if seen.insert(model.to_ascii_lowercase()) {
+            requested.push(model);
+        }
+    }
+    if requested.is_empty() {
+        return Ok(AggregateApiAssociateModelsResult::default());
+    }
+    let mut models = storage
+        .list_managed_models_v2(true)
+        .map_err(|err| format!("read model catalog V2 failed: {err}"))?;
+    let next_sort = models
+        .iter()
+        .map(|model| model.sort_order)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let provider = api
+        .supplier_name
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| Some(provider_type.clone()));
+    let mut inputs = Vec::new();
+    let mut created_models = Vec::new();
+    let mut added_routes = Vec::new();
+    let mut unchanged_routes = Vec::new();
+    for (index, upstream_model) in requested.iter().enumerate() {
+        if let Some(model) = models
+            .iter_mut()
+            .find(|model| model.slug.eq_ignore_ascii_case(upstream_model.as_str()))
+        {
+            let exact = model.routes.iter().any(|route| {
+                route.source_kind == "aggregate_api"
+                    && route.source_id == api_id
+                    && route
+                        .upstream_model
+                        .eq_ignore_ascii_case(upstream_model.as_str())
+            });
+            if exact {
+                unchanged_routes.push(model.slug.clone());
+                continue;
+            }
+            let inherited = model
+                .routes
+                .iter()
+                .find(|route| route.source_kind == "aggregate_api" && route.source_id == api_id)
+                .map(|route| (route.priority, route.weight))
+                .unwrap_or((0, 1));
+            model.routes.push(ModelRouteV2 {
+                source_kind: "aggregate_api".to_string(),
+                source_id: api_id.to_string(),
+                upstream_model: upstream_model.clone(),
+                enabled: true,
+                priority: inherited.0,
+                weight: inherited.1.max(1),
+                ..Default::default()
+            });
+            inputs.push(ManagedModelV2Upsert {
+                model: model.clone(),
+                ..Default::default()
+            });
+            added_routes.push(model.slug.clone());
+        } else {
+            let display_name = display_names
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(upstream_model.as_str()))
+                .map(|(_, value)| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| upstream_model.clone());
+            let model = ManagedModelV2 {
+                slug: upstream_model.clone(),
+                display_name,
+                provider: provider.clone(),
+                origin: "custom".to_string(),
+                enabled: true,
+                supported_in_api: true,
+                visibility: "list".to_string(),
+                sort_order: next_sort + index as i64,
+                capabilities: json!({
+                    "supports_text_generation": true,
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"]
+                }),
+                instructions_mode: "passthrough".to_string(),
+                fast_policy: ModelFastPolicyV2::Passthrough,
+                price: ModelPriceV2 {
+                    price_status: "missing".to_string(),
+                    ..Default::default()
+                },
+                routes: vec![ModelRouteV2 {
+                    source_kind: "aggregate_api".to_string(),
+                    source_id: api_id.to_string(),
+                    upstream_model: upstream_model.clone(),
+                    enabled: true,
+                    priority: 0,
+                    weight: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            inputs.push(ManagedModelV2Upsert {
+                model,
+                ..Default::default()
+            });
+            created_models.push(upstream_model.clone());
+            added_routes.push(upstream_model.clone());
+        }
+    }
+    if !inputs.is_empty() {
+        storage
+            .upsert_managed_models_v2(&inputs)
+            .map_err(|err| format!("associate models transaction failed: {err}"))?;
+    }
+    Ok(AggregateApiAssociateModelsResult {
+        created_models,
+        added_routes,
+        unchanged_routes,
     })
 }
 

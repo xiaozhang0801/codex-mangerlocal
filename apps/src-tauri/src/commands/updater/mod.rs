@@ -9,6 +9,8 @@ pub use model::{
     UpdateActionResponse, UpdateCheckResponse, UpdatePrepareResponse, UpdateStatusResponse,
 };
 
+pub(crate) use state::cleanup_completed_update_artifacts;
+
 use crate::commands::shared::open_in_file_manager_blocking;
 use apply::{apply_portable_impl, launch_installer_impl};
 use prepare::{prepare_update_impl, resolve_update_context};
@@ -96,6 +98,9 @@ fn updater_root_logs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// 返回函数执行结果
 #[tauri::command]
 pub async fn app_update_check(app: tauri::AppHandle) -> Result<UpdateCheckResponse, String> {
+    if let Err(err) = cleanup_completed_update_artifacts(&app) {
+        log::warn!("清理已完成更新目录失败：{err}");
+    }
     let check_log_path = updater_root_logs_dir(&app)?.join("check-update.log");
     append_update_runtime_log(&check_log_path, "开始检查更新");
     let task = tauri::async_runtime::spawn_blocking(resolve_update_context);
@@ -204,6 +209,9 @@ pub fn app_update_launch_installer(app: tauri::AppHandle) -> Result<UpdateAction
 /// 返回函数执行结果
 #[tauri::command]
 pub fn app_update_status(app: tauri::AppHandle) -> Result<UpdateStatusResponse, String> {
+    if let Err(err) = cleanup_completed_update_artifacts(&app) {
+        log::warn!("清理已完成更新目录失败：{err}");
+    }
     let repo = resolve_update_repo();
     let (mode, is_portable, exe_path, marker_path) = current_mode_and_marker()?;
     let pending = read_pending_update(&app)?;

@@ -976,7 +976,6 @@ fn send_upstream_request_with_compression_override(
         incoming_headers.client_request_id(),
         incoming_headers.turn_state(),
         incoming_headers.conversation_id(),
-        prompt_cache_key.as_deref(),
     );
     let account_id = account
         .chatgpt_account_id
@@ -986,12 +985,6 @@ fn send_upstream_request_with_compression_override(
         request_ctx.protocol_type,
         request_ctx.request_path,
         target_url,
-    );
-    super::super::super::session_affinity::log_thread_anchor_conflict(
-        request_ctx.request_path,
-        account_id,
-        incoming_headers.conversation_id(),
-        prompt_cache_key.as_deref(),
     );
     super::super::super::session_affinity::log_outgoing_session_affinity(
         request_ctx.request_path,
@@ -1117,6 +1110,10 @@ fn send_upstream_request_with_compression_override(
         gemini_codex_compat,
         incoming_headers.originator(),
         drop_session_headers,
+    );
+    super::super::header_profile::apply_codex_target_accept_header(
+        &mut upstream_headers,
+        target_url,
     );
     if should_force_connection_close(target_url) {
         // 中文注释：本地 loopback mock/代理更容易复用到脏 keep-alive 连接；

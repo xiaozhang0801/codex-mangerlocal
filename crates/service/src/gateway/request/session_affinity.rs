@@ -21,67 +21,6 @@ fn normalize_anchor(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-/// 函数 `has_thread_anchor_conflict`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - crate: 参数 crate
-///
-/// # 返回
-/// 返回函数执行结果
-#[cfg(test)]
-pub(crate) fn has_thread_anchor_conflict(
-    conversation_id: Option<&str>,
-    prompt_cache_key: Option<&str>,
-) -> bool {
-    match (
-        normalize_anchor(conversation_id),
-        normalize_anchor(prompt_cache_key),
-    ) {
-        (Some(conversation_id), Some(prompt_cache_key)) => conversation_id != prompt_cache_key,
-        _ => false,
-    }
-}
-
-/// 函数 `log_thread_anchor_conflict`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - crate: 参数 crate
-///
-/// # 返回
-/// 无
-pub(crate) fn log_thread_anchor_conflict(
-    context: &str,
-    account_id: Option<&str>,
-    conversation_id: Option<&str>,
-    prompt_cache_key: Option<&str>,
-) {
-    let Some(conversation_id) = normalize_anchor(conversation_id) else {
-        return;
-    };
-    let Some(prompt_cache_key) = normalize_anchor(prompt_cache_key) else {
-        return;
-    };
-    if conversation_id == prompt_cache_key {
-        return;
-    }
-
-    log::warn!(
-        "event=gateway_thread_anchor_conflict context={} account_id={} conversation_fp={} prompt_cache_key_fp={} effective_source=prompt_cache_key",
-        context,
-        account_id.unwrap_or("-"),
-        super::anchor_fingerprint::fingerprint_anchor(conversation_id),
-        super::anchor_fingerprint::fingerprint_anchor(prompt_cache_key),
-    );
-}
-
 fn anchor_fingerprint_or_dash(value: Option<&str>) -> String {
     normalize_anchor(value)
         .map(super::anchor_fingerprint::fingerprint_anchor)
@@ -155,36 +94,26 @@ pub(crate) fn derive_outgoing_session_affinity<'a>(
     incoming_client_request_id: Option<&'a str>,
     incoming_turn_state: Option<&'a str>,
     conversation_id: Option<&'a str>,
-    prompt_cache_key: Option<&'a str>,
 ) -> OutgoingSessionAffinity<'a> {
-    let original_incoming_session_id = incoming_session_id;
     let mut resolved_turn_state = incoming_turn_state;
     let conversation_anchor = normalize_anchor(conversation_id);
-    let effective_thread_anchor = normalize_anchor(prompt_cache_key).or(conversation_anchor);
     let resolved_client_request_id = conversation_anchor.or(incoming_client_request_id);
-    let resolved_incoming_session_id = conversation_anchor.or(original_incoming_session_id);
 
     if resolved_turn_state.is_some()
-        && original_incoming_session_id.is_none()
-        && effective_thread_anchor.is_none()
+        && normalize_anchor(incoming_session_id).is_none()
+        && conversation_anchor.is_none()
     {
         // 中文注释：没有任何稳定线程锚点时，孤儿 turn-state 不应继续透传。
         resolved_turn_state = None;
     }
-    if let (Some(thread_anchor), Some(conversation_anchor)) =
-        (effective_thread_anchor, conversation_anchor)
-    {
-        if conversation_anchor != thread_anchor {
-            // 中文注释：线程锚点与 conversation_id 冲突时，旧 turn-state 只能清掉。
-            resolved_turn_state = None;
-        }
-    }
 
     OutgoingSessionAffinity {
-        incoming_session_id: resolved_incoming_session_id,
+        // 中文注释：session-id 表示根会话，不能被父/子线程 ID 或缓存键覆盖。
+        incoming_session_id: normalize_anchor(incoming_session_id),
         incoming_client_request_id: resolved_client_request_id,
         incoming_turn_state: resolved_turn_state,
-        fallback_session_id: effective_thread_anchor,
+        // 中文注释：conversation/thread 只在缺少显式 session-id 时提供兼容回退。
+        fallback_session_id: conversation_anchor,
     }
 }
 

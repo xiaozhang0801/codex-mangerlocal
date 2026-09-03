@@ -95,6 +95,9 @@ export const KO_PLATFORM_MODE_MESSAGES: MessageCatalog = {
   "去创建平台密钥": "플랫폼 키 생성",
   "选择平台密钥": "플랫폼 키 선택",
   "将使用 gateway base_url": "사용할 gateway base_url",
+  "启用 Responses WebSocket": "Responses WebSocket 사용",
+  "关闭时 Codex 使用普通 Responses HTTP 流；开启时使用 Responses WebSocket。仅在当前平台密钥支持时开启。":
+    "끄면 Codex가 일반 Responses HTTP 스트림을 사용하고, 켜면 Responses WebSocket을 사용합니다. 선택한 플랫폼 키가 지원할 때만 켜세요.",
   "重新应用本地网关": "로컬 게이트웨이 다시 적용",
   "切换到本地网关": "로컬 게이트웨이로 전환",
   "保存失败": "저장 실패",

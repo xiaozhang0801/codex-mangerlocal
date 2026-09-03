@@ -1,6 +1,141 @@
 use super::*;
 
 #[test]
+fn native_codex_images_generation_with_extension_headers_matches_direct_login_upstream_shape() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-native-images-generation-direct");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let images_json = serde_json::json!({
+        "created": 1778832973u64,
+        "background": "opaque",
+        "data": [{ "b64_json": "REDACTED_IMAGE" }],
+        "quality": "medium",
+        "size": "1024x1024"
+    })
+    .to_string();
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![(200, images_json, "application/json".to_string())],
+            Duration::from_secs(3),
+        );
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let _rules_guard = GatewayModelForwardRulesResetGuard::reset();
+    seed_model_catalog_models(&storage, &["gpt-image-1.5"]);
+    let now = now_ts();
+    storage
+        .insert_account(&Account {
+            id: "acc_native_images_direct".to_string(),
+            label: "native-images-direct".to_string(),
+            issuer: "https://auth.openai.com".to_string(),
+            chatgpt_account_id: Some("chatgpt_native_images_direct".to_string()),
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+    storage
+        .insert_token(&Token {
+            account_id: "acc_native_images_direct".to_string(),
+            id_token: String::new(),
+            access_token: "access_native_images_direct".to_string(),
+            refresh_token: String::new(),
+            api_key_access_token: Some("api_access_native_images_direct".to_string()),
+            last_refresh: now,
+        })
+        .expect("insert token");
+
+    let platform_key = "pk_native_images_direct";
+    storage
+        .insert_api_key(&ApiKey {
+            id: "gk_native_images_direct".to_string(),
+            name: Some("native-images-direct".to_string()),
+            model_slug: Some("gpt-5.5".to_string()),
+            reasoning_effort: Some("medium".to_string()),
+            service_tier: Some("priority".to_string()),
+            rotation_strategy: "account_rotation".to_string(),
+            aggregate_api_id: None,
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "codex".to_string(),
+            protocol_type: "openai_compat".to_string(),
+            auth_scheme: "authorization_bearer".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: hash_platform_key_for_test(platform_key),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        })
+        .expect("insert api key");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let request_body = serde_json::json!({
+        "prompt": "draw a small orange cat",
+        "background": "opaque",
+        "model": "gpt-image-1.5",
+        "quality": "medium",
+        "size": "1024x1024"
+    })
+    .to_string();
+    let (status, response_body) = post_http_raw(
+        &server.addr,
+        "/v1/images/generations",
+        &request_body,
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {platform_key}")),
+            ("originator", "codex_app"),
+            ("x-codex-image-turn-id", "turn-native-images-direct"),
+            ("x-openai-actor-authorization", "local-image-extension"),
+        ],
+    );
+    server.join();
+    assert_eq!(status, 200, "gateway response: {response_body}");
+
+    let captured = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive upstream request");
+    upstream_join.join().expect("join mock upstream");
+    assert_eq!(captured.path, "/backend-api/codex/images/generations");
+    assert_eq!(
+        captured.headers.get("accept").map(String::as_str),
+        Some("application/json")
+    );
+    assert_eq!(
+        captured
+            .headers
+            .get("x-codex-image-turn-id")
+            .map(String::as_str),
+        Some("turn-native-images-direct")
+    );
+    assert!(!captured
+        .headers
+        .contains_key("x-openai-actor-authorization"));
+    let upstream_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&captured)).expect("upstream json");
+    assert_eq!(upstream_body["model"], "gpt-image-1.5");
+    assert_eq!(upstream_body["prompt"], "draw a small orange cat");
+    assert!(upstream_body.get("tools").is_none());
+    assert!(upstream_body.get("reasoning").is_none());
+    assert!(upstream_body.get("service_tier").is_none());
+
+    let response: serde_json::Value =
+        serde_json::from_str(&response_body).expect("images response json");
+    assert_eq!(response["data"][0]["b64_json"], "REDACTED_IMAGE");
+    assert_eq!(response["quality"], "medium");
+    assert_eq!(response["size"], "1024x1024");
+}
+
+#[test]
 fn gateway_images_generation_wraps_codex_sse_as_openai_images_json() {
     let _lock = test_env_guard();
     let dir = new_test_dir("codexmanager-gateway-images-generation");
@@ -103,6 +238,10 @@ fn gateway_images_generation_wraps_codex_sse_as_openai_images_json() {
         .expect("receive upstream request");
     upstream_join.join().expect("join mock upstream");
     assert_eq!(captured.path, "/backend-api/codex/responses");
+    assert_eq!(
+        captured.headers.get("accept").map(String::as_str),
+        Some("text/event-stream")
+    );
     let upstream_body: serde_json::Value =
         serde_json::from_slice(&decode_upstream_request_body(&captured)).expect("upstream json");
     assert_eq!(upstream_body["model"], "gpt-5.4-mini");

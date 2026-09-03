@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use toml_edit::{value as toml_value, DocumentMut, Item, Table};
+use toml_edit::{value as toml_value, DocumentMut, Item, Table, Value};
 
 use crate::codex_runtime::CodexRuntimeReloadResult;
 
@@ -69,6 +69,7 @@ pub(crate) struct CodexProfileStatus {
     pub selected_account_id: Option<String>,
     pub selected_api_key_id: Option<String>,
     pub gateway_base_url: Option<String>,
+    pub supports_websockets: bool,
     pub provider_id: String,
     pub has_backup: bool,
     pub last_applied_at: Option<i64>,
@@ -193,6 +194,8 @@ struct ManagedState {
     account_id: Option<String>,
     api_key_id: Option<String>,
     gateway_base_url: Option<String>,
+    #[serde(default)]
+    supports_websockets: Option<bool>,
     provider_id: String,
     #[serde(default)]
     previous_model_catalog_json: Option<String>,
@@ -222,6 +225,8 @@ struct MarkerFile {
     account_id: Option<String>,
     api_key_id: Option<String>,
     gateway_base_url: Option<String>,
+    #[serde(default)]
+    supports_websockets: Option<bool>,
     provider_id: String,
     updated_at: i64,
 }
@@ -230,6 +235,7 @@ struct MarkerFile {
 struct DetectedGatewayConfig {
     provider_id: String,
     base_url: String,
+    supports_websockets: bool,
 }
 
 pub(crate) fn get_status(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
@@ -353,6 +359,7 @@ pub(crate) fn apply_direct_account(
             account_id: Some(account.id.clone()),
             api_key_id: None,
             gateway_base_url: None,
+            supports_websockets: None,
             provider_id: DEFAULT_HISTORY_PROVIDER_ID.to_string(),
             previous_model_catalog_json: None,
             updated_at: now_ts(),
@@ -366,6 +373,7 @@ pub(crate) fn apply_gateway(
     api_key_id: Option<&str>,
     codex_home: Option<&str>,
     base_url: Option<&str>,
+    supports_websockets: Option<bool>,
     reload_after_switch: bool,
 ) -> Result<CodexProfileStatus, String> {
     let api_key_id = normalize_required(api_key_id, "missing apiKeyId")?;
@@ -398,7 +406,11 @@ pub(crate) fn apply_gateway(
         &storage,
         gateway_auth.id.as_str(),
     )?;
-    let supports_websockets = gateway_supports_websockets(&storage, gateway_auth.id.as_str())?;
+    let websocket_available = gateway_supports_websockets(&storage, gateway_auth.id.as_str())?;
+    let supports_websockets = supports_websockets.unwrap_or(websocket_available);
+    if supports_websockets && !websocket_available {
+        return Err("selected platform key does not support Responses WebSocket".to_string());
+    }
     crate::codex_model_catalog::write_gateway_model_catalog(
         &storage,
         gateway_auth.id.as_str(),
@@ -411,6 +423,7 @@ pub(crate) fn apply_gateway(
         &gateway_base_url,
         &paths.gateway_model_catalog_path,
         supports_websockets,
+        &secret,
     )?;
     write_profile_files(
         &profile_dir,
@@ -422,6 +435,7 @@ pub(crate) fn apply_gateway(
             account_id: None,
             api_key_id: Some(gateway_auth.id),
             gateway_base_url: Some(gateway_base_url),
+            supports_websockets: Some(supports_websockets),
             provider_id: PROVIDER_ID.to_string(),
             previous_model_catalog_json,
             updated_at: now_ts(),
@@ -733,6 +747,7 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
             account_id: marker.account_id,
             api_key_id: marker.api_key_id,
             gateway_base_url: marker.gateway_base_url,
+            supports_websockets: marker.supports_websockets,
             provider_id: marker.provider_id,
             previous_model_catalog_json: None,
             updated_at: marker.updated_at,
@@ -780,6 +795,11 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
                     .as_ref()
                     .and_then(|state| state.gateway_base_url.clone())
             }),
+        supports_websockets: detected_gateway
+            .as_ref()
+            .map(|gateway| gateway.supports_websockets)
+            .or_else(|| state.as_ref().and_then(|state| state.supports_websockets))
+            .unwrap_or(false),
         provider_id: detected_gateway
             .as_ref()
             .map(|gateway| gateway.provider_id.clone())
@@ -1776,11 +1796,16 @@ fn detect_gateway_config(content: &str) -> Result<Option<DetectedGatewayConfig>,
         .map(str::trim)
         .filter(|base_url| !base_url.is_empty());
     let effective_base_url = provider_base_url.or(root_base_url);
+    let supports_websockets = provider_config
+        .and_then(|provider| provider.get("supports_websockets"))
+        .and_then(Item::as_bool)
+        .unwrap_or(false);
 
     if provider_id == PROVIDER_ID {
         return Ok(Some(DetectedGatewayConfig {
             provider_id: provider_id.to_string(),
             base_url: normalize_gateway_base_url(effective_base_url),
+            supports_websockets,
         }));
     }
 
@@ -1813,6 +1838,7 @@ fn detect_gateway_config(content: &str) -> Result<Option<DetectedGatewayConfig>,
     Ok(Some(DetectedGatewayConfig {
         provider_id: provider_id.to_string(),
         base_url: normalize_gateway_base_url(Some(base_url)),
+        supports_websockets,
     }))
 }
 
@@ -2013,6 +2039,7 @@ fn patch_config_for_gateway(
     base_url: &str,
     managed_catalog_path: &Path,
     supports_websockets: bool,
+    bearer_token: &str,
 ) -> Result<String, String> {
     let mut doc = parse_config(content.as_deref().unwrap_or(""))?;
     doc.as_table_mut()
@@ -2045,22 +2072,61 @@ fn patch_config_for_gateway(
     if provider.get("name").is_none() {
         provider.insert("name", toml_value("CodexManager"));
     }
-    // Codex 0.149+ no longer inherits ambient auth for custom model providers.
-    provider.insert("requires_openai_auth", toml_value(true));
+    // Codex only treats actor authorization as an extension capability for custom providers
+    // that do not use ambient OpenAI auth. A provider-scoped bearer token works for local and
+    // remote CodexManager gateways without coupling the profile to a movable desktop executable.
+    // It is mutually exclusive with command/env/ambient auth, so remove stale values first.
+    provider.remove("requires_openai_auth");
+    set_provider_bearer_auth(provider, bearer_token)?;
     provider.insert("base_url", toml_value(base_url));
     provider.insert("wire_api", toml_value("responses"));
     provider.insert("supports_websockets", toml_value(supports_websockets));
+    set_provider_http_header(
+        provider,
+        crate::gateway::X_OPENAI_ACTOR_AUTHORIZATION_HEADER,
+        crate::gateway::CODEXMANAGER_IMAGE_EXTENSION_ACTOR_AUTHORIZATION,
+    )?;
     Ok(doc.to_string())
 }
 
+fn set_provider_bearer_auth(provider: &mut Table, bearer_token: &str) -> Result<(), String> {
+    let bearer_token = bearer_token.trim();
+    if bearer_token.is_empty() {
+        return Err("platform key secret is empty".to_string());
+    }
+    for conflicting_key in ["env_key", "env_key_instructions", "auth", "aws"] {
+        provider.remove(conflicting_key);
+    }
+    provider.insert("experimental_bearer_token", toml_value(bearer_token));
+    Ok(())
+}
+
+fn set_provider_http_header(provider: &mut Table, name: &str, value: &str) -> Result<(), String> {
+    if provider.get("http_headers").is_none() {
+        provider.insert("http_headers", Item::Table(Table::new()));
+    }
+    let headers = provider
+        .get_mut("http_headers")
+        .ok_or_else(|| "config.toml model_providers.cm.http_headers is missing".to_string())?;
+    if let Some(table) = headers.as_table_mut() {
+        table.insert(name, toml_value(value));
+        return Ok(());
+    }
+    if let Some(inline) = headers.as_value_mut().and_then(Value::as_inline_table_mut) {
+        inline.insert(name, Value::from(value));
+        return Ok(());
+    }
+    Err("config.toml model_providers.cm.http_headers is not a table".to_string())
+}
+
 pub(crate) fn sync_active_gateway_profile_from_storage(storage: &Storage) -> Result<bool, String> {
-    let Some(state) = load_state() else {
+    let Some(mut state) = load_state() else {
         return Ok(false);
     };
     if !matches!(state.mode, CodexProfileMode::Gateway) {
         return Ok(false);
     }
-    let profile_dir = PathBuf::from(state.profile_dir);
+    let profile_dir = PathBuf::from(&state.profile_dir);
     let paths = managed_profile_paths(&profile_dir)?;
     let api_key_id = state
         .api_key_id
@@ -2068,7 +2134,9 @@ pub(crate) fn sync_active_gateway_profile_from_storage(storage: &Storage) -> Res
         .ok_or_else(|| "active gateway profile is missing api key id".to_string())?;
     let catalog_policy =
         crate::codex_model_catalog::gateway_catalog_policy_for_api_key(storage, api_key_id)?;
-    let supports_websockets = gateway_supports_websockets(storage, api_key_id)?;
+    let websocket_available = gateway_supports_websockets(storage, api_key_id)?;
+    let supports_websockets =
+        state.supports_websockets.unwrap_or(websocket_available) && websocket_available;
     crate::codex_model_catalog::write_gateway_model_catalog(
         storage,
         api_key_id,
@@ -2077,13 +2145,28 @@ pub(crate) fn sync_active_gateway_profile_from_storage(storage: &Storage) -> Res
     )?;
     let gateway_base_url = normalize_gateway_base_url(state.gateway_base_url.as_deref());
     let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+    let gateway_auth = storage
+        .find_api_key_gateway_auth_by_id(api_key_id)
+        .map_err(|err| format!("read api key failed: {err}"))?
+        .ok_or_else(|| "api key not found".to_string())?;
+    let secret = gateway_auth
+        .secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "api key secret not found".to_string())?;
     let config_toml = patch_config_for_gateway(
         current_config,
         &gateway_base_url,
         &paths.gateway_model_catalog_path,
         supports_websockets,
+        secret,
     )?;
     write_atomic(&profile_dir.join(CONFIG_FILE), &config_toml)?;
+    if state.supports_websockets != Some(supports_websockets) {
+        state.supports_websockets = Some(supports_websockets);
+        save_state(&state)?;
+    }
     Ok(true)
 }
 
@@ -2137,6 +2220,7 @@ fn write_profile_files(
         account_id: state.account_id.clone(),
         api_key_id: state.api_key_id.clone(),
         gateway_base_url: state.gateway_base_url.clone(),
+        supports_websockets: state.supports_websockets,
         provider_id: state.provider_id.clone(),
         updated_at: state.updated_at,
     };

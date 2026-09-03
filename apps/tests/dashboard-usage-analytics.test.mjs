@@ -116,3 +116,14 @@ test("模型曲线在查询刷新时保留内容并显示明确反馈", async ()
   assert.match(chartSource, /正在更新曲线/);
   assert.match(chartSource, /setZoomWindow\(null\)/);
 });
+
+test("管理员用量卡按缓存输入占总输入展示区间缓存命中率", async () => {
+  const pageSource = await readSource("src/app/page.tsx");
+
+  assert.match(
+    pageSource,
+    /rangeUsage\.cachedInputTokens\) \/ rangeUsage\.inputTokens\) \* 100/,
+  );
+  assert.match(pageSource, /t\("缓存命中率"\)/);
+  assert.match(pageSource, /formatPercent\(rangeCacheHitRate\)/);
+});

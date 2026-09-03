@@ -218,3 +218,23 @@ pub async fn service_aggregate_api_refresh_balance(
     let params = serde_json::json!({ "id": id });
     rpc_call_in_background("aggregateApi/refreshBalance", addr, Some(params)).await
 }
+
+#[tauri::command]
+pub async fn service_aggregate_api_fetch_models(
+    addr: Option<String>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "apiId": id });
+    rpc_call_in_background("aggregateApi/fetchModels", addr, Some(params)).await
+}
+
+#[tauri::command]
+pub async fn service_aggregate_api_associate_models(
+    addr: Option<String>,
+    api_id: String,
+    upstream_models: Vec<String>,
+    display_names: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "apiId": api_id, "upstreamModels": upstream_models, "displayNames": display_names });
+    rpc_call_in_background("aggregateApi/associateModels", addr, Some(params)).await
+}

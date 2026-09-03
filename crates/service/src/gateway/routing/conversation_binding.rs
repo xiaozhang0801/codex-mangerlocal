@@ -1,4 +1,5 @@
 use codexmanager_core::storage::{now_ts, Account, ConversationBinding, Storage, Token};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -19,19 +20,72 @@ pub(crate) enum RouteConversationSource {
     StickyFallback,
     PromptCacheKey,
     PromptCacheKeyExistingOnly,
+    SessionAffinity,
+    SessionAffinityExistingOnly,
 }
 
 impl RouteConversationSource {
-    pub(crate) fn is_prompt_cache_key(self) -> bool {
+    pub(crate) fn is_cache_affinity(self) -> bool {
         matches!(
             self,
-            Self::PromptCacheKey | Self::PromptCacheKeyExistingOnly
+            Self::PromptCacheKey
+                | Self::PromptCacheKeyExistingOnly
+                | Self::SessionAffinity
+                | Self::SessionAffinityExistingOnly
         )
     }
 
     pub(crate) fn allows_initial_binding_create(self) -> bool {
-        !matches!(self, Self::PromptCacheKeyExistingOnly)
+        !matches!(
+            self,
+            Self::PromptCacheKeyExistingOnly | Self::SessionAffinityExistingOnly
+        )
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CacheAffinityKeySource {
+    PromptCacheKey,
+    SessionId,
+}
+
+impl CacheAffinityKeySource {
+    fn tag(self) -> &'static str {
+        match self {
+            Self::PromptCacheKey => "pck",
+            Self::SessionId => "sid",
+        }
+    }
+}
+
+/// Produces a privacy-safe persistent route id. Model partitioning prevents a
+/// session that changes models from pinning unrelated upstream cache pools to
+/// the same account.
+pub(crate) fn cache_affinity_route_id(
+    platform_key_hash: &str,
+    protocol_type: &str,
+    model: Option<&str>,
+    source: CacheAffinityKeySource,
+    key_material: &str,
+) -> String {
+    let model = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
+    let key_material = key_material.trim();
+    let digest = Sha256::digest(
+        format!(
+            "cache-affinity:v2\0{platform_key_hash}\0{protocol_type}\0{model}\0{}\0{key_material}",
+            source.tag()
+        )
+        .as_bytes(),
+    );
+    format!(
+        "{}:v2:{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        source.tag(),
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +130,28 @@ pub(crate) struct ConversationThreadAttempt {
     pub(crate) thread_anchor: String,
     pub(crate) thread_epoch: i64,
     pub(crate) reset_session_affinity: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InitialBindingClaim {
+    Skipped,
+    Created,
+    Joined,
+    BoundAccountUnavailable,
+}
+
+impl InitialBindingClaim {
+    pub(crate) fn selected_binding(self) -> bool {
+        matches!(self, Self::Created | Self::Joined)
+    }
+
+    pub(crate) fn strategy_label(self) -> &'static str {
+        match self {
+            Self::Created => "conversation_claim_created",
+            Self::Joined => "conversation_claim_joined",
+            Self::Skipped | Self::BoundAccountUnavailable => "conversation_bound",
+        }
+    }
 }
 
 /// 函数 `normalize_conversation_id`
@@ -414,6 +490,57 @@ pub(crate) fn apply_candidate_rotation(
     }
 }
 
+/// Claims the first selected candidate before upstream I/O. This closes the
+/// cold-start race where concurrent parent/subtask requests could both observe
+/// no binding and select different accounts.
+pub(crate) fn claim_initial_conversation_binding(
+    storage: &Storage,
+    routing: Option<&mut ConversationRoutingContext>,
+    candidates: &mut Vec<(Account, Token)>,
+    model: Option<&str>,
+) -> Result<InitialBindingClaim, String> {
+    let Some(routing) = routing else {
+        return Ok(InitialBindingClaim::Skipped);
+    };
+    if routing.existing_binding.is_some() || !routing.source.allows_initial_binding_create() {
+        return Ok(InitialBindingClaim::Skipped);
+    }
+    let Some((selected_account, _)) = candidates.first() else {
+        return Ok(InitialBindingClaim::Skipped);
+    };
+
+    let now = now_ts();
+    let proposed = ConversationBinding {
+        platform_key_hash: routing.platform_key_hash.clone(),
+        conversation_id: routing.conversation_id.clone(),
+        account_id: selected_account.id.clone(),
+        thread_epoch: 1,
+        thread_anchor: routing.conversation_id.clone(),
+        status: "active".to_string(),
+        last_model: model.map(str::to_string),
+        last_switch_reason: None,
+        created_at: now,
+        updated_at: now,
+        last_used_at: now,
+    };
+    let (claimed, created) = storage
+        .claim_conversation_binding(&proposed)
+        .map_err(|err| format!("claim conversation binding failed: {err}"))?;
+    let selected = rotate_to_bound_account(candidates.as_mut_slice(), &claimed);
+    routing.bound_account_selectable = selected;
+    routing.binding_selected = selected;
+    routing.next_thread_epoch = Some(claimed.thread_epoch + 1);
+    routing.existing_binding = Some(claimed);
+
+    if !selected {
+        Ok(InitialBindingClaim::BoundAccountUnavailable)
+    } else if created {
+        Ok(InitialBindingClaim::Created)
+    } else {
+        Ok(InitialBindingClaim::Joined)
+    }
+}
+
 /// 函数 `resolve_attempt_thread`
 ///
 /// 作者: gaohongshun
@@ -430,7 +557,7 @@ pub(crate) fn resolve_attempt_thread(
     account: &Account,
 ) -> Option<ConversationThreadAttempt> {
     let routing = routing?;
-    if routing.source.is_prompt_cache_key() {
+    if routing.source.is_cache_affinity() {
         return None;
     }
     match routing.existing_binding.as_ref() {
@@ -490,11 +617,8 @@ pub(crate) fn record_conversation_binding_terminal_response(
             )
             .map(|_| ())
             .map_err(|err| format!("touch conversation binding failed: {err}")),
-        Some(_) if routing.source.is_prompt_cache_key() && routing.bound_account_selectable => {
-            Ok(())
-        }
         Some(binding) if status_code < 400 => {
-            let (thread_epoch, thread_anchor) = if routing.source.is_prompt_cache_key() {
+            let (thread_epoch, thread_anchor) = if routing.source.is_cache_affinity() {
                 (binding.thread_epoch + 1, binding.thread_anchor.clone())
             } else {
                 let attempt_thread = attempt_thread
@@ -515,7 +639,7 @@ pub(crate) fn record_conversation_binding_terminal_response(
                 .map_err(|err| format!("rebind conversation binding failed: {err}"))
         }
         None if status_code < 400 && routing.source.allows_initial_binding_create() => {
-            let (thread_epoch, thread_anchor) = if routing.source.is_prompt_cache_key() {
+            let (thread_epoch, thread_anchor) = if routing.source.is_cache_affinity() {
                 (1, routing.conversation_id.clone())
             } else {
                 let attempt_thread = attempt_thread

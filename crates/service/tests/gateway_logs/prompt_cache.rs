@@ -7,13 +7,13 @@ const PROTOCOL_OPENAI_COMPAT: &str = "openai_compat";
 fn prompt_cache_route_id(platform_key_hash: &str, prompt_cache_key: &str) -> String {
     let digest = Sha256::digest(
         format!(
-            "pck:v1\0{platform_key_hash}\0{PROTOCOL_OPENAI_COMPAT}\0{}",
+            "cache-affinity:v2\0{platform_key_hash}\0{PROTOCOL_OPENAI_COMPAT}\0{MODEL}\0pck\0{}",
             prompt_cache_key.trim()
         )
         .as_bytes(),
     );
     format!(
-        "pck:v1:{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        "pck:v2:{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
         digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]
     )
@@ -145,7 +145,7 @@ fn auth_account(captured: &CapturedUpstreamRequest) -> &str {
 }
 
 #[test]
-fn gateway_native_conversation_aligns_account_route_and_upstream_prompt_cache_key() {
+fn gateway_native_parent_thread_uses_root_cache_affinity_and_preserves_client_key() {
     let _lock = test_env_guard();
     let dir = new_test_dir("codexmanager-gateway-native-conversation-cache-alignment");
     let db_path: PathBuf = dir.join("codexmanager.db");
@@ -166,14 +166,16 @@ fn gateway_native_conversation_aligns_account_route_and_upstream_prompt_cache_ke
         "gk_native_conversation_cache_alignment",
     );
     let native_conversation = "native-conversation-1";
+    let prompt_cache_key = "root-session-cache-1";
+    let route_id = prompt_cache_route_id(&key_hash, prompt_cache_key);
     let now = now_ts();
     storage
         .upsert_conversation_binding(&ConversationBinding {
             platform_key_hash: key_hash,
-            conversation_id: native_conversation.to_string(),
+            conversation_id: route_id.clone(),
             account_id: "acc_prompt_cache_b".to_string(),
             thread_epoch: 1,
-            thread_anchor: native_conversation.to_string(),
+            thread_anchor: route_id,
             status: "active".to_string(),
             last_model: Some(MODEL.to_string()),
             last_switch_reason: None,
@@ -181,7 +183,7 @@ fn gateway_native_conversation_aligns_account_route_and_upstream_prompt_cache_ke
             updated_at: now,
             last_used_at: now,
         })
-        .expect("seed native conversation binding");
+        .expect("seed root cache-affinity binding");
 
     let server = codexmanager_service::start_one_shot_server().expect("start server");
     post_responses_with_headers(
@@ -191,10 +193,11 @@ fn gateway_native_conversation_aligns_account_route_and_upstream_prompt_cache_ke
             "model": MODEL,
             "input": "native conversation wins",
             "stream": false,
-            "prompt_cache_key": "conflicting-client-thread"
+            "prompt_cache_key": prompt_cache_key
         }),
         &[
             ("conversation_id", native_conversation),
+            ("session_id", prompt_cache_key),
             ("x-codex-turn-state", "turn-state-1"),
         ],
     );
@@ -218,8 +221,31 @@ fn gateway_native_conversation_aligns_account_route_and_upstream_prompt_cache_ke
     assert_eq!(
         body.get("prompt_cache_key")
             .and_then(serde_json::Value::as_str),
-        Some(native_conversation)
+        Some(prompt_cache_key)
     );
+}
+
+fn ok_sse_response(id: &str) -> String {
+    format!(
+        "data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"{id}\"}}}}\n\n\
+         data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{id}\",\"model\":\"{MODEL}\",\"usage\":{{\"input_tokens\":64,\"input_tokens_details\":{{\"cached_tokens\":48}},\"output_tokens\":4,\"total_tokens\":68}}}}}}\n\n\
+         data: [DONE]\n\n"
+    )
+}
+
+fn session_cache_route_id(platform_key_hash: &str, session_id: &str) -> String {
+    let digest = Sha256::digest(
+        format!(
+            "cache-affinity:v2\0{platform_key_hash}\0{PROTOCOL_OPENAI_COMPAT}\0{MODEL}\0sid\0{}",
+            session_id.trim()
+        )
+        .as_bytes(),
+    );
+    format!(
+        "sid:v2:{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]
+    )
 }
 
 #[test]
@@ -572,5 +598,375 @@ fn gateway_turn_state_previous_response_without_existing_pck_binding_does_not_cr
     assert!(
         actual.is_none(),
         "turn_state existing-only pck route must not create a binding without history"
+    );
+}
+
+#[test]
+fn gateway_parent_and_child_threads_share_explicit_root_cache_account() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-parent-child-pck-affinity");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "balanced");
+
+    let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
+        (200, ok_response("resp_parent")),
+        (200, ok_response("resp_child")),
+    ]);
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let platform_key = "pk_parent_child_pck_affinity";
+    let key_hash =
+        seed_openai_compat_gateway(&storage, platform_key, "gk_parent_child_pck_affinity");
+    let prompt_cache_key = "root-cache-parent-child";
+
+    for (conversation_id, input) in [
+        ("parent-thread-1", "parent request"),
+        ("child-thread-9", "child request"),
+    ] {
+        let server = codexmanager_service::start_one_shot_server().expect("start server");
+        post_responses_with_headers(
+            &server.addr,
+            platform_key,
+            serde_json::json!({
+                "model": MODEL,
+                "input": input,
+                "stream": false,
+                "prompt_cache_key": prompt_cache_key
+            }),
+            &[
+                ("conversation_id", conversation_id),
+                ("session_id", "root-session-parent-child"),
+            ],
+        );
+        server.join();
+    }
+
+    let parent = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive parent upstream request");
+    let child = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive child upstream request");
+    upstream_join.join().expect("join mock upstream");
+    assert_eq!(auth_account(&parent), auth_account(&child));
+    for captured in [&parent, &child] {
+        let body: serde_json::Value =
+            serde_json::from_slice(&decode_upstream_request_body(captured))
+                .expect("parse upstream body");
+        assert_eq!(
+            body.get("prompt_cache_key")
+                .and_then(serde_json::Value::as_str),
+            Some(prompt_cache_key)
+        );
+    }
+
+    let route_id = prompt_cache_route_id(&key_hash, prompt_cache_key);
+    let binding = storage
+        .get_conversation_binding(&key_hash, &route_id)
+        .expect("load root pck binding")
+        .expect("root pck binding exists");
+    assert_eq!(binding.account_id, auth_account(&parent));
+}
+
+#[test]
+fn gateway_parent_and_child_without_pck_share_root_session_cache_key_and_account() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-parent-child-session-affinity");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "balanced");
+
+    let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
+        (200, ok_response("resp_session_parent")),
+        (200, ok_response("resp_session_child")),
+    ]);
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let platform_key = "pk_parent_child_session_affinity";
+    let key_hash =
+        seed_openai_compat_gateway(&storage, platform_key, "gk_parent_child_session_affinity");
+    let root_session = "root-session-without-client-pck";
+
+    for (conversation_id, input) in [
+        ("parent-thread-without-pck", "parent request"),
+        ("child-thread-without-pck", "child request"),
+    ] {
+        let server = codexmanager_service::start_one_shot_server().expect("start server");
+        post_responses_with_headers(
+            &server.addr,
+            platform_key,
+            serde_json::json!({
+                "model": MODEL,
+                "input": input,
+                "stream": false
+            }),
+            &[
+                ("conversation_id", conversation_id),
+                ("session_id", root_session),
+            ],
+        );
+        server.join();
+    }
+
+    let parent = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive parent upstream request");
+    let child = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive child upstream request");
+    upstream_join.join().expect("join mock upstream");
+    assert_eq!(auth_account(&parent), auth_account(&child));
+    for captured in [&parent, &child] {
+        let body: serde_json::Value =
+            serde_json::from_slice(&decode_upstream_request_body(captured))
+                .expect("parse upstream body");
+        assert_eq!(
+            body.get("prompt_cache_key")
+                .and_then(serde_json::Value::as_str),
+            Some(root_session),
+            "missing client pck must use the shared root session upstream"
+        );
+    }
+
+    let route_id = session_cache_route_id(&key_hash, root_session);
+    let binding = storage
+        .get_conversation_binding(&key_hash, &route_id)
+        .expect("load root session binding")
+        .expect("root session binding exists");
+    assert_eq!(binding.account_id, auth_account(&parent));
+}
+
+#[test]
+fn gateway_concurrent_cold_start_http_requests_converge_on_one_account() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-concurrent-pck-claim");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "balanced");
+
+    let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
+        (200, ok_response("resp_concurrent_a")),
+        (200, ok_response("resp_concurrent_b")),
+    ]);
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let platform_key = "pk_concurrent_pck_claim";
+    let key_hash = seed_openai_compat_gateway(&storage, platform_key, "gk_concurrent_pck_claim");
+    let prompt_cache_key = "shared-concurrent-root-pck";
+    let server = TestServer::start();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let mut joins = Vec::new();
+    for conversation_id in ["concurrent-parent", "concurrent-child"] {
+        let barrier = barrier.clone();
+        let server_addr = server.addr.clone();
+        joins.push(thread::spawn(move || {
+            barrier.wait();
+            post_responses_with_headers(
+                &server_addr,
+                platform_key,
+                serde_json::json!({
+                    "model": MODEL,
+                    "input": conversation_id,
+                    "stream": false,
+                    "prompt_cache_key": prompt_cache_key
+                }),
+                &[("conversation_id", conversation_id)],
+            );
+        }));
+    }
+    barrier.wait();
+    for join in joins {
+        join.join().expect("join concurrent gateway request");
+    }
+    drop(server);
+
+    let first = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive first concurrent upstream request");
+    let second = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive second concurrent upstream request");
+    upstream_join.join().expect("join mock upstream");
+    assert_eq!(
+        auth_account(&first),
+        auth_account(&second),
+        "concurrent first requests for one root pck must join the same account claim"
+    );
+
+    let route_id = prompt_cache_route_id(&key_hash, prompt_cache_key);
+    let binding = storage
+        .get_conversation_binding(&key_hash, &route_id)
+        .expect("load concurrent pck binding")
+        .expect("concurrent pck binding exists");
+    assert_eq!(binding.account_id, auth_account(&first));
+}
+
+#[test]
+fn gateway_rate_limit_failover_rebinds_root_cache_to_successful_account() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-pck-rate-limit-rebind");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "balanced");
+
+    let limited = serde_json::json!({
+        "error": {
+            "code": "rate_limit_exceeded",
+            "type": "rate_limit_error",
+            "message": "rate limit exceeded"
+        }
+    })
+    .to_string();
+    let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
+        (429, limited.clone()),
+        (429, limited.clone()),
+        (429, limited.clone()),
+        (429, limited),
+        (200, ok_response("resp_after_rate_limit")),
+    ]);
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let platform_key = "pk_pck_rate_limit_rebind";
+    let key_hash = seed_openai_compat_gateway(&storage, platform_key, "gk_pck_rate_limit_rebind");
+    let prompt_cache_key = "root-pck-rate-limit-rebind";
+    let route_id = prompt_cache_route_id(&key_hash, prompt_cache_key);
+    let now = now_ts();
+    storage
+        .upsert_conversation_binding(&ConversationBinding {
+            platform_key_hash: key_hash.clone(),
+            conversation_id: route_id.clone(),
+            account_id: "acc_prompt_cache_a".to_string(),
+            thread_epoch: 1,
+            thread_anchor: route_id.clone(),
+            status: "active".to_string(),
+            last_model: Some(MODEL.to_string()),
+            last_switch_reason: None,
+            created_at: now,
+            updated_at: now,
+            last_used_at: now,
+        })
+        .expect("seed pck binding");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    post_responses(
+        &server.addr,
+        platform_key,
+        serde_json::json!({
+            "model": MODEL,
+            "input": "fail over and rebind",
+            "stream": false,
+            "prompt_cache_key": prompt_cache_key
+        }),
+    );
+    server.join();
+
+    let limited_attempts = (0..4)
+        .map(|_| {
+            upstream_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("receive limited same-account request")
+        })
+        .collect::<Vec<_>>();
+    let successful_failover = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive successful failover request");
+    upstream_join.join().expect("join mock upstream");
+    assert!(limited_attempts
+        .iter()
+        .all(|attempt| auth_account(attempt) == "acc_prompt_cache_a"));
+    assert_eq!(auth_account(&successful_failover), "acc_prompt_cache_b");
+
+    let binding = storage
+        .get_conversation_binding(&key_hash, &route_id)
+        .expect("load rebound pck binding")
+        .expect("rebound pck binding exists");
+    assert_eq!(binding.account_id, "acc_prompt_cache_b");
+    assert_eq!(binding.thread_epoch, 2);
+    assert_eq!(
+        binding.last_switch_reason.as_deref(),
+        Some("automatic_account_switch")
+    );
+}
+
+#[test]
+fn gateway_streaming_sse_uses_existing_root_cache_binding() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-pck-sse-binding");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "balanced");
+
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![(
+                200,
+                ok_sse_response("resp_pck_sse"),
+                "text/event-stream".to_string(),
+            )],
+            Duration::from_secs(3),
+        );
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let platform_key = "pk_pck_sse_binding";
+    let key_hash = seed_openai_compat_gateway(&storage, platform_key, "gk_pck_sse_binding");
+    let prompt_cache_key = "root-pck-sse-binding";
+    let route_id = prompt_cache_route_id(&key_hash, prompt_cache_key);
+    let now = now_ts();
+    storage
+        .upsert_conversation_binding(&ConversationBinding {
+            platform_key_hash: key_hash,
+            conversation_id: route_id.clone(),
+            account_id: "acc_prompt_cache_b".to_string(),
+            thread_epoch: 1,
+            thread_anchor: route_id,
+            status: "active".to_string(),
+            last_model: Some(MODEL.to_string()),
+            last_switch_reason: None,
+            created_at: now,
+            updated_at: now,
+            last_used_at: now,
+        })
+        .expect("seed sse pck binding");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    post_responses(
+        &server.addr,
+        platform_key,
+        serde_json::json!({
+            "model": MODEL,
+            "input": "stream with root cache affinity",
+            "stream": true,
+            "prompt_cache_key": prompt_cache_key
+        }),
+    );
+    server.join();
+
+    let captured = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive streaming upstream request");
+    upstream_join.join().expect("join mock upstream");
+    assert_eq!(auth_account(&captured), "acc_prompt_cache_b");
+    let body: serde_json::Value = serde_json::from_slice(&decode_upstream_request_body(&captured))
+        .expect("parse streaming upstream body");
+    assert_eq!(
+        body.get("prompt_cache_key")
+            .and_then(serde_json::Value::as_str),
+        Some(prompt_cache_key)
     );
 }

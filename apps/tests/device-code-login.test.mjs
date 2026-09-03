@@ -48,6 +48,7 @@ test("新增账号弹窗完整处理 Device Code 生命周期", async () => {
   );
   assert.match(source, /loginType: requestedLoginType/);
   assert.match(source, /openBrowser: requestedLoginType === "chatgpt"/);
+  assert.match(source, /BROWSER_LOGIN_TIMEOUT_MS = 15 \* 60 \* 1000/);
   assert.match(source, /DEVICE_CODE_LOGIN_TIMEOUT_MS = 15 \* 60 \* 1000/);
   assert.match(source, /LOGIN_COMPLETION_GRACE_MS = 5 \* 60 \* 1000/);
   assert.match(source, /status === "completing"/);
@@ -67,4 +68,25 @@ test("新增账号弹窗完整处理 Device Code 生命周期", async () => {
   assert.match(source, /openLoginUrl/);
   assert.match(source, /appClient\.openInBrowser\(loginUrl\)/);
   assert.match(source, /loginType === "chatgpt" \? \([\s\S]*手动解析回调/);
+});
+
+test("浏览器登录恢复自动回调已成功的手动解析竞争", async () => {
+  const source = await readSource(
+    "src/components/modals/add-account-modal.tsx",
+  );
+
+  assert.match(
+    source,
+    /await accountClient\.getLoginStatus\(callbackState\)/,
+  );
+  assert.match(
+    source,
+    /recoveredStatus\.status === "success"[\s\S]*?completeLoginSuccess\(t\("登录成功"\), operationToken\)/,
+  );
+  assert.match(
+    source,
+    /recoveredStatus\.status === "completing"[\s\S]*?waitForLogin\(/,
+  );
+  assert.match(source, /手动解析回调（仅在自动回调未完成时使用）/);
+  assert.doesNotMatch(source, /手动解析回调（当本地 48760 端口占用时）/);
 });

@@ -439,6 +439,71 @@ pub(super) async fn usage_refresh_events(State(state): State<Arc<AppState>>) -> 
     out
 }
 
+fn account_test_events_target_url(service_addr: &str, uri: &axum::http::Uri) -> String {
+    let mut target_url = format!("http://{}/events/account-test", service_addr.trim());
+    if let Some(query) = uri.query().filter(|query| !query.is_empty()) {
+        target_url.push('?');
+        target_url.push_str(query);
+    }
+    target_url
+}
+
+fn account_test_events_role_allowed(web_auth_mode: &str, role: Option<&str>) -> bool {
+    web_auth_mode != "accounts"
+        || matches!(
+            role,
+            Some(codexmanager_service::ROLE_ADMIN | codexmanager_service::ROLE_SYSTEM_ADMIN)
+        )
+}
+
+pub(super) async fn account_test_events(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
+    let web_auth_mode = codexmanager_service::current_web_auth_mode();
+    let session = auth::current_app_session_from_headers(&headers);
+    if !account_test_events_role_allowed(
+        &web_auth_mode,
+        session.as_ref().map(|session| session.user.role.as_str()),
+    ) {
+        return (StatusCode::FORBIDDEN, "{}").into_response();
+    }
+
+    let target_url = account_test_events_target_url(&state.service_addr, &uri);
+    let resp = state
+        .client
+        .get(&target_url)
+        .header("accept", "text/event-stream")
+        .header("x-codexmanager-rpc-token", &state.rpc_token)
+        .send()
+        .await;
+    let resp = match resp {
+        Ok(value) => value,
+        Err(err) => {
+            let msg = format_upstream_error_message(state.service_addr.as_str(), &err);
+            return (StatusCode::BAD_GATEWAY, msg).into_response();
+        }
+    };
+
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut out = Response::new(Body::from_stream(resp.bytes_stream()));
+    *out.status_mut() = status;
+    out.headers_mut().insert(
+        "content-type",
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    out.headers_mut().insert(
+        "cache-control",
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    out.headers_mut().insert(
+        "x-accel-buffering",
+        axum::http::HeaderValue::from_static("no"),
+    );
+    out
+}
+
 const DEFAULT_GATEWAY_PROXY_MAX_BODY_BYTES: usize = 0;
 const ENV_GATEWAY_PROXY_MAX_BODY_BYTES: &str = "CODEXMANAGER_GATEWAY_PROXY_MAX_BODY_BYTES";
 

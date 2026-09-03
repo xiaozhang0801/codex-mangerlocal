@@ -84,15 +84,6 @@ CodexManager — локальный desktop + service-process менеджер �
 
 Другие участники поддержки: [Wonderdch](https://github.com/Wonderdch), [suxinwl](https://github.com/suxinwl), [Hermit](https://github.com/HermitChen), [Suifeng023](https://github.com/Suifeng023), [HK-hub](https://github.com/HK-hub)
 
-## Экосистема и связка
-
-### OpenCowork
-
-- Репозиторий: [AIDotNet/OpenCowork](https://github.com/AIDotNet/OpenCowork)
-- Рекомендуемая связка: используйте OpenCowork для локальных файловых операций, multi-agent выполнения, интеграции с рабочими мессенджерами и desktop-автоматизации, а CodexManager оставьте для управления Codex-аккаунтами, учета usage, platform key и локального gateway entry point.
-- Лучше всего подходит: командам, которые хотят разделить "рабочее пространство выполнения / офисную интеграцию" и "управление пулом аккаунтов / вход в gateway".
-- Коротко: **OpenCowork больше про выполнение в рабочей среде, а CodexManager — про управление и gateway.**
-
 ## Быстрая навигация
 | Что вам нужно сделать | Какой документ открыть |
 | --- | --- |

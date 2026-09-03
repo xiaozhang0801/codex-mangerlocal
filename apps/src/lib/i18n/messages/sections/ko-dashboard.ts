@@ -88,6 +88,7 @@ export const KO_DASHBOARD_MESSAGES: MessageCatalog = {
   管理员用量分析暂不可用: "관리자 사용량 분석을 일시적으로 사용할 수 없습니다",
   管理员用量分析读取失败: "관리자 사용량 분석을 불러오지 못했습니다",
   "缓存 / 推理": "캐시 / 추론",
+  缓存命中率: "캐시 적중률",
   "聚合 API 今日消耗": "오늘 Aggregate API 사용량",
   "聚合 API 区间消耗": "기간 내 Aggregate API 사용량",
   自定义区间: "사용자 지정 기간",

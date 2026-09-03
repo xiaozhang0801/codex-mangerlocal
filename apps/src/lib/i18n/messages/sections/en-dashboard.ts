@@ -90,6 +90,7 @@ export const EN_DASHBOARD_MESSAGES: MessageCatalog = {
   管理员用量分析暂不可用: "Admin usage analytics is temporarily unavailable",
   管理员用量分析读取失败: "Failed to load admin usage analytics",
   "缓存 / 推理": "Cached / reasoning",
+  缓存命中率: "Cache hit rate",
   "聚合 API 今日消耗": "Aggregate API usage today",
   "聚合 API 区间消耗": "Aggregate API usage in range",
   自定义区间: "Custom range",

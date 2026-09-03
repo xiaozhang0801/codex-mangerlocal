@@ -169,19 +169,12 @@ pub(super) fn try_openai_fallback(
         incoming_headers.client_request_id(),
         incoming_headers.turn_state(),
         incoming_headers.conversation_id(),
-        prompt_cache_key.as_deref(),
     );
 
     let account_id = account
         .chatgpt_account_id
         .as_deref()
         .or_else(|| account.workspace_id.as_deref());
-    super::session_affinity::log_thread_anchor_conflict(
-        request_path,
-        account_id,
-        incoming_headers.conversation_id(),
-        prompt_cache_key.as_deref(),
-    );
     super::session_affinity::log_outgoing_session_affinity(
         request_path,
         account_id,
@@ -242,6 +235,7 @@ pub(super) fn try_openai_fallback(
         };
         super::upstream::header_profile::build_codex_upstream_headers(header_input)
     };
+    super::upstream::header_profile::apply_codex_target_accept_header(&mut upstream_headers, &url);
     if should_force_connection_close(&url) {
         force_connection_close(&mut upstream_headers);
     }

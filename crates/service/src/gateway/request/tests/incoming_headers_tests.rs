@@ -174,6 +174,14 @@ fn codex_headers_are_captured_from_http_headers() {
         axum::http::HeaderValue::from_static("true"),
     );
     headers.insert(
+        "x-openai-actor-authorization",
+        axum::http::HeaderValue::from_static("local-image-extension"),
+    );
+    headers.insert(
+        "x-codex-image-turn-id",
+        axum::http::HeaderValue::from_static("turn-image-123"),
+    );
+    headers.insert(
         "x-responsesapi-include-timing-metrics",
         axum::http::HeaderValue::from_static("true"),
     );
@@ -196,13 +204,18 @@ fn codex_headers_are_captured_from_http_headers() {
     assert_eq!(snapshot.responsesapi_include_timing_metrics(), Some("true"));
     assert_eq!(snapshot.codex_inference_call_id(), Some("call_123"));
     assert_eq!(snapshot.oai_attestation(), Some("attest_123"));
-    assert_eq!(
-        snapshot.passthrough_codex_headers(),
-        &[(
-            "x-openai-internal-codex-responses-lite".to_string(),
-            "true".to_string()
-        )]
-    );
+    let passthrough = snapshot.passthrough_codex_headers();
+    assert!(passthrough.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("x-openai-internal-codex-responses-lite") && value == "true"
+    }));
+    assert!(passthrough.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("x-openai-actor-authorization")
+            && value == "local-image-extension"
+    }));
+    assert!(passthrough.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("x-codex-image-turn-id") && value == "turn-image-123"
+    }));
+    assert!(snapshot.has_codex_image_turn_id());
 }
 
 #[test]

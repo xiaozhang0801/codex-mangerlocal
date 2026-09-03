@@ -1,7 +1,9 @@
 use super::{
-    apply_candidate_rotation, effective_thread_anchor, prepare_conversation_routing,
+    apply_candidate_rotation, cache_affinity_route_id, claim_initial_conversation_binding,
+    effective_thread_anchor, prepare_conversation_routing,
     prepare_conversation_routing_with_source, record_conversation_binding_terminal_response,
-    resolve_attempt_thread, CandidateRotationSource, RouteConversationSource,
+    resolve_attempt_thread, CacheAffinityKeySource, CandidateRotationSource, InitialBindingClaim,
+    RouteConversationSource,
 };
 use codexmanager_core::storage::{Account, ConversationBinding, Storage, Token};
 use std::collections::HashMap;
@@ -237,7 +239,7 @@ fn prompt_cache_route_binding_rotates_bound_account_first() {
 }
 
 #[test]
-fn prompt_cache_route_binding_does_not_rebind_after_selected_binding_failover_success() {
+fn prompt_cache_route_binding_rebinds_after_selected_binding_failover_success() {
     let storage = Storage::open_in_memory().expect("open in memory");
     storage.init().expect("init schema");
     let mut binding = sample_binding("acc-1");
@@ -273,9 +275,96 @@ fn prompt_cache_route_binding_does_not_rebind_after_selected_binding_failover_su
         .get_conversation_binding("key-hash-1", "pck:v1:abcdef")
         .expect("load binding")
         .expect("binding exists");
-    assert_eq!(actual.account_id, "acc-1");
+    assert_eq!(actual.account_id, "acc-2");
     assert_eq!(actual.thread_anchor, "pck:v1:abcdef");
-    assert_eq!(actual.thread_epoch, 1);
+    assert_eq!(actual.thread_epoch, 2);
+    assert_eq!(
+        actual.last_switch_reason.as_deref(),
+        Some("automatic_account_switch")
+    );
+}
+
+#[test]
+fn concurrent_cold_start_claims_converge_on_first_account() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    let mut first_candidates = vec![
+        (sample_account("acc-1", 0), sample_token("acc-1")),
+        (sample_account("acc-2", 1), sample_token("acc-2")),
+    ];
+    let mut first_routing = prepare_conversation_routing_with_source(
+        "key-hash-1",
+        Some("pck:v2:shared"),
+        None,
+        &mut first_candidates,
+        RouteConversationSource::PromptCacheKey,
+    )
+    .expect("first routing");
+    let first_claim = claim_initial_conversation_binding(
+        &storage,
+        Some(&mut first_routing),
+        &mut first_candidates,
+        Some("gpt-5.4"),
+    )
+    .expect("first claim");
+    assert_eq!(first_claim, InitialBindingClaim::Created);
+    assert_eq!(first_candidates[0].0.id, "acc-1");
+
+    // Simulate a concurrent request that read before the first INSERT became
+    // visible and independently selected the other account.
+    let mut second_candidates = vec![
+        (sample_account("acc-2", 0), sample_token("acc-2")),
+        (sample_account("acc-1", 1), sample_token("acc-1")),
+    ];
+    let mut second_routing = prepare_conversation_routing_with_source(
+        "key-hash-1",
+        Some("pck:v2:shared"),
+        None,
+        &mut second_candidates,
+        RouteConversationSource::PromptCacheKey,
+    )
+    .expect("second routing");
+    let second_claim = claim_initial_conversation_binding(
+        &storage,
+        Some(&mut second_routing),
+        &mut second_candidates,
+        Some("gpt-5.4"),
+    )
+    .expect("second claim");
+    assert_eq!(second_claim, InitialBindingClaim::Joined);
+    assert_eq!(second_candidates[0].0.id, "acc-1");
+    assert!(second_routing.binding_selected);
+}
+
+#[test]
+fn cache_affinity_routes_partition_model_and_key_source() {
+    let pck_model_a = cache_affinity_route_id(
+        "key-hash-1",
+        "openai_compat",
+        Some("gpt-5.4"),
+        CacheAffinityKeySource::PromptCacheKey,
+        "root-session",
+    );
+    let pck_model_b = cache_affinity_route_id(
+        "key-hash-1",
+        "openai_compat",
+        Some("gpt-5.5"),
+        CacheAffinityKeySource::PromptCacheKey,
+        "root-session",
+    );
+    let session_model_a = cache_affinity_route_id(
+        "key-hash-1",
+        "openai_compat",
+        Some("gpt-5.4"),
+        CacheAffinityKeySource::SessionId,
+        "root-session",
+    );
+
+    assert_ne!(pck_model_a, pck_model_b);
+    assert_ne!(pck_model_a, session_model_a);
+    assert!(pck_model_a.starts_with("pck:v2:"));
+    assert!(session_model_a.starts_with("sid:v2:"));
 }
 
 #[test]

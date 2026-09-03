@@ -120,6 +120,30 @@ fn conversation_binding_upsert_rebinds_existing_pair() {
     assert_eq!(loaded.updated_at, 300);
 }
 
+#[test]
+fn conversation_binding_claim_is_first_writer_wins() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+
+    let first = sample_binding();
+    let (claimed, inserted) = storage
+        .claim_conversation_binding(&first)
+        .expect("claim first binding");
+    assert!(inserted);
+    assert_eq!(claimed.account_id, "acc-1");
+
+    let mut contender = first.clone();
+    contender.account_id = "acc-2".to_string();
+    contender.updated_at = 200;
+    contender.last_used_at = 200;
+    let (winner, inserted) = storage
+        .claim_conversation_binding(&contender)
+        .expect("join existing claim");
+    assert!(!inserted);
+    assert_eq!(winner.account_id, "acc-1");
+    assert_eq!(winner.updated_at, 100);
+}
+
 /// 函数 `conversation_binding_delete_helpers_remove_rows`
 ///
 /// 作者: gaohongshun

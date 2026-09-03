@@ -24,6 +24,7 @@ test("Codex onboarding routes configuration through Platform Mode", () => {
   assert.match(source, /直接连接 OpenAI/);
   assert.match(source, /通过 CodexManager/);
   assert.match(platformModeState, /codexProfileClient\.applyGateway\(\{/);
+  assert.match(platformModeState, /supportsWebsockets/);
 });
 
 test("Codex onboarding no longer publishes hand-written profile templates", () => {

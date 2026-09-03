@@ -120,6 +120,9 @@ export function usePlatformModePageState(
   const [selectedAccountIdDraft, setSelectedAccountIdDraft] = useState<string | null>(null);
   const [selectedApiKeyIdDraft, setSelectedApiKeyIdDraft] = useState<string | null>(null);
   const [gatewayBaseUrlDraft, setGatewayBaseUrlDraft] = useState<string | null>(null);
+  const [supportsWebsocketsDraft, setSupportsWebsocketsDraft] = useState<boolean | null>(
+    null,
+  );
   const reloadAfterSwitch = useSyncExternalStore(
     subscribeToReloadAfterSwitchPreference,
     getReloadAfterSwitchPreference,
@@ -183,6 +186,8 @@ export function usePlatformModePageState(
   );
   const gatewayBaseUrl =
     gatewayBaseUrlDraft ?? status?.gatewayBaseUrl ?? defaultGatewayBaseUrl;
+  const supportsWebsockets =
+    supportsWebsocketsDraft ?? status?.supportsWebsockets ?? false;
   const isDirectActive = status?.mode === "direct_account";
   const isGatewayActive = status?.mode === "gateway";
   const activeAccountValue = status?.selectedAccountId
@@ -271,6 +276,7 @@ export function usePlatformModePageState(
         apiKeyId: selectedApiKeyId,
         codexHome: codexHomeInput,
         baseUrl: gatewayBaseUrl,
+        supportsWebsockets,
         reloadAfterSwitch,
       }),
     onSuccess: async (nextStatus) => {
@@ -356,6 +362,7 @@ export function usePlatformModePageState(
     selectedAccountId,
     selectedApiKeyId,
     gatewayBaseUrl,
+    supportsWebsockets,
     reloadAfterSwitch,
     defaultGatewayBaseUrl,
     isDirectActive,
@@ -366,6 +373,7 @@ export function usePlatformModePageState(
     setSelectedAccountIdDraft,
     setSelectedApiKeyIdDraft,
     setGatewayBaseUrlDraft,
+    setSupportsWebsocketsDraft,
     setReloadAfterSwitch,
     refreshAll,
     saveConfigMutation,

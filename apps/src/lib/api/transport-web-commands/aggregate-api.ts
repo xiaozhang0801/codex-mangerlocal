@@ -9,5 +9,7 @@ export function createAggregateApiWebCommands(): Record<string, WebCommandDescri
     service_aggregate_api_read_secret: { rpcMethod: "aggregateApi/readSecret" },
     service_aggregate_api_test_connection: { rpcMethod: "aggregateApi/testConnection" },
     service_aggregate_api_refresh_balance: { rpcMethod: "aggregateApi/refreshBalance" },
+    service_aggregate_api_fetch_models: { rpcMethod: "aggregateApi/fetchModels" },
+    service_aggregate_api_associate_models: { rpcMethod: "aggregateApi/associateModels" },
   };
 }

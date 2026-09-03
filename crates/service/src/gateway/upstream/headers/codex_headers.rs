@@ -7,6 +7,8 @@ const X_CODEX_INFERENCE_CALL_ID_HEADER_NAME: &str = "x-codex-inference-call-id";
 const X_OAI_ATTESTATION_HEADER_NAME: &str = "x-oai-attestation";
 const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME: &str =
     "x-openai-internal-codex-responses-lite";
+const X_OPENAI_ACTOR_AUTHORIZATION_HEADER_NAME: &str = "x-openai-actor-authorization";
+const X_CODEX_IMAGE_TURN_ID_HEADER_NAME: &str = "x-codex-image-turn-id";
 
 fn anchor_fingerprint_or_dash(value: Option<&str>) -> String {
     value
@@ -18,6 +20,26 @@ fn anchor_fingerprint_or_dash(value: Option<&str>) -> String {
 
 fn normalize_non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn is_codex_images_target(target_url: &str) -> bool {
+    let path = target_url
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(target_url)
+        .trim_end_matches('/');
+    path.ends_with("/images/generations") || path.ends_with("/images/edits")
+}
+
+pub(crate) fn apply_codex_target_accept_header(
+    headers: &mut Vec<(String, String)>,
+    target_url: &str,
+) {
+    if !is_codex_images_target(target_url) {
+        return;
+    }
+    headers.retain(|(name, _)| !name.eq_ignore_ascii_case("Accept"));
+    headers.push(("Accept".to_string(), "application/json".to_string()));
 }
 
 fn looks_like_codex_identity(value: &str) -> bool {
@@ -438,7 +460,12 @@ fn append_passthrough_codex_headers(
     _enabled: bool,
 ) {
     for (name, value) in passthrough_headers {
-        if !name.eq_ignore_ascii_case(X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME)
+        if crate::gateway::is_codexmanager_image_extension_actor_authorization(name, value) {
+            continue;
+        }
+        if !(name.eq_ignore_ascii_case(X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME)
+            || name.eq_ignore_ascii_case(X_OPENAI_ACTOR_AUTHORIZATION_HEADER_NAME)
+            || name.eq_ignore_ascii_case(X_CODEX_IMAGE_TURN_ID_HEADER_NAME))
             || headers
                 .iter()
                 .any(|(existing, _)| existing.eq_ignore_ascii_case(name))

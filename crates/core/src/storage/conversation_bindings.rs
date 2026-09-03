@@ -153,6 +153,52 @@ impl Storage {
         Ok(())
     }
 
+    /// Atomically claims an account for a previously unseen conversation or
+    /// cache-affinity key. The first writer wins; later concurrent callers get
+    /// the already persisted winner without overwriting it.
+    pub fn claim_conversation_binding(
+        &self,
+        binding: &ConversationBinding,
+    ) -> rusqlite::Result<(ConversationBinding, bool)> {
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO conversation_bindings (
+                platform_key_hash,
+                conversation_id,
+                account_id,
+                thread_epoch,
+                thread_anchor,
+                status,
+                last_model,
+                last_switch_reason,
+                created_at,
+                updated_at,
+                last_used_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+             )",
+            params![
+                &binding.platform_key_hash,
+                &binding.conversation_id,
+                &binding.account_id,
+                binding.thread_epoch,
+                &binding.thread_anchor,
+                &binding.status,
+                &binding.last_model,
+                &binding.last_switch_reason,
+                binding.created_at,
+                binding.updated_at,
+                binding.last_used_at,
+            ],
+        )? > 0;
+        let claimed = self
+            .get_conversation_binding(
+                binding.platform_key_hash.as_str(),
+                binding.conversation_id.as_str(),
+            )?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+        Ok((claimed, inserted))
+    }
+
     /// 函数 `touch_conversation_binding`
     ///
     /// 作者: gaohongshun

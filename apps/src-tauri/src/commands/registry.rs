@@ -97,7 +97,6 @@ macro_rules! invoke_handler {
             crate::commands::settings::proxy_profiles::service_system_proxy_speed_test,
             crate::commands::settings::proxy_profiles::service_system_proxy_cloudflare_speed_test,
             crate::commands::settings::proxy_profiles::service_system_proxy_test_job,
-
             crate::commands::settings::proxy_profiles::service_system_proxy_cancel_test,
             crate::commands::settings::proxy_profiles::service_system_proxy_speed_test_history,
             crate::commands::settings::proxy_profiles::service_system_proxy_latency_test_history,
@@ -130,6 +129,8 @@ macro_rules! invoke_handler {
             crate::commands::account::remote::service_account_update,
             crate::commands::account::remote::service_account_update_sorts,
             crate::commands::account::remote::service_account_warmup,
+            crate::commands::account::remote::service_account_test_start,
+            crate::commands::account::remote::service_account_test_cancel,
             crate::commands::account::remote::service_account_proxy_get,
             crate::commands::account::remote::service_account_proxy_set,
             crate::commands::account::remote::service_account_proxy_clear,
@@ -138,7 +139,6 @@ macro_rules! invoke_handler {
             crate::commands::account::remote::service_account_proxy_speed_test,
             crate::commands::account::remote::service_account_proxy_cloudflare_speed_test,
             crate::commands::account::remote::service_account_proxy_test_job,
-
             crate::commands::account::remote::service_account_proxy_cancel_test,
             crate::commands::account::remote::service_account_proxy_speed_test_history,
             crate::commands::account::remote::service_account_proxy_latency_test_history,
@@ -180,6 +180,8 @@ macro_rules! invoke_handler {
             crate::commands::aggregate_api::service_aggregate_api_delete,
             crate::commands::aggregate_api::service_aggregate_api_test_connection,
             crate::commands::aggregate_api::service_aggregate_api_refresh_balance,
+            crate::commands::aggregate_api::service_aggregate_api_fetch_models,
+            crate::commands::aggregate_api::service_aggregate_api_associate_models,
             crate::commands::apikey::service_apikey_list,
             crate::commands::apikey::service_apikey_read_secret,
             crate::commands::apikey::service_managed_model_list_v2,

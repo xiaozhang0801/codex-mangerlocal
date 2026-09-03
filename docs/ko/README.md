@@ -85,15 +85,6 @@ CodexManager를 후원해 주신 다음 스폰서께 감사드립니다.
 
 기타 후원자: [Wonderdch](https://github.com/Wonderdch), [suxinwl](https://github.com/suxinwl), [Hermit](https://github.com/HermitChen), [Suifeng023](https://github.com/Suifeng023), [HK-hub](https://github.com/HK-hub)
 
-## 생태계 조합
-
-### OpenCowork
-
-- 저장소: [AIDotNet/OpenCowork](https://github.com/AIDotNet/OpenCowork)
-- 추천 조합: OpenCowork 는 로컬 파일 작업, 멀티 Agent 실행, 메시지 플랫폼 연동, 데스크톱 자동화를 맡기고, CodexManager 는 Codex 계정 관리, 사용량 추적, 플랫폼 Key, 로컬 게이트웨이 진입점을 담당하게 구성하는 방식이 잘 맞습니다.
-- 적합한 장면: "실행 작업 공간 / 사무 협업"과 "계정 풀 관리 / 게이트웨이 입구"를 분리하고 싶을 때 두 프로젝트가 서로를 잘 보완합니다.
-- 한 문장으로 정리하면: **OpenCowork 는 실행과 현장 작업에 가깝고, CodexManager 는 관리와 게이트웨이에 가깝습니다.**
-
 ## 빠른 탐색
 | 필요한 작업 | 먼저 볼 문서 |
 | --- | --- |

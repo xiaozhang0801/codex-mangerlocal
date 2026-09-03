@@ -164,6 +164,8 @@ export default function PlatformModePage() {
           selectedApiKeyId={state.selectedApiKeyId}
           onSelectApiKey={(value) => state.setSelectedApiKeyIdDraft(String(value || ""))}
           gatewayBaseUrl={state.gatewayBaseUrl}
+          supportsWebsockets={state.supportsWebsockets}
+          onSupportsWebsocketsChange={state.setSupportsWebsocketsDraft}
           onApply={() => state.applyGatewayMutation.mutate()}
           isPending={state.applyGatewayMutation.isPending}
           selectedApiKey={selectedApiKey}

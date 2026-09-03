@@ -53,6 +53,8 @@ test("Codex 接入方式页面展示当前状态和切换影响", async () => {
   assert.match(source, /当前 Codex 接入/);
   assert.match(source, /直接连接 OpenAI/);
   assert.match(source, /通过 CodexManager/);
+  assert.match(source, /启用 Responses WebSocket/);
+  assert.match(source, /onSupportsWebsocketsChange/);
   assert.match(source, /OpenAI 账号池/);
   assert.match(source, /聚合 API/);
   assert.match(source, /混合路由/);

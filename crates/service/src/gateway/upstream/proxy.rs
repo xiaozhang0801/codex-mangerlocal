@@ -8,6 +8,7 @@ use super::super::local_validation::LocalValidationResult;
 use super::executor::{
     resolve_gateway_upstream_execution_plan, GatewayUpstreamExecutorKind, GatewayUpstreamRouteKind,
 };
+use super::protocol::aggregate_api::{AggregateAttemptOutcome, AggregateFailurePolicy};
 use super::proxy_pipeline::candidate_executor::{
     execute_candidate_sequence, CandidateExecutionResult, CandidateExecutorParams,
 };
@@ -102,6 +103,10 @@ fn should_try_provider_executor_aggregate_route(
                     && !has_enabled_default_account_pool_route(model)
             })
         }
+        // 聚合优先混合轮转：只要聚合路由可用就先走聚合，聚合耗尽后回落账号池
+        GatewayUpstreamRouteKind::HybridAggregateFirst => {
+            configured_model.is_none_or(has_enabled_aggregate_api_route)
+        }
         GatewayUpstreamRouteKind::AccountRotation => false,
     }
 }
@@ -113,6 +118,30 @@ fn is_hybrid_account_first_route(
         execution_plan.route_kind,
         GatewayUpstreamRouteKind::HybridAccountFirst
     )
+}
+
+fn is_hybrid_aggregate_first_route(
+    execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+) -> bool {
+    matches!(
+        execution_plan.route_kind,
+        GatewayUpstreamRouteKind::HybridAggregateFirst
+    )
+}
+
+fn should_fallback_to_account_after_aggregate_exhaustion(
+    execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+    configured_model: Option<&ManagedModelV2>,
+) -> bool {
+    is_hybrid_aggregate_first_route(execution_plan)
+        && configured_model.is_none_or(has_enabled_default_account_pool_route)
+}
+
+/// 混合轮转（无论账号优先还是聚合优先）直连聚合时使用透传路径与透传请求体。
+fn is_hybrid_passthrough_route(
+    execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+) -> bool {
+    is_hybrid_account_first_route(execution_plan) || is_hybrid_aggregate_first_route(execution_plan)
 }
 
 fn respond_when_account_candidates_empty(
@@ -154,6 +183,7 @@ fn route_kind_label(value: GatewayUpstreamRouteKind) -> &'static str {
         GatewayUpstreamRouteKind::AccountRotation => "account_rotation",
         GatewayUpstreamRouteKind::AggregateApi => "aggregate_api",
         GatewayUpstreamRouteKind::HybridAccountFirst => "hybrid_account_first",
+        GatewayUpstreamRouteKind::HybridAggregateFirst => "hybrid_aggregate_first",
     }
 }
 
@@ -214,6 +244,10 @@ fn validate_model_route(
         }
         GatewayUpstreamRouteKind::AggregateApi => has_enabled_aggregate_api_route(&managed_model),
         GatewayUpstreamRouteKind::HybridAccountFirst => {
+            has_enabled_default_account_pool_route(&managed_model)
+                || has_enabled_aggregate_api_route(&managed_model)
+        }
+        GatewayUpstreamRouteKind::HybridAggregateFirst => {
             has_enabled_default_account_pool_route(&managed_model)
                 || has_enabled_aggregate_api_route(&managed_model)
         }
@@ -566,7 +600,8 @@ fn proxy_with_aggregate_candidates(
     request_deadline: Option<Instant>,
     started_at: Instant,
     aggregate_api_candidates: Vec<codexmanager_core::storage::AggregateApi>,
-) -> Result<(), String> {
+    failure_policy: AggregateFailurePolicy,
+) -> Result<AggregateAttemptOutcome, String> {
     let mut aggregate_api_candidates = aggregate_api_candidates;
     super::protocol::aggregate_api::apply_gateway_route_strategy_to_aggregate_candidates(
         &mut aggregate_api_candidates,
@@ -612,6 +647,7 @@ fn proxy_with_aggregate_candidates(
             aggregate_api_candidates,
             request_deadline,
             started_at,
+            failure_policy,
         },
     )
 }
@@ -855,11 +891,23 @@ pub(in super::super) fn proxy_validated_request(
         route_kind_label(execution_plan.route_kind),
     );
 
+    // 聚合优先混合轮转：聚合路径失败且请求未被消费时，需要把请求交还给账号路径继续，
+    // 因此这里使用可变绑定。
+    let mut request = request;
     if should_try_provider_executor_aggregate_route(execution_plan, configured_model.as_ref()) {
-        let (aggregate_path, aggregate_body) = if is_hybrid_account_first_route(execution_plan) {
+        let (aggregate_path, aggregate_body) = if is_hybrid_passthrough_route(execution_plan) {
             (passthrough_path.as_str(), &passthrough_body)
         } else {
             (path.as_str(), &body)
+        };
+        let fallback_to_account = should_fallback_to_account_after_aggregate_exhaustion(
+            execution_plan,
+            configured_model.as_ref(),
+        );
+        let aggregate_failure_policy = if fallback_to_account {
+            AggregateFailurePolicy::ReleaseRequest
+        } else {
+            AggregateFailurePolicy::RespondError
         };
         match resolve_aggregate_candidates_for_route(
             &storage,
@@ -868,7 +916,7 @@ pub(in super::super) fn proxy_validated_request(
             model_for_log.as_deref(),
         ) {
             Ok(aggregate_api_candidates) => {
-                return proxy_with_aggregate_candidates(
+                match proxy_with_aggregate_candidates(
                     request,
                     &storage,
                     trace_id.as_str(),
@@ -894,32 +942,57 @@ pub(in super::super) fn proxy_validated_request(
                     request_deadline,
                     started_at,
                     aggregate_api_candidates,
-                );
+                    aggregate_failure_policy,
+                ) {
+                    Ok(AggregateAttemptOutcome::Responded) => return Ok(()),
+                    Ok(AggregateAttemptOutcome::RequestReleased {
+                        request: released_request,
+                        error,
+                    }) => {
+                        // 聚合优先混合轮转：聚合候选全部失败，回落账号池。
+                        log::debug!(
+                            "event=gateway_hybrid_aggregate_first_fallback_to_account trace_id={} err={}",
+                            trace_id,
+                            error
+                        );
+                        request = released_request;
+                    }
+                    Err(err) => return Err(err),
+                }
             }
             Err(err) => {
-                return respond_aggregate_route_error(
-                    request,
-                    &storage,
-                    trace_id.as_str(),
-                    key_id.as_str(),
-                    original_path.as_str(),
-                    aggregate_path,
-                    request_method.as_str(),
-                    super::super::ResponseAdapter::Passthrough,
-                    service_tier_for_log.as_deref(),
-                    effective_service_tier_for_log.as_deref(),
-                    service_tier_source_for_log.as_deref(),
-                    gateway_mode_for_log.as_deref(),
-                    client_model_for_log.as_deref(),
-                    model_for_log.as_deref(),
-                    model_source_for_log.as_deref(),
-                    client_reasoning_for_log.as_deref(),
-                    reasoning_for_log.as_deref(),
-                    reasoning_source_for_log.as_deref(),
-                    client_ip.as_deref(),
-                    started_at,
-                    err,
-                );
+                if fallback_to_account {
+                    // 聚合优先混合轮转：聚合候选解析失败，回落账号池。
+                    log::debug!(
+                        "event=gateway_hybrid_aggregate_first_fallback_to_account trace_id={} err={}",
+                        trace_id,
+                        err
+                    );
+                } else {
+                    return respond_aggregate_route_error(
+                        request,
+                        &storage,
+                        trace_id.as_str(),
+                        key_id.as_str(),
+                        original_path.as_str(),
+                        aggregate_path,
+                        request_method.as_str(),
+                        super::super::ResponseAdapter::Passthrough,
+                        service_tier_for_log.as_deref(),
+                        effective_service_tier_for_log.as_deref(),
+                        service_tier_source_for_log.as_deref(),
+                        gateway_mode_for_log.as_deref(),
+                        client_model_for_log.as_deref(),
+                        model_for_log.as_deref(),
+                        model_source_for_log.as_deref(),
+                        client_reasoning_for_log.as_deref(),
+                        reasoning_for_log.as_deref(),
+                        reasoning_source_for_log.as_deref(),
+                        client_ip.as_deref(),
+                        started_at,
+                        err,
+                    );
+                }
             }
         }
     }
@@ -955,6 +1028,7 @@ pub(in super::super) fn proxy_validated_request(
                 model_for_log.as_deref(),
             ) {
                 Ok(aggregate_api_candidates) => {
+                    // 账号优先混合轮转的聚合兜底是最后一步：失败直接响应错误。
                     return proxy_with_aggregate_candidates(
                         request,
                         &storage,
@@ -981,7 +1055,9 @@ pub(in super::super) fn proxy_validated_request(
                         request_deadline,
                         started_at,
                         aggregate_api_candidates,
-                    );
+                        AggregateFailurePolicy::RespondError,
+                    )
+                    .map(|_| ());
                 }
                 Err(err) => {
                     return respond_hybrid_route_error(
@@ -1161,6 +1237,7 @@ pub(in super::super) fn proxy_validated_request(
             model_for_log.as_deref(),
         ) {
             Ok(aggregate_api_candidates) => {
+                // 账号优先混合轮转的聚合兜底是最后一步：失败直接响应错误。
                 return proxy_with_aggregate_candidates(
                     request,
                     &storage,
@@ -1187,7 +1264,9 @@ pub(in super::super) fn proxy_validated_request(
                     request_deadline,
                     started_at,
                     aggregate_api_candidates,
-                );
+                    AggregateFailurePolicy::RespondError,
+                )
+                .map(|_| ());
             }
             Err(err) => {
                 return respond_hybrid_route_error(

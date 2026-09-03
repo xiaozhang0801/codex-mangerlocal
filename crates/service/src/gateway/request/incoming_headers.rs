@@ -2,6 +2,8 @@ use tiny_http::Request;
 
 const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME: &str =
     "x-openai-internal-codex-responses-lite";
+const X_OPENAI_ACTOR_AUTHORIZATION_HEADER_NAME: &str = "x-openai-actor-authorization";
+const X_CODEX_IMAGE_TURN_ID_HEADER_NAME: &str = "x-codex-image-turn-id";
 
 #[derive(Clone, Default)]
 pub(crate) struct IncomingHeaderSnapshot {
@@ -663,6 +665,12 @@ impl IncomingHeaderSnapshot {
         self.passthrough_codex_headers.as_slice()
     }
 
+    pub(crate) fn has_codex_image_turn_id(&self) -> bool {
+        self.passthrough_codex_headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case(X_CODEX_IMAGE_TURN_ID_HEADER_NAME) && !value.trim().is_empty()
+        })
+    }
+
     /// 函数 `conversation_id`
     ///
     /// 作者: gaohongshun
@@ -724,10 +732,12 @@ impl IncomingHeaderSnapshot {
 }
 
 fn should_capture_passthrough_codex_header(name: &str) -> bool {
-    // Responses Lite changes the request and response wire shape, so the gateway
-    // must preserve this exact protocol-negotiation header. Other unknown headers
-    // remain blocked.
+    // These headers negotiate Codex-specific upstream capabilities. Other unknown
+    // headers remain blocked so account credentials and gateway policy stay owned
+    // by the service.
     name.eq_ignore_ascii_case(X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME)
+        || name.eq_ignore_ascii_case(X_OPENAI_ACTOR_AUTHORIZATION_HEADER_NAME)
+        || name.eq_ignore_ascii_case(X_CODEX_IMAGE_TURN_ID_HEADER_NAME)
 }
 
 fn remember_passthrough_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {

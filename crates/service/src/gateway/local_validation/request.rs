@@ -8,7 +8,6 @@ use bytes::Bytes;
 use codexmanager_core::storage::{ApiKey, ConversationBinding};
 use reqwest::Method;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use tiny_http::Request;
 
 use super::super::conversation_binding::RouteConversationSource;
@@ -61,6 +60,22 @@ fn resolve_effective_request_overrides(
         normalized_reasoning,
         normalized_service_tier,
     )
+}
+
+fn should_preserve_openai_images_request_fields(path: &str) -> bool {
+    is_openai_images_generations_path(path) || is_openai_images_edits_path(path)
+}
+
+fn resolve_effective_request_overrides_for_path(
+    api_key: &ApiKey,
+    path: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
+    if should_preserve_openai_images_request_fields(path) {
+        // A platform key's text-model, reasoning, and service-tier defaults are not valid Images
+        // API overrides. Codex's extension explicitly sends gpt-image-1.5 on this request.
+        return (None, None, None);
+    }
+    resolve_effective_request_overrides(api_key)
 }
 
 fn instruction_protocol_for_passthrough(
@@ -299,6 +314,17 @@ fn is_non_native_openai_responses_api_request(
     protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
         && normalized_path.starts_with("/v1/responses")
         && !native_codex_client
+}
+
+fn should_adapt_openai_images_request(
+    native_codex_client: bool,
+    incoming_headers: &super::super::IncomingHeaderSnapshot,
+) -> bool {
+    // Codex's image extension uses its own HTTP client. Unlike the main Responses client, that
+    // request is only guaranteed to carry x-codex-image-turn-id (plus the thread originator), so
+    // the general native-client detector can legitimately return false. The turn id is the
+    // extension's canonical request signal and must keep the standalone Images API path intact.
+    !native_codex_client && !incoming_headers.has_codex_image_turn_id()
 }
 
 fn is_compact_subagent_request(
@@ -1477,7 +1503,7 @@ fn resolve_reasoning_source_for_log(
 
 fn resolve_preferred_client_prompt_cache_key(
     protocol_type: &str,
-    incoming_headers: &super::super::IncomingHeaderSnapshot,
+    _incoming_headers: &super::super::IncomingHeaderSnapshot,
     initial_request_meta: &ParsedRequestMetadata,
     client_request_meta: &ParsedRequestMetadata,
 ) -> Option<String> {
@@ -1492,29 +1518,11 @@ fn resolve_preferred_client_prompt_cache_key(
             None
         }
     });
-    let Some(preferred) = preferred else {
-        return None;
-    };
-
-    if has_complete_native_thread_anchor(incoming_headers) {
-        // 中文注释：原生 Codex 已经提供稳定线程锚点时，prompt_cache_key 不能反客为主；
-        // 否则会和 conversation_id / 完整 session+turn-state 冲突，导致 resume 线程异常。
-        return None;
-    }
-
-    Some(preferred)
+    preferred
 }
 
 fn header_value_present(value: Option<&str>) -> bool {
     value.map(str::trim).is_some_and(|value| !value.is_empty())
-}
-
-fn has_complete_native_thread_anchor(
-    incoming_headers: &super::super::IncomingHeaderSnapshot,
-) -> bool {
-    header_value_present(incoming_headers.conversation_id())
-        || (header_value_present(incoming_headers.session_id())
-            && header_value_present(incoming_headers.turn_state()))
 }
 
 fn is_turn_state_only_anchor(incoming_headers: &super::super::IncomingHeaderSnapshot) -> bool {
@@ -1573,33 +1581,62 @@ fn normalized_prompt_cache_key_for_route<'a>(
         .filter(|value| !value.is_empty())
 }
 
-fn prompt_cache_route_id(
-    platform_key_hash: &str,
-    protocol_type: &str,
-    prompt_cache_key: &str,
-) -> String {
-    let digest = Sha256::digest(
-        format!(
-            "pck:v1\0{platform_key_hash}\0{protocol_type}\0{}",
-            prompt_cache_key.trim()
-        )
-        .as_bytes(),
-    );
-    format!(
-        "pck:v1:{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
-        digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]
-    )
-}
-
 fn resolve_route_conversation_id(
     protocol_type: &str,
     normalized_path: &str,
     platform_key_hash: &str,
+    model: Option<&str>,
     incoming_headers: &super::super::IncomingHeaderSnapshot,
     initial_request_meta: &ParsedRequestMetadata,
     client_request_meta: &ParsedRequestMetadata,
 ) -> Option<RouteConversationId> {
+    if prompt_cache_route_binding_enabled(protocol_type, normalized_path) {
+        if let Some(prompt_cache_key) =
+            normalized_prompt_cache_key_for_route(initial_request_meta, client_request_meta)
+        {
+            let source = if initial_request_meta.has_previous_response_id
+                || client_request_meta.has_previous_response_id
+            {
+                RouteConversationSource::PromptCacheKeyExistingOnly
+            } else {
+                RouteConversationSource::PromptCacheKey
+            };
+            return Some(RouteConversationId {
+                id: super::super::conversation_binding::cache_affinity_route_id(
+                    platform_key_hash,
+                    protocol_type,
+                    model,
+                    super::super::conversation_binding::CacheAffinityKeySource::PromptCacheKey,
+                    prompt_cache_key,
+                ),
+                source,
+            });
+        }
+        if let Some(session_id) = incoming_headers
+            .session_id()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let source = if initial_request_meta.has_previous_response_id
+                || client_request_meta.has_previous_response_id
+            {
+                RouteConversationSource::SessionAffinityExistingOnly
+            } else {
+                RouteConversationSource::SessionAffinity
+            };
+            return Some(RouteConversationId {
+                id: super::super::conversation_binding::cache_affinity_route_id(
+                    platform_key_hash,
+                    protocol_type,
+                    model,
+                    super::super::conversation_binding::CacheAffinityKeySource::SessionId,
+                    session_id,
+                ),
+                source,
+            });
+        }
+    }
+
     if let Some(conversation_id) = incoming_headers
         .conversation_id()
         .map(str::trim)
@@ -1609,28 +1646,6 @@ fn resolve_route_conversation_id(
             id: conversation_id.to_string(),
             source: RouteConversationSource::NativeConversation,
         });
-    }
-
-    if prompt_cache_route_binding_enabled(protocol_type, normalized_path) {
-        if let Some(prompt_cache_key) =
-            normalized_prompt_cache_key_for_route(initial_request_meta, client_request_meta)
-        {
-            if !header_value_present(incoming_headers.turn_state())
-                || !header_value_present(incoming_headers.session_id())
-            {
-                let source = if initial_request_meta.has_previous_response_id
-                    || client_request_meta.has_previous_response_id
-                {
-                    RouteConversationSource::PromptCacheKeyExistingOnly
-                } else {
-                    RouteConversationSource::PromptCacheKey
-                };
-                return Some(RouteConversationId {
-                    id: prompt_cache_route_id(platform_key_hash, protocol_type, prompt_cache_key),
-                    source,
-                });
-            }
-        }
     }
 
     if header_value_present(incoming_headers.turn_state()) {
@@ -1651,7 +1666,7 @@ fn conversation_binding_for_thread_anchor<'a>(
     route_conversation_source: Option<RouteConversationSource>,
     conversation_binding: Option<&'a ConversationBinding>,
 ) -> Option<&'a ConversationBinding> {
-    if route_conversation_source.is_some_and(|source| source.is_prompt_cache_key()) {
+    if route_conversation_source.is_some_and(|source| source.is_cache_affinity()) {
         None
     } else {
         conversation_binding
@@ -1671,7 +1686,7 @@ fn log_anchor_mode_diagnostic(
     let prompt_cache_key_present =
         normalized_prompt_cache_key_for_route(initial_request_meta, client_request_meta).is_some();
     let anchor_mode = if prompt_cache_key_present
-        && route_conversation_source.is_some_and(|source| source.is_prompt_cache_key())
+        && route_conversation_source.is_some_and(|source| source.is_cache_affinity())
     {
         "turn_state_only_prompt_cache_route"
     } else {
@@ -1784,8 +1799,9 @@ fn apply_passthrough_request_overrides(
     bool,
     Option<String>,
 ) {
+    let preserve_images_fields = should_preserve_openai_images_request_fields(path);
     let (default_effective_model, effective_reasoning, effective_service_tier) =
-        resolve_effective_request_overrides(api_key);
+        resolve_effective_request_overrides_for_path(api_key, path);
     let effective_model = model_override
         .map(str::to_string)
         .or(default_effective_model);
@@ -1805,10 +1821,16 @@ fn apply_passthrough_request_overrides(
         .unwrap_or_default();
     (
         rewritten_body,
-        request_meta.model.or(api_key.model_slug.clone()),
-        request_meta
-            .reasoning_effort
-            .or(api_key.reasoning_effort.clone()),
+        request_meta.model.or_else(|| {
+            (!preserve_images_fields)
+                .then(|| api_key.model_slug.clone())
+                .flatten()
+        }),
+        request_meta.reasoning_effort.or_else(|| {
+            (!preserve_images_fields)
+                .then(|| api_key.reasoning_effort.clone())
+                .flatten()
+        }),
         explicit_service_tier_for_log,
         request_meta.service_tier,
         request_meta.has_prompt_cache_key,
@@ -2110,7 +2132,7 @@ pub(super) fn build_local_validation_result(
     let (mut path, mut response_adapter, mut gemini_stream_output_mode, mut tool_name_restore_map) =
         if effective_protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
             && is_openai_images_generations_path(normalized_path.as_str())
-            && !native_codex_client
+            && should_adapt_openai_images_request(native_codex_client, &incoming_headers)
         {
             if !super::super::runtime_config::codex_image_generation_enabled() {
                 return Err(LocalValidationError::new(
@@ -2137,7 +2159,7 @@ pub(super) fn build_local_validation_result(
             )
         } else if effective_protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
             && is_openai_images_edits_path(normalized_path.as_str())
-            && !native_codex_client
+            && should_adapt_openai_images_request(native_codex_client, &incoming_headers)
         {
             if !super::super::runtime_config::codex_image_generation_enabled() {
                 return Err(LocalValidationError::new(
@@ -2227,8 +2249,9 @@ pub(super) fn build_local_validation_result(
     // 中文注释：下游调用方的 stream 语义必须来自原始客户端请求；
     // 否则协议适配（例如 Anthropic/Gemini 转 /responses 强制 stream=true）会污染响应模式判断。
     let client_request_meta = initial_request_meta.clone();
+    let preserve_images_fields = should_preserve_openai_images_request_fields(path.as_str());
     let (mut effective_model, effective_reasoning, effective_service_tier) =
-        resolve_effective_request_overrides(&api_key);
+        resolve_effective_request_overrides_for_path(&api_key, path.as_str());
     effective_model = resolve_compact_model_override_for_request(
         normalized_path.as_str(),
         &incoming_headers,
@@ -2262,6 +2285,7 @@ pub(super) fn build_local_validation_result(
         effective_protocol_type,
         logical_path.as_str(),
         api_key.key_hash.as_str(),
+        instruction_model,
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
@@ -2290,6 +2314,21 @@ pub(super) fn build_local_validation_result(
         local_conversation_id.as_deref(),
         binding_for_thread_anchor,
     );
+    let fallback_prompt_cache_key = if route_conversation_source.is_some_and(|source| {
+        matches!(
+            source,
+            RouteConversationSource::SessionAffinity
+                | RouteConversationSource::SessionAffinityExistingOnly
+        )
+    }) {
+        incoming_headers
+            .session_id()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    } else {
+        effective_thread_anchor.clone()
+    };
     // 中文注释：保留原始 local conversation_id 作为对外会话标识；
     // 线程世代只参与 prompt_cache_key 与路由绑定，不直接污染对外请求头。
     let incoming_headers =
@@ -2311,7 +2350,7 @@ pub(super) fn build_local_validation_result(
             preferred_prompt_cache_key.as_deref(),
             allow_codex_compat_rewrite,
         )
-    } else if effective_thread_anchor.is_some() {
+    } else if fallback_prompt_cache_key.is_some() {
         super::super::apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope(
             &path,
             body,
@@ -2319,7 +2358,7 @@ pub(super) fn build_local_validation_result(
             effective_reasoning.as_deref(),
             effective_service_tier.as_deref(),
             api_key.upstream_base_url.as_deref(),
-            effective_thread_anchor.as_deref(),
+            fallback_prompt_cache_key.as_deref(),
             allow_codex_compat_rewrite,
         )
     } else {
@@ -2334,8 +2373,6 @@ pub(super) fn build_local_validation_result(
             allow_codex_compat_rewrite,
         )
     };
-    body =
-        super::super::align_existing_prompt_cache_key_with_native_anchor(body, &incoming_headers);
     let (next_body, fast_policy_applied) = apply_model_fast_policy(
         &storage,
         instruction_model,
@@ -2359,16 +2396,22 @@ pub(super) fn build_local_validation_result(
     let request_meta = normalized_body.metadata;
     body = normalized_body.body;
     let client_model_for_log = client_request_meta.model.clone();
-    let model_for_log = request_meta.model.or(api_key.model_slug.clone());
+    let model_for_log = request_meta.model.or_else(|| {
+        (!preserve_images_fields)
+            .then(|| api_key.model_slug.clone())
+            .flatten()
+    });
     let model_source_for_log = resolve_override_source_for_log(
         client_model_for_log.as_deref(),
         model_for_log.as_deref(),
         api_key.model_slug.as_deref(),
     );
     let client_reasoning_for_log = client_request_meta.reasoning_effort.clone();
-    let reasoning_for_log = request_meta
-        .reasoning_effort
-        .or(api_key.reasoning_effort.clone());
+    let reasoning_for_log = request_meta.reasoning_effort.or_else(|| {
+        (!preserve_images_fields)
+            .then(|| api_key.reasoning_effort.clone())
+            .flatten()
+    });
     let reasoning_source_for_log = resolve_reasoning_source_for_log(
         client_reasoning_for_log.as_deref(),
         reasoning_for_log.as_deref(),

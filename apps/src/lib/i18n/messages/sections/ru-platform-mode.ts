@@ -95,6 +95,9 @@ export const RU_PLATFORM_MODE_MESSAGES: MessageCatalog = {
   "去创建平台密钥": "Создать платформенный ключ",
   "选择平台密钥": "Выберите платформенный ключ",
   "将使用 gateway base_url": "Будет использован gateway base_url",
+  "启用 Responses WebSocket": "Включить Responses WebSocket",
+  "关闭时 Codex 使用普通 Responses HTTP 流；开启时使用 Responses WebSocket。仅在当前平台密钥支持时开启。":
+    "Когда параметр выключен, Codex использует обычный HTTP-поток Responses; когда включен — Responses WebSocket. Включайте его только при поддержке выбранным платформенным ключом.",
   "重新应用本地网关": "Повторно применить локальный шлюз",
   "切换到本地网关": "Переключить на локальный шлюз",
   "保存失败": "Не удалось сохранить",

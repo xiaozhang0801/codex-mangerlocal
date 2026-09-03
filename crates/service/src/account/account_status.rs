@@ -25,10 +25,11 @@ pub(crate) struct GatewayErrorFollowUp {
     pub should_mark_default_cooldown: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AccountStatusContext {
     pub status: String,
     pub reason: Option<String>,
+    pub updated_at: Option<i64>,
 }
 
 /// 函数 `latest_status_reason`
@@ -54,13 +55,14 @@ pub(crate) fn load_account_status_context(
     storage: &Storage,
     account_id: &str,
 ) -> AccountStatusContext {
+    let account = storage.find_account_by_id(account_id).ok().flatten();
     AccountStatusContext {
-        status: storage
-            .find_account_status_by_id(account_id)
-            .ok()
-            .flatten()
+        status: account
+            .as_ref()
+            .map(|account| account.status.clone())
             .unwrap_or_default(),
         reason: latest_status_reason(storage, account_id),
+        updated_at: account.map(|account| account.updated_at),
     }
 }
 
@@ -471,6 +473,131 @@ pub(crate) fn mark_account_unavailable_for_refresh_token_error(
         }
         _ => false,
     }
+}
+
+/// 函数 `mark_account_unavailable_for_test_auth_status`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-08-26
+///
+/// # 参数
+/// - storage: 参数 storage
+/// - account_id: 参数 account_id
+/// - status_code: 参数 status_code
+///
+/// # 返回
+/// 返回是否已变更账号状态
+///
+/// 测试账号在真实上游请求中遇到 401/403 时，将账号标记为不可用。
+pub(crate) fn mark_account_unavailable_for_test_auth_status(
+    storage: &Storage,
+    account_id: &str,
+    status_code: u16,
+    context: &AccountStatusContext,
+) -> bool {
+    set_account_status_after_test_if_context_matches(
+        storage,
+        account_id,
+        "unavailable",
+        &format!("test_http_{status_code}"),
+        context,
+    )
+}
+
+/// 函数 `mark_account_limited_for_test_rate_limit`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-08-26
+///
+/// # 参数
+/// - storage: 参数 storage
+/// - account_id: 参数 account_id
+///
+/// # 返回
+/// 返回是否已变更账号状态
+///
+/// 测试账号在真实上游请求中遇到 429 时，将账号标记为限流。
+pub(crate) fn mark_account_limited_for_test_rate_limit(
+    storage: &Storage,
+    account_id: &str,
+    context: &AccountStatusContext,
+) -> bool {
+    set_account_status_after_test_if_context_matches(
+        storage,
+        account_id,
+        "limited",
+        "test_rate_limited",
+        context,
+    )
+}
+
+fn set_account_status_after_test_if_context_matches(
+    storage: &Storage,
+    account_id: &str,
+    status: &str,
+    reason: &str,
+    context: &AccountStatusContext,
+) -> bool {
+    let normalized = context.status.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "disabled" | "inactive" | "banned") {
+        return false;
+    }
+    if load_account_status_context(storage, account_id) != *context {
+        return false;
+    }
+    let Some(expected_updated_at) = context.updated_at else {
+        return false;
+    };
+    let changed = storage
+        .update_account_status_if_context_matches(
+            account_id,
+            &context.status,
+            expected_updated_at,
+            status,
+        )
+        .unwrap_or(false);
+    if !changed {
+        return false;
+    }
+    crate::gateway::invalidate_candidate_cache();
+    let _ = storage.insert_event(&Event {
+        account_id: Some(account_id.to_string()),
+        event_type: "account_status_update".to_string(),
+        message: format!("status={status} reason={reason}"),
+        created_at: now_ts(),
+    });
+    true
+}
+
+/// 函数 `restore_account_active_after_test`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-08-26
+///
+/// # 参数
+/// - storage: 参数 storage
+/// - account_id: 参数 account_id
+///
+/// # 返回
+/// 返回是否已变更账号状态
+///
+/// 测试成功后，仅当账号从测试开始至今仍处于同一个自动失败状态
+///（unavailable/limited）时恢复为 active；banned 与手动停用状态始终保留。
+pub(crate) fn restore_account_active_after_test(
+    storage: &Storage,
+    account_id: &str,
+    context: &AccountStatusContext,
+) -> bool {
+    let normalized = context.status.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "unavailable" | "limited") {
+        return false;
+    }
+    set_account_status_after_test_if_context_matches(
+        storage, account_id, "active", "test_ok", context,
+    )
 }
 
 #[cfg(test)]

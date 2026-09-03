@@ -293,7 +293,7 @@ pub(crate) fn handle_request_with_actor(req: JsonRpcRequest, actor: RpcActor) ->
     if let Some(resp) = account_manager::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
-    if let Some(resp) = aggregate_api::try_handle(&req) {
+    if let Some(resp) = aggregate_api::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = apikey::try_handle(&req, &actor) {

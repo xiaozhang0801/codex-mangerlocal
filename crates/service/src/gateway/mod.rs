@@ -2,6 +2,13 @@ use crate::storage_helpers::open_storage;
 
 pub(crate) const MISSING_AUTH_JSON_OPENAI_API_KEY_ERROR: &str =
     "配置错误：未配置auth.json的OPENAI_API_KEY(invalid api key)";
+pub(crate) const X_OPENAI_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
+pub(crate) const CODEXMANAGER_IMAGE_EXTENSION_ACTOR_AUTHORIZATION: &str = "local-image-extension";
+
+pub(crate) fn is_codexmanager_image_extension_actor_authorization(name: &str, value: &str) -> bool {
+    name.eq_ignore_ascii_case(X_OPENAI_ACTOR_AUTHORIZATION_HEADER)
+        && value.trim() == CODEXMANAGER_IMAGE_EXTENSION_ACTOR_AUTHORIZATION
+}
 
 pub(crate) fn bilingual_error(
     chinese_description: impl AsRef<str>,
@@ -178,7 +185,6 @@ use request_rewrite::{
     apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope,
     apply_request_overrides_with_service_tier_and_prompt_cache_key_scope, compute_upstream_url,
 };
-pub(crate) use thread_anchor::align_existing_prompt_cache_key_with_native_anchor;
 pub(super) use thread_anchor::{
     resolve_fallback_thread_anchor, resolve_local_conversation_id_with_sticky_fallback,
 };
@@ -424,6 +430,10 @@ use route_quality::record_route_quality;
 pub(crate) use runtime_config::invalidate_account_proxy_client_cache as invalidate_account_proxy_cache;
 pub(crate) use runtime_config::upstream_client;
 pub(crate) use runtime_config::{account_max_inflight_limit, set_account_max_inflight_limit};
+pub(crate) use runtime_config::{
+    account_test_proxy_url_for_account, build_account_test_client_with_timeouts,
+    current_codex_image_main_model,
+};
 pub(crate) use runtime_config::{
     async_upstream_client_for_account, fresh_async_upstream_client_for_account,
     fresh_upstream_client_for_account, prepare_upstream_client_for_account,
@@ -1072,6 +1082,7 @@ pub(crate) fn gateway_supports_official_responses_websocket(
     }
     if api_key.rotation_strategy == crate::apikey_profile::ROTATION_AGGREGATE_API
         || api_key.rotation_strategy == crate::apikey_profile::ROTATION_HYBRID
+        || api_key.rotation_strategy == crate::apikey_profile::ROTATION_HYBRID_AGGREGATE_FIRST
     {
         return false;
     }
@@ -1165,7 +1176,7 @@ pub(crate) fn gateway_collect_routed_candidates_for_ws(
         )?,
         None => None,
     };
-    let conversation_routing = route_conversation_source.and_then(|source| {
+    let mut conversation_routing = route_conversation_source.and_then(|source| {
         conversation_binding::prepare_conversation_routing_with_source(
             api_key.key_hash.as_str(),
             route_conversation_id,
@@ -1188,13 +1199,31 @@ pub(crate) fn gateway_collect_routed_candidates_for_ws(
     } else {
         None
     };
-    let rotation_plan = conversation_binding::apply_candidate_rotation(
+    let mut rotation_plan = conversation_binding::apply_candidate_rotation(
         &mut candidates,
         conversation_routing.as_ref(),
         key_id,
         model,
         account_binding_counts.as_ref(),
     );
+    match conversation_binding::claim_initial_conversation_binding(
+        storage,
+        conversation_routing.as_mut(),
+        &mut candidates,
+        model,
+    ) {
+        Ok(claim) if claim.selected_binding() => {
+            rotation_plan = conversation_binding::CandidateRotationPlan {
+                source: conversation_binding::CandidateRotationSource::ConversationBinding,
+                strategy_label: claim.strategy_label(),
+                strategy_applied: true,
+            };
+        }
+        Ok(_) => {}
+        Err(err) => {
+            log::warn!("event=responses_ws_conversation_claim_failed err={err}");
+        }
+    }
     Ok(GatewayRoutedCandidates {
         candidates,
         route_strategy: rotation_plan.strategy_label,
@@ -1310,6 +1339,7 @@ pub(crate) fn gateway_token_exchange_client_id() -> String {
 pub(crate) struct GatewayWsRoutingPreparation {
     pub(crate) incoming_headers: IncomingHeaderSnapshot,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) cache_affinity_key: Option<String>,
     pub(crate) route_conversation_id: Option<String>,
     pub(crate) route_conversation_source: Option<conversation_binding::RouteConversationSource>,
 }
@@ -1319,25 +1349,38 @@ pub(crate) fn gateway_resolve_ws_prompt_cache_key(
     api_key: &codexmanager_core::storage::ApiKey,
     incoming_headers: &IncomingHeaderSnapshot,
 ) -> Result<GatewayWsRoutingPreparation, String> {
+    let cache_affinity_key = incoming_headers
+        .session_id()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let has_native_conversation_id = incoming_headers
         .conversation_id()
         .map(str::trim)
         .is_some_and(|value| !value.is_empty());
     let local_conversation_id =
         resolve_local_conversation_id_with_sticky_fallback(incoming_headers, true);
+    let route_conversation_id = cache_affinity_key
+        .is_none()
+        .then(|| local_conversation_id.clone())
+        .flatten();
     let conversation_binding = conversation_binding::load_conversation_binding(
         storage,
         api_key.key_hash.as_str(),
-        local_conversation_id.as_deref(),
+        route_conversation_id.as_deref(),
     )?;
     let incoming_headers =
         incoming_headers.with_conversation_id_override(local_conversation_id.as_deref());
-    let prompt_cache_key = resolve_fallback_thread_anchor(
-        &incoming_headers,
-        local_conversation_id.as_deref(),
-        conversation_binding.as_ref(),
-    );
-    let route_conversation_source = if has_native_conversation_id {
+    let prompt_cache_key = cache_affinity_key.clone().or_else(|| {
+        resolve_fallback_thread_anchor(
+            &incoming_headers,
+            local_conversation_id.as_deref(),
+            conversation_binding.as_ref(),
+        )
+    });
+    let route_conversation_source = if cache_affinity_key.is_some() {
+        None
+    } else if has_native_conversation_id {
         Some(conversation_binding::RouteConversationSource::NativeConversation)
     } else if local_conversation_id.is_some() {
         Some(conversation_binding::RouteConversationSource::StickyFallback)
@@ -1347,7 +1390,8 @@ pub(crate) fn gateway_resolve_ws_prompt_cache_key(
     Ok(GatewayWsRoutingPreparation {
         incoming_headers,
         prompt_cache_key,
-        route_conversation_id: local_conversation_id,
+        cache_affinity_key,
+        route_conversation_id,
         route_conversation_source,
     })
 }
@@ -1384,16 +1428,40 @@ pub(crate) fn gateway_rewrite_ws_responses_body(
         .service_tier
         .as_deref()
         .and_then(crate::apikey::service_tier::normalize_service_tier);
-    apply_request_overrides_with_service_tier_and_prompt_cache_key_scope(
-        path,
-        body,
-        normalized_model,
-        normalized_reasoning,
-        normalized_service_tier,
-        api_key.upstream_base_url.as_deref(),
-        prompt_cache_key,
-        false,
-    )
+    let has_explicit_prompt_cache_key = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("prompt_cache_key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .is_some();
+    if has_explicit_prompt_cache_key {
+        apply_request_overrides_with_service_tier_and_prompt_cache_key_scope(
+            path,
+            body,
+            normalized_model,
+            normalized_reasoning,
+            normalized_service_tier,
+            api_key.upstream_base_url.as_deref(),
+            prompt_cache_key,
+            false,
+        )
+    } else {
+        apply_request_overrides_with_service_tier_and_forced_prompt_cache_key_scope(
+            path,
+            body,
+            normalized_model,
+            normalized_reasoning,
+            normalized_service_tier,
+            api_key.upstream_base_url.as_deref(),
+            prompt_cache_key,
+            false,
+        )
+    }
 }
 
 /// 函数 `gateway_compute_upstream_url`

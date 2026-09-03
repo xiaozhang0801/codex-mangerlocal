@@ -95,6 +95,9 @@ export const EN_PLATFORM_MODE_MESSAGES: MessageCatalog = {
   "去创建平台密钥": "Create platform key",
   "选择平台密钥": "Select platform key",
   "将使用 gateway base_url": "Gateway base_url in use",
+  "启用 Responses WebSocket": "Enable Responses WebSocket",
+  "关闭时 Codex 使用普通 Responses HTTP 流；开启时使用 Responses WebSocket。仅在当前平台密钥支持时开启。":
+    "When disabled, Codex uses the regular Responses HTTP stream. When enabled, it uses Responses WebSocket. Enable it only when the selected platform key supports it.",
   "重新应用本地网关": "Reapply local gateway",
   "切换到本地网关": "Switch to local gateway",
   "保存失败": "Save failed",

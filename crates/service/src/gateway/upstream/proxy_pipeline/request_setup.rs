@@ -54,7 +54,7 @@ pub(in super::super) fn prepare_request_setup(
         super::super::super::request_rewrite::compute_upstream_url(upstream_base.as_str(), path);
     let candidate_count = candidates.len();
     let account_max_inflight = super::super::super::account_max_inflight_limit();
-    let conversation_routing =
+    let mut conversation_routing =
         super::super::super::conversation_binding::prepare_conversation_routing_with_source(
             platform_key_hash,
             route_conversation_id,
@@ -78,13 +78,36 @@ pub(in super::super) fn prepare_request_setup(
     };
     let anthropic_has_thread_anchor = protocol_type == PROTOCOL_ANTHROPIC_NATIVE
         && (has_prompt_cache_key || conversation_routing.is_some());
-    let rotation_plan = super::super::super::conversation_binding::apply_candidate_rotation(
+    let mut rotation_plan = super::super::super::conversation_binding::apply_candidate_rotation(
         candidates,
         conversation_routing.as_ref(),
         key_id,
         model_for_log,
         account_binding_counts.as_ref(),
     );
+    match super::super::super::conversation_binding::claim_initial_conversation_binding(
+        storage,
+        conversation_routing.as_mut(),
+        candidates,
+        model_for_log,
+    ) {
+        Ok(claim) if claim.selected_binding() => {
+            rotation_plan =
+                super::super::super::conversation_binding::CandidateRotationPlan {
+                    source: super::super::super::conversation_binding::CandidateRotationSource::ConversationBinding,
+                    strategy_label: claim.strategy_label(),
+                    strategy_applied: true,
+                };
+        }
+        Ok(_) => {}
+        Err(err) => {
+            log::warn!(
+                "event=gateway_conversation_claim_failed trace_id={} err={}",
+                trace_id,
+                err
+            );
+        }
+    }
     let candidate_order = candidates
         .iter()
         .map(|(account, _)| format!("{}#sort={}", account.id, account.sort))

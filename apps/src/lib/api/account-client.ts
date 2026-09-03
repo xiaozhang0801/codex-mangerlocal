@@ -6,7 +6,9 @@ import {
 import {
   normalizeAccountList,
   normalizeAggregateApiBalanceRefreshResult,
+  normalizeAggregateApiAssociateModelsResult,
   normalizeAggregateApiCreateResult,
+  normalizeAggregateApiFetchModelsResult,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
   normalizeAggregateApiTestResult,
@@ -46,11 +48,13 @@ import {
 import {
   AccountExportResult,
   AccountImportResult,
+  AccountTestStartResult,
   AccountWarmupResult,
   DeleteAccountsByStatusesResult,
   DeleteUnavailableFreeResult,
   readAccountExportResult,
   readAccountImportResult,
+  readAccountTestStartResult,
   readAccountWarmupResult,
   readDeleteAccountsByStatusesResult,
   readApiKeySecret,
@@ -61,8 +65,10 @@ import {
   AccountListResult,
   AccountUsage,
   AggregateApi,
+  AggregateApiAssociateModelsResult,
   AggregateApiBalanceRefreshResult,
   AggregateApiCreateResult,
+  AggregateApiFetchModelsResult,
   AggregateApiSecretResult,
   AggregateApiTestResult,
   ApiKey,
@@ -89,6 +95,14 @@ export interface AccountExportPayload {
 export interface AccountWarmupPayload {
   accountIds?: string[];
   message?: string;
+}
+
+export interface AccountTestPayload {
+  accountId: string;
+  model?: string;
+  prompt?: string;
+  kind?: "text" | "image";
+  testId?: string;
 }
 
 export interface AccountProxyLatencyTestPayload {
@@ -527,6 +541,26 @@ export const accountClient = {
         }),
       ),
     ),
+  testAccount: async (params: AccountTestPayload): Promise<AccountTestStartResult> =>
+    readAccountTestStartResult(
+      await invoke<unknown>(
+        "service_account_test_start",
+        withAddr({
+          accountId: params.accountId,
+          model: params.model ?? null,
+          prompt: params.prompt ?? null,
+          kind: params.kind ?? "text",
+          testId: params.testId ?? null,
+        }),
+      ),
+    ),
+  cancelAccountTest: async (accountId: string, testId: string): Promise<boolean> =>
+    Boolean(
+      await invoke<unknown>(
+        "service_account_test_cancel",
+        withAddr({ accountId, testId }),
+      ),
+    ),
 
   getProxySettings: async (
     accountId: string,
@@ -888,6 +922,24 @@ export const accountClient = {
       withAddr({ id: apiId })
     );
     return normalizeAggregateApiBalanceRefreshResult(result);
+  },
+  async fetchAggregateApiModels(apiId: string): Promise<AggregateApiFetchModelsResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_fetch_models",
+      withAddr({ id: apiId }),
+    );
+    return normalizeAggregateApiFetchModelsResult(result);
+  },
+  async associateAggregateApiModels(
+    apiId: string,
+    upstreamModels: string[],
+    displayNames?: Record<string, string>,
+  ): Promise<AggregateApiAssociateModelsResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_associate_models",
+      withAddr({ apiId, upstreamModels, displayNames: displayNames || null }),
+    );
+    return normalizeAggregateApiAssociateModelsResult(result);
   },
   async listApiKeys(): Promise<ApiKey[]> {
     const result = await invoke<unknown>("service_apikey_list", withAddr());

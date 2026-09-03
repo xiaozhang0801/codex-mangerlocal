@@ -9,7 +9,10 @@ import {
   AggregateApi,
   AggregateApiBalanceRefreshResult,
   AggregateApiBalanceSnapshot,
+  AggregateApiAssociateModelsResult,
   AggregateApiCreateResult,
+  AggregateApiFetchModelsResult,
+  AggregateApiFetchedModel,
   AggregateApiSecretResult,
   AggregateApiTestResult,
   ApiKey,
@@ -976,6 +979,39 @@ export function normalizeAggregateApiBalanceRefreshResult(
   };
 }
 
+export function normalizeAggregateApiFetchModelsResult(
+  payload: unknown,
+): AggregateApiFetchModelsResult {
+  const source = asObject(payload);
+  const items = asArray(source.items).map((item): AggregateApiFetchedModel => {
+    const value = asObject(item);
+    return {
+      upstreamModel: asString(value.upstreamModel ?? value.upstream_model),
+      displayName: asString(value.displayName ?? value.display_name) || null,
+      existingModelSlug:
+        asString(value.existingModelSlug ?? value.existing_model_slug) || null,
+      alreadyLinked: asBoolean(value.alreadyLinked ?? value.already_linked, false),
+    };
+  });
+  return {
+    apiId: asString(source.apiId ?? source.api_id),
+    providerType: asString(source.providerType ?? source.provider_type),
+    fetchedAt: asInteger(source.fetchedAt ?? source.fetched_at, 0, 0),
+    items,
+  };
+}
+
+export function normalizeAggregateApiAssociateModelsResult(
+  payload: unknown,
+): AggregateApiAssociateModelsResult {
+  const source = asObject(payload);
+  return {
+    createdModels: asStringArray(source.createdModels ?? source.created_models),
+    addedRoutes: asStringArray(source.addedRoutes ?? source.added_routes),
+    unchangedRoutes: asStringArray(source.unchangedRoutes ?? source.unchanged_routes),
+  };
+}
+
 /**
  * 函数 `normalizeApiKeyUsageStats`
  *
@@ -1818,6 +1854,9 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
       source.threadAwareAccountDistributionEnabled,
       true
     ),
+    aggregateApiProbeUserAgentMode:
+      asString(source.aggregateApiProbeUserAgentMode) || "codex",
+    aggregateApiProbeUserAgent: asString(source.aggregateApiProbeUserAgent),
     quotaGuard: normalizeQuotaGuard(source.quotaGuard ?? source.quota_guard),
     gatewayOriginator:
       asString(source.gatewayOriginator) || DEFAULT_CODEX_ORIGINATOR,

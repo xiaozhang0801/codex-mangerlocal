@@ -1022,6 +1022,47 @@ pub struct AggregateApiBalanceRefreshResult {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AggregateApiFetchModelsParams {
+    pub api_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiFetchedModel {
+    pub upstream_model: String,
+    pub display_name: Option<String>,
+    pub existing_model_slug: Option<String>,
+    pub already_linked: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiFetchModelsResult {
+    pub api_id: String,
+    pub provider_type: String,
+    pub fetched_at: i64,
+    pub items: Vec<AggregateApiFetchedModel>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiAssociateModelsParams {
+    pub api_id: String,
+    pub upstream_models: Vec<String>,
+    #[serde(default)]
+    pub display_names: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateApiAssociateModelsResult {
+    pub created_models: Vec<String>,
+    pub added_routes: Vec<String>,
+    pub unchanged_routes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AggregateApiSupplierModelEntry {
     pub supplier_key: String,
     pub provider_type: String,

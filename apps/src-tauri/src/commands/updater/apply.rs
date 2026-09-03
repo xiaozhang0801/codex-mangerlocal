@@ -15,7 +15,7 @@ use super::runtime::current_exe_path;
 #[cfg(target_os = "windows")]
 use super::runtime::CREATE_NO_WINDOW;
 use super::state::{
-    clear_pending_update, pending_update_path, read_pending_update, script_dir_from_pending,
+    pending_update_path, read_pending_update, script_dir_from_pending,
 };
 
 /// 函数 `append_apply_log`
@@ -714,7 +714,6 @@ pub(super) fn launch_installer_impl(app: tauri::AppHandle) -> Result<UpdateActio
         &installer_log_path,
         &format!("安装包已启动：{}", installer_path.display()),
     );
-    clear_pending_update(&app)?;
 
     Ok(UpdateActionResponse {
         ok: true,

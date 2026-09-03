@@ -6,8 +6,8 @@ use super::{
     prepare_missing_ws_tool_call_retry, proxy_basic_auth_header,
     rebase_ws_request_for_account_change, rewrite_client_frame, should_buffer_ws_upstream_preamble,
     strip_previous_response_id_from_ws_text, ws_request_has_tool_call_output,
-    CompletedWsResponseCache, CompletedWsToolCallCache, WsRequestContext, WsToolCallKind,
-    WsUpstreamAuthorization,
+    ws_route_binding_for_frame, CompletedWsResponseCache, CompletedWsToolCallCache,
+    WsRequestContext, WsToolCallKind, WsUpstreamAuthorization,
 };
 use axum::http::{HeaderMap, HeaderValue};
 use codexmanager_core::storage::{
@@ -47,6 +47,7 @@ fn websocket_frame_applies_model_fast_policy() {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers(None, None),
         prompt_cache_key: None,
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -715,12 +716,13 @@ fn inspect_ws_terminal_event_requires_response_completed() {
 }
 
 #[test]
-fn websocket_frame_aligns_prompt_cache_key_with_native_conversation_anchor() {
+fn websocket_frame_preserves_client_prompt_cache_key_with_native_conversation_anchor() {
     let _guard = crate::test_env_guard();
     let context = WsRequestContext {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers(Some("conversation-1"), None),
         prompt_cache_key: Some("sticky-thread".to_string()),
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -738,18 +740,73 @@ fn websocket_frame_aligns_prompt_cache_key_with_native_conversation_anchor() {
         value
             .get("prompt_cache_key")
             .and_then(serde_json::Value::as_str),
-        Some("conversation-1")
+        Some("client-thread")
+    );
+    assert_eq!(prepared.prompt_cache_key.as_deref(), Some("client-thread"));
+}
+
+#[test]
+fn websocket_frame_without_client_pck_uses_root_session_upstream_and_session_route() {
+    let _guard = crate::test_env_guard();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "session-id",
+        HeaderValue::from_static("root-websocket-session"),
+    );
+    headers.insert("thread-id", HeaderValue::from_static("child-ws-thread"));
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
+        prompt_cache_key: Some("root-websocket-session".to_string()),
+        cache_affinity_key: Some("root-websocket-session".to_string()),
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let prepared = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-5.4","input":"hello"}"#,
+        &context,
+    )
+    .expect("rewrite websocket frame");
+    let value: serde_json::Value =
+        serde_json::from_str(&prepared.text).expect("parse prepared websocket frame");
+
+    assert_eq!(
+        value
+            .get("prompt_cache_key")
+            .and_then(serde_json::Value::as_str),
+        Some("root-websocket-session")
+    );
+    assert_eq!(
+        prepared.prompt_cache_key, None,
+        "generated session fallback must not masquerade as a client PCK route"
+    );
+    let (route_id, source) = ws_route_binding_for_frame(&context, &prepared);
+    assert!(route_id.is_some_and(|route_id| route_id.starts_with("sid:v2:")));
+    assert_eq!(
+        source,
+        Some(crate::gateway::conversation_binding::RouteConversationSource::SessionAffinity)
     );
 }
 
 #[test]
-fn upstream_websocket_request_forwards_oai_attestation_header() {
+fn upstream_websocket_request_filters_local_image_marker_and_forwards_oai_attestation() {
     let mut headers = HeaderMap::new();
     headers.insert("x-oai-attestation", HeaderValue::from_static("attest-ws"));
+    headers.insert(
+        "x-openai-actor-authorization",
+        HeaderValue::from_static("local-image-extension"),
+    );
+    headers.insert(
+        "x-codex-image-turn-id",
+        HeaderValue::from_static("turn-image-ws"),
+    );
     let context = WsRequestContext {
         api_key: sample_api_key(),
         incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
         prompt_cache_key: None,
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -777,6 +834,20 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
     assert_eq!(
         request
             .headers()
+            .get("x-openai-actor-authorization")
+            .and_then(|value| value.to_str().ok()),
+        None
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("x-codex-image-turn-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("turn-image-ws")
+    );
+    assert_eq!(
+        request
+            .headers()
             .get("openai-beta")
             .and_then(|value| value.to_str().ok()),
         Some(super::RESPONSES_WEBSOCKETS_BETA_HEADER_VALUE)
@@ -792,11 +863,50 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
 }
 
 #[test]
+fn upstream_websocket_request_preserves_real_actor_authorization() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-openai-actor-authorization",
+        HeaderValue::from_static("actor-biscuit"),
+    );
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
+        prompt_cache_key: None,
+        cache_affinity_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let account = sample_account();
+    let authorization = websocket_bearer_authorization("bearer-ws");
+
+    let request = build_upstream_websocket_request(
+        "wss://chatgpt.com/backend-api/codex/v1/responses",
+        &account,
+        &authorization,
+        &context,
+        false,
+    )
+    .unwrap_or_else(|err| panic!("build upstream websocket request failed: {}", err.message));
+
+    assert_eq!(
+        request
+            .headers()
+            .get("x-openai-actor-authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("actor-biscuit")
+    );
+}
+
+#[test]
 fn upstream_websocket_request_preserves_agent_assertion_and_fedramp() {
     let context = WsRequestContext {
         api_key: sample_api_key(),
         incoming_headers: crate::gateway::IncomingHeaderSnapshot::default(),
         prompt_cache_key: None,
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -882,6 +992,7 @@ fn websocket_frame_merges_header_metadata_into_client_metadata() {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers_with_metadata(),
         prompt_cache_key: None,
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -915,6 +1026,7 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers_with_metadata(),
         prompt_cache_key: None,
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -1022,6 +1134,7 @@ fn websocket_response_create_uses_minimal_fallback_for_missing_or_blank_instruct
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers_with_metadata(),
         prompt_cache_key: None,
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -1058,6 +1171,7 @@ fn websocket_logs_client_ultra_and_sends_upstream_max() {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers_with_metadata(),
         prompt_cache_key: None,
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
@@ -1450,6 +1564,7 @@ fn upstream_websocket_account_rebase_strips_session_affinity_headers() {
         api_key: sample_api_key(),
         incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
         prompt_cache_key: None,
+        cache_affinity_key: None,
         route_conversation_id: None,
         route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),

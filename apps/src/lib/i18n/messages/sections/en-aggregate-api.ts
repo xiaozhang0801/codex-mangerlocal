@@ -7,6 +7,31 @@ export const EN_AGGREGATE_API_MESSAGES: MessageCatalog = {
   显式路由: "Explicit routes",
   "这里只管理上游连接；模型路由在“模型管理”中显式配置，页面不会访问供应商 `/models`。":
     "This page only manages upstream connections. Model routes are configured explicitly in Model Management, and the page never accesses a supplier `/models` endpoint.",
+  "不会自动发现上游模型；管理员可主动拉取并选择性关联到模型目录 V2。":
+    "Upstream models are not discovered automatically; an administrator can fetch and selectively associate them with model catalog V2.",
+  关联目录模型: "Associate catalog models",
+  "拉取到 {count} 个上游模型": "Fetched {count} upstream models",
+  "模型目录 V2": "Model catalog V2",
+  "显示 {shown} / {total} 个": "Showing {shown} of {total}",
+  "已选择 {count} 个": "{count} selected",
+  上游模型: "Upstream model",
+  状态: "Status",
+  "将使用上游模型 ID 作为显示名": "The upstream model ID will be used as the display name",
+  待关联: "Ready to associate",
+  "已选择 {count} 个模型": "{count} models selected",
+  "关联中...": "Associating...",
+  搜索模型: "Search models",
+  全选: "Select all",
+  取消全选: "Clear selection",
+  "没有匹配的模型": "No matching models",
+  已有模型: "Existing model",
+  已关联: "Already linked",
+  "关联所选模型 ({count})": "Associate selected models ({count})",
+  "拉取并关联模型": "Fetch and associate models",
+  "拉取模型失败": "Failed to fetch models",
+  "关联模型失败": "Failed to associate models",
+  "关联完成：新增模型 {created}，追加 route {added}，未变更 {unchanged}":
+    "Association complete: {created} new models, {added} routes added, {unchanged} unchanged",
   "新建聚合 API": "New aggregate API",
   已有模型路由: "Has model routes",
   测试失败: "Tests failed",
@@ -14,6 +39,19 @@ export const EN_AGGREGATE_API_MESSAGES: MessageCatalog = {
   上游连接: "Upstream connections",
   "连通性测试只使用已配置路由对应的模型。":
     "Connection tests only use models referenced by configured routes.",
+  连通性测试设置: "Connection test settings",
+  "设置 Codex 类型 route 执行连通性测试时使用的客户端标识。":
+    "Configure the client identity used when testing Codex-type routes.",
+  测试客户端: "Test client",
+  "Codex 官方客户端（默认）": "Official Codex client (default)",
+  "自定义 User-Agent": "Custom User-Agent",
+  "发送官方格式的 User-Agent、originator 和 Codex 客户端指纹请求头。":
+    "Send the official User-Agent, originator, and Codex client fingerprint headers.",
+  "仅使用指定的 User-Agent，不附加 Codex 客户端指纹。":
+    "Use only the specified User-Agent without Codex client fingerprint headers.",
+  "请输入自定义 User-Agent": "Enter a custom User-Agent",
+  连通性测试设置已更新: "Connection test settings updated",
+  更新连通性测试设置失败: "Failed to update connection test settings",
   "通用兼容（Codex + Claude）": "Compatible (Codex + Claude)",
   "按请求路径原样转发 Codex 与 Claude 协议；自定义 action 会自动关闭。":
     "Forwards Codex and Claude protocols using the incoming path; custom action is disabled automatically.",

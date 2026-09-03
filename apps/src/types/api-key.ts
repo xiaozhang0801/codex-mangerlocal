@@ -95,6 +95,26 @@ export interface AggregateApiBalanceRefreshResult {
   latencyMs: number;
 }
 
+export interface AggregateApiFetchedModel {
+  upstreamModel: string;
+  displayName: string | null;
+  existingModelSlug: string | null;
+  alreadyLinked: boolean;
+}
+
+export interface AggregateApiFetchModelsResult {
+  apiId: string;
+  providerType: string;
+  fetchedAt: number;
+  items: AggregateApiFetchedModel[];
+}
+
+export interface AggregateApiAssociateModelsResult {
+  createdModels: string[];
+  addedRoutes: string[];
+  unchangedRoutes: string[];
+}
+
 export interface ApiKeyUsageStat {
   keyId: string;
   todayTokens: number;

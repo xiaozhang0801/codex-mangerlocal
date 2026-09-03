@@ -394,7 +394,7 @@ fn preferred_client_prompt_cache_key_is_used_without_native_anchor() {
 }
 
 #[test]
-fn preferred_client_prompt_cache_key_is_ignored_when_conversation_anchor_exists() {
+fn preferred_client_prompt_cache_key_is_preserved_when_conversation_anchor_exists() {
     let incoming_headers = sample_incoming_headers(Some("conv_anchor"), None, None, None, None);
     let initial_request_meta = sample_request_metadata(Some("client_thread"));
     let client_request_meta = sample_request_metadata(Some("client_thread"));
@@ -406,7 +406,7 @@ fn preferred_client_prompt_cache_key_is_ignored_when_conversation_anchor_exists(
         &client_request_meta,
     );
 
-    assert_eq!(actual, None);
+    assert_eq!(actual.as_deref(), Some("client_thread"));
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn preferred_client_prompt_cache_key_is_used_when_turn_state_is_orphaned() {
 }
 
 #[test]
-fn preferred_client_prompt_cache_key_is_ignored_when_turn_state_has_session_anchor() {
+fn preferred_client_prompt_cache_key_is_preserved_when_turn_state_has_session_anchor() {
     let incoming_headers = sample_incoming_headers_with_session_id(
         None,
         Some("turn_state_anchor"),
@@ -447,11 +447,11 @@ fn preferred_client_prompt_cache_key_is_ignored_when_turn_state_has_session_anch
         &client_request_meta,
     );
 
-    assert_eq!(actual, None);
+    assert_eq!(actual.as_deref(), Some("client_thread"));
 }
 
 #[test]
-fn preferred_client_prompt_cache_key_is_ignored_even_when_matching_native_anchor() {
+fn preferred_client_prompt_cache_key_is_preserved_when_matching_native_anchor() {
     let incoming_headers = sample_incoming_headers(Some("shared_anchor"), None, None, None, None);
     let initial_request_meta = sample_request_metadata(Some("shared_anchor"));
     let client_request_meta = sample_request_metadata(Some("shared_anchor"));
@@ -463,7 +463,7 @@ fn preferred_client_prompt_cache_key_is_ignored_even_when_matching_native_anchor
         &client_request_meta,
     );
 
-    assert_eq!(actual, None);
+    assert_eq!(actual.as_deref(), Some("shared_anchor"));
 }
 
 #[test]
@@ -492,6 +492,7 @@ fn route_conversation_id_uses_prompt_cache_key_without_native_anchor() {
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responses",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
@@ -499,7 +500,7 @@ fn route_conversation_id_uses_prompt_cache_key_without_native_anchor() {
     .expect("route id");
 
     assert_eq!(actual.source, RouteConversationSource::PromptCacheKey);
-    assert!(actual.id.starts_with("pck:v1:"));
+    assert!(actual.id.starts_with("pck:v2:"));
     assert!(!actual.id.contains("client_thread_123456"));
 }
 
@@ -514,6 +515,7 @@ fn route_conversation_id_uses_prompt_cache_key_when_turn_state_is_orphaned() {
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responses",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
@@ -521,12 +523,12 @@ fn route_conversation_id_uses_prompt_cache_key_when_turn_state_is_orphaned() {
     .expect("route id");
 
     assert_eq!(actual.source, RouteConversationSource::PromptCacheKey);
-    assert!(actual.id.starts_with("pck:v1:"));
+    assert!(actual.id.starts_with("pck:v2:"));
     assert!(!actual.id.contains("client_thread_123456"));
 }
 
 #[test]
-fn route_conversation_id_does_not_use_prompt_cache_key_when_turn_state_has_session_anchor() {
+fn route_conversation_id_uses_prompt_cache_key_when_turn_state_has_session_anchor() {
     let incoming_headers = sample_incoming_headers_with_session_id(
         None,
         Some("turn_state_anchor"),
@@ -543,16 +545,19 @@ fn route_conversation_id_does_not_use_prompt_cache_key_when_turn_state_has_sessi
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responses",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
-    );
+    )
+    .expect("route id");
 
-    assert!(actual.is_none());
+    assert_eq!(actual.source, RouteConversationSource::PromptCacheKey);
+    assert!(actual.id.starts_with("pck:v2:"));
 }
 
 #[test]
-fn route_conversation_id_prefers_native_conversation_over_prompt_cache_key() {
+fn route_conversation_id_prefers_prompt_cache_key_over_native_conversation() {
     let incoming_headers = sample_incoming_headers(Some("native-conv"), None, None, None, None);
     let initial_request_meta = sample_request_metadata(Some("client_thread_123456"));
     let client_request_meta = sample_request_metadata(Some("client_thread_123456"));
@@ -561,18 +566,19 @@ fn route_conversation_id_prefers_native_conversation_over_prompt_cache_key() {
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responses",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
     )
     .expect("route id");
 
-    assert_eq!(actual.source, RouteConversationSource::NativeConversation);
-    assert_eq!(actual.id, "native-conv");
+    assert_eq!(actual.source, RouteConversationSource::PromptCacheKey);
+    assert!(actual.id.starts_with("pck:v2:"));
 }
 
 #[test]
-fn route_conversation_id_prefers_native_conversation_when_turn_state_also_exists() {
+fn route_conversation_id_prefers_prompt_cache_key_when_native_turn_state_exists() {
     let incoming_headers = sample_incoming_headers(
         Some("native-conv"),
         Some("turn_state_anchor"),
@@ -587,24 +593,25 @@ fn route_conversation_id_prefers_native_conversation_when_turn_state_also_exists
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responses",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
     )
     .expect("route id");
 
-    assert_eq!(actual.source, RouteConversationSource::NativeConversation);
-    assert_eq!(actual.id, "native-conv");
+    assert_eq!(actual.source, RouteConversationSource::PromptCacheKey);
+    assert!(actual.id.starts_with("pck:v2:"));
 }
 
 #[test]
 fn existing_only_prompt_cache_binding_is_not_used_as_fallback_thread_anchor() {
     let binding = codexmanager_core::storage::ConversationBinding {
         platform_key_hash: "key-hash-1".to_string(),
-        conversation_id: "pck:v1:abcdef".to_string(),
+        conversation_id: "pck:v2:abcdef".to_string(),
         account_id: "acc-1".to_string(),
         thread_epoch: 1,
-        thread_anchor: "pck:v1:abcdef".to_string(),
+        thread_anchor: "pck:v2:abcdef".to_string(),
         status: "active".to_string(),
         last_model: Some("gpt-5.5".to_string()),
         last_switch_reason: None,
@@ -634,6 +641,7 @@ fn route_conversation_id_uses_existing_only_prompt_cache_key_when_previous_respo
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responses",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
@@ -644,7 +652,7 @@ fn route_conversation_id_uses_existing_only_prompt_cache_key_when_previous_respo
         actual.source,
         RouteConversationSource::PromptCacheKeyExistingOnly
     );
-    assert!(actual.id.starts_with("pck:v1:"));
+    assert!(actual.id.starts_with("pck:v2:"));
     assert!(!actual.id.contains("client_thread_123456"));
 }
 
@@ -662,6 +670,7 @@ fn route_conversation_id_uses_existing_only_prompt_cache_key_when_turn_state_is_
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responses",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
@@ -672,7 +681,7 @@ fn route_conversation_id_uses_existing_only_prompt_cache_key_when_turn_state_is_
         actual.source,
         RouteConversationSource::PromptCacheKeyExistingOnly
     );
-    assert!(actual.id.starts_with("pck:v1:"));
+    assert!(actual.id.starts_with("pck:v2:"));
     assert!(!actual.id.contains("client_thread_123456"));
 }
 
@@ -687,6 +696,7 @@ fn route_conversation_id_turn_state_only_without_prompt_cache_key_does_not_use_s
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responses",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
@@ -705,6 +715,7 @@ fn route_conversation_id_does_not_use_prompt_cache_key_for_non_responses_path_pr
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/responsesxxx",
         "platform-key-hash",
+        Some("gpt-5.4"),
         &incoming_headers,
         &initial_request_meta,
         &client_request_meta,
@@ -714,19 +725,23 @@ fn route_conversation_id_does_not_use_prompt_cache_key_for_non_responses_path_pr
 }
 
 #[test]
-fn prompt_cache_route_id_is_not_split_by_model() {
-    let first = prompt_cache_route_id(
+fn prompt_cache_route_id_is_partitioned_by_model() {
+    let first = super::super::super::conversation_binding::cache_affinity_route_id(
         "platform-key-hash",
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        Some("gpt-5.4"),
+        super::super::super::conversation_binding::CacheAffinityKeySource::PromptCacheKey,
         "client_thread_123456",
     );
-    let second = prompt_cache_route_id(
+    let second = super::super::super::conversation_binding::cache_affinity_route_id(
         "platform-key-hash",
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        Some("gpt-5.5"),
+        super::super::super::conversation_binding::CacheAffinityKeySource::PromptCacheKey,
         "client_thread_123456",
     );
 
-    assert_eq!(first, second);
+    assert_ne!(first, second);
 }
 
 /// 函数 `aggregate_passthrough_applies_model_reasoning_and_service_tier_overrides_without_forcing_log_tier`
@@ -930,6 +945,31 @@ fn openai_responses_api_clients_use_codex_compat_rewrite_but_native_codex_does_n
         crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
         "/v1/chat/completions",
         true,
+    ));
+}
+
+#[test]
+fn native_codex_image_extension_bypasses_images_compat_adapter() {
+    let mut extension_headers = axum::http::HeaderMap::new();
+    extension_headers.insert(
+        "x-codex-image-turn-id",
+        axum::http::HeaderValue::from_static("turn-image-123"),
+    );
+    let extension_snapshot =
+        super::super::super::IncomingHeaderSnapshot::from_http_headers(&extension_headers);
+    let third_party_snapshot = super::super::super::IncomingHeaderSnapshot::default();
+
+    assert!(!should_adapt_openai_images_request(
+        false,
+        &extension_snapshot,
+    ));
+    assert!(!should_adapt_openai_images_request(
+        true,
+        &third_party_snapshot,
+    ));
+    assert!(should_adapt_openai_images_request(
+        false,
+        &third_party_snapshot,
     ));
 }
 
