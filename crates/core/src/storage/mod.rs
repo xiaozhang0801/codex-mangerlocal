@@ -42,8 +42,9 @@ pub use model_billing_v2::{
     ChargeComputationV2, ChargeSnapshotInputV2, ChargeSnapshotV2, ModelPriceTierV2,
 };
 pub use model_catalog_v2::{
-    ManagedModelBatchStateV2Update, ManagedModelStateV2Update, ManagedModelV2,
-    ManagedModelV2Upsert, ModelCatalogV2Stats, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
+    ManagedModelBatchStateV2Update, ManagedModelRouteEnsureResultV2, ManagedModelRouteEnsureV2,
+    ManagedModelStateV2Update, ManagedModelV2, ManagedModelV2Upsert, ModelCatalogV2Stats,
+    ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
 
@@ -1276,6 +1277,7 @@ pub struct AggregateApi {
     pub auth_params_json: Option<String>,
     pub action: Option<String>,
     pub model_override: Option<String>,
+    pub user_agent: Option<String>,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -1311,6 +1313,7 @@ pub struct AggregateApiListSummary {
     pub auth_params_json: Option<String>,
     pub action: Option<String>,
     pub model_override: Option<String>,
+    pub user_agent: Option<String>,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -1337,6 +1340,7 @@ pub struct AggregateApiListSnapshot {
 #[derive(Debug, Clone)]
 pub struct AggregateApiUpdateConfig {
     pub auth_type: String,
+    pub user_agent: Option<String>,
     pub balance_query_enabled: bool,
     pub balance_query_template: Option<String>,
     pub balance_query_base_url: Option<String>,
@@ -2282,6 +2286,13 @@ impl Storage {
         self.apply_sql_migration(
             "130_accounts_subject_identity",
             include_str!("../../migrations/130_accounts_subject_identity.sql"),
+        )?;
+        self.apply_model_catalog_gpt6_astra_migration()?;
+        self.apply_model_catalog_gpt56_metadata_fix_migration()?;
+        self.apply_sql_or_compat_migration(
+            "133_aggregate_api_user_agent",
+            include_str!("../../migrations/133_aggregate_api_user_agent.sql"),
+            |s| s.ensure_aggregate_apis_table(),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;

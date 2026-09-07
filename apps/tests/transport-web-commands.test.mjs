@@ -193,6 +193,15 @@ test("createWebCommandMap 为批量账号排序提供 Web RPC 映射", () => {
   });
 });
 
+test("createWebCommandMap 为账号模型拉取与关联提供 Web RPC 映射", () => {
+  assert.deepEqual(commandMap.service_account_fetch_models, {
+    rpcMethod: "account/fetchModels",
+  });
+  assert.deepEqual(commandMap.service_account_associate_models, {
+    rpcMethod: "account/associateModels",
+  });
+});
+
 test("createWebCommandMap 为额度重置查询和消费提供 Web RPC 映射", () => {
   assert.deepEqual(commandMap.service_usage_reset_credits, {
     rpcMethod: "account/usage/resetCredits",

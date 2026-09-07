@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { AppSettings, RuntimeCapabilities, ServiceStatus } from "../../types";
 import {
   DEFAULT_CODEX_ORIGINATOR,
+  DEFAULT_CODEX_USER_AGENT,
   DEFAULT_CODEX_USER_AGENT_VERSION,
 } from "../constants/codex";
 import {
@@ -112,8 +113,6 @@ export const useAppStore = create<AppState>((set) => ({
     compactModelForwardRules: "",
     accountMaxInflight: 1,
     threadAwareAccountDistributionEnabled: true,
-    aggregateApiProbeUserAgentMode: "codex",
-    aggregateApiProbeUserAgent: "",
     quotaGuard: {
       enabled: true,
       primaryMinRemainingPercent: 5,
@@ -122,6 +121,8 @@ export const useAppStore = create<AppState>((set) => ({
     },
     gatewayOriginator: DEFAULT_CODEX_ORIGINATOR,
     gatewayOriginatorDefault: DEFAULT_CODEX_ORIGINATOR,
+    gatewayUserAgent: "",
+    gatewayUserAgentDefault: DEFAULT_CODEX_USER_AGENT,
     gatewayUserAgentVersion: DEFAULT_CODEX_USER_AGENT_VERSION,
     gatewayUserAgentVersionDefault: DEFAULT_CODEX_USER_AGENT_VERSION,
     gatewayResidencyRequirement: "",

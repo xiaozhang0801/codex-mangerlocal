@@ -16,65 +16,101 @@ export {
 } from "./model-price-v2";
 
 export const managedModelsV2Client = {
-  list(includeHidden = false): Promise<ManagedModelListV2Result> {
+  list(
+    includeHidden = false,
+    addr?: string | null,
+  ): Promise<ManagedModelListV2Result> {
     return invoke<ManagedModelListV2Result>(
       "service_managed_model_list_v2",
-      withAddr({ includeHidden }),
+      withAddr({
+        includeHidden,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
-  get(slug: string): Promise<ManagedModelV2> {
+  get(slug: string, addr?: string | null): Promise<ManagedModelV2> {
     return invoke<ManagedModelV2>(
       "service_managed_model_get_v2",
-      withAddr({ slug }),
+      withAddr({
+        slug,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
-  upsert(input: ManagedModelV2Upsert): Promise<ManagedModelV2> {
+  upsert(
+    input: ManagedModelV2Upsert,
+    addr?: string | null,
+  ): Promise<ManagedModelV2> {
     return invoke<ManagedModelV2>(
       "service_managed_model_upsert_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
-  updateState(input: ManagedModelStateV2Update): Promise<ManagedModelV2> {
+  updateState(
+    input: ManagedModelStateV2Update,
+    addr?: string | null,
+  ): Promise<ManagedModelV2> {
     return invoke<ManagedModelV2>(
       "service_managed_model_update_state_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
   updateStates(
     input: ManagedModelBatchStateV2Update,
+    addr?: string | null,
   ): Promise<ManagedModelV2[]> {
     return invoke<ManagedModelV2[]>(
       "service_managed_model_batch_update_state_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
-  delete(slug: string): Promise<void> {
+  delete(slug: string, addr?: string | null): Promise<void> {
     return invoke<void>(
       "service_managed_model_delete_v2",
-      withAddr({ slug }),
+      withAddr({
+        slug,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
   previewImport(
     input: ManagedModelImportV2Params,
+    addr?: string | null,
   ): Promise<ManagedModelImportPreviewV2Result> {
     return invoke<ManagedModelImportPreviewV2Result>(
       "service_managed_model_import_preview_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
   commitImport(
     input: ManagedModelImportV2Params,
+    addr?: string | null,
   ): Promise<ManagedModelImportPreviewV2Result> {
     return invoke<ManagedModelImportPreviewV2Result>(
       "service_managed_model_import_commit_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 };
@@ -95,7 +131,41 @@ function stringList(value: unknown): string[] {
 }
 
 function serviceTierName(id: string): string {
-  return id.toLowerCase() === "priority" ? "Fast" : id;
+  switch (id.toLowerCase()) {
+    case "priority":
+      return "Fast";
+    case "ultrafast":
+      return "Ultrafast";
+    case "flex":
+      return "Flex";
+    default:
+      return id;
+  }
+}
+
+function serviceTierDescription(modelSlug: string, id: string): string {
+  if (id.toLowerCase() === "priority") {
+    const normalizedSlug = modelSlug.toLowerCase();
+    if (normalizedSlug === "gpt-6-astra") {
+      return "2x speed, increased usage";
+    }
+    if (
+      new Set([
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+      ]).has(normalizedSlug)
+    ) {
+      return "1.5x speed, increased usage";
+    }
+    return "";
+  }
+  if (id.toLowerCase() === "ultrafast") {
+    return "The fastest available responses for latency-sensitive work.";
+  }
+  return "";
 }
 
 function booleanCapability(
@@ -154,7 +224,7 @@ export function managedModelV2ToModelInfo(model: ManagedModelV2): ModelInfo {
     serviceTiers: serviceTiers.map((id) => ({
       id,
       name: serviceTierName(id),
-      description: "",
+      description: serviceTierDescription(model.slug, id),
     })),
     defaultServiceTier: nullableString(
       capability(model, "defaultServiceTier", "default_service_tier"),

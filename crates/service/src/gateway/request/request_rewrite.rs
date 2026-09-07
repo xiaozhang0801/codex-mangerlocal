@@ -658,9 +658,23 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
                 changed = true;
             }
 
-            let effective_model = compact_model_override
+            // `gpt-reserve` is Luna's upstream quota alias. Preserve it only when the
+            // configured model is unbound or Luna-equivalent; unrelated model bindings
+            // remain authoritative.
+            let configured_model = compact_model_override
                 .as_deref()
                 .or(normalized_model.as_deref());
+            let explicit_reserve_model = obj
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|model| {
+                    crate::models_v2::should_preserve_luna_reserve_alias(
+                        Some(model),
+                        configured_model,
+                    )
+                })
+                .map(|_| codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG);
+            let effective_model = explicit_reserve_model.or(configured_model);
             if let Some(model) = effective_model {
                 let forwarded_model = super::resolve_builtin_forwarded_model(model)
                     .unwrap_or_else(|| model.to_string());

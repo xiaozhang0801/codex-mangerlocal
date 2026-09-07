@@ -104,6 +104,19 @@ export interface AccountListResult {
   pageSize: number;
 }
 
+export interface AccountFetchedModel {
+  upstreamModel: string;
+  displayName: string | null;
+  existingModelSlug: string | null;
+  alreadyLinked: boolean;
+}
+
+export interface AccountFetchModelsResult {
+  accountId: string;
+  fetchedAt: number;
+  items: AccountFetchedModel[];
+}
+
 export interface UsageAggregateSummary {
   primaryBucketCount: number;
   primaryKnownCount: number;

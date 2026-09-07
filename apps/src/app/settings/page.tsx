@@ -11,7 +11,10 @@ import type {
 } from "@/lib/api/app-updates";
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { useAppStore } from "@/lib/store/useAppStore";
-import { DEFAULT_CODEX_ORIGINATOR } from "@/lib/constants/codex";
+import {
+  DEFAULT_CODEX_ORIGINATOR,
+  DEFAULT_CODEX_USER_AGENT,
+} from "@/lib/constants/codex";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
 import {
@@ -310,6 +313,9 @@ function AdminSettingsPage() {
     string | null
   >(null);
   const [gatewayOriginatorDraft, setGatewayOriginatorDraft] = useState<
+    string | null
+  >(null);
+  const [gatewayUserAgentDraft, setGatewayUserAgentDraft] = useState<
     string | null
   >(null);
   const [modelForwardRuleRowsDraft, setModelForwardRuleRowsDraft] = useState<
@@ -740,6 +746,10 @@ function AdminSettingsPage() {
   const gatewayOriginatorInput =
     gatewayOriginatorDraft ??
     (snapshot?.gatewayOriginator || gatewayOriginatorDefault);
+  const gatewayUserAgentDefault =
+    snapshot?.gatewayUserAgentDefault || DEFAULT_CODEX_USER_AGENT;
+  const gatewayUserAgentInput =
+    gatewayUserAgentDraft ?? (snapshot?.gatewayUserAgent || "");
   const updateModelForwardRuleRows = (
     updater: (rows: ReturnType<typeof parseModelForwardRules>) => ReturnType<
       typeof parseModelForwardRules
@@ -1454,6 +1464,10 @@ function AdminSettingsPage() {
             gatewayOriginatorDraft={gatewayOriginatorDraft}
             setGatewayOriginatorDraft={setGatewayOriginatorDraft}
             gatewayOriginatorDefault={gatewayOriginatorDefault}
+            gatewayUserAgentInput={gatewayUserAgentInput}
+            gatewayUserAgentDraft={gatewayUserAgentDraft}
+            setGatewayUserAgentDraft={setGatewayUserAgentDraft}
+            gatewayUserAgentDefault={gatewayUserAgentDefault}
             upstreamProxyInput={upstreamProxyInput}
             upstreamProxyDraft={upstreamProxyDraft}
             setUpstreamProxyDraft={setUpstreamProxyDraft}

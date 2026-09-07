@@ -291,6 +291,8 @@ pub(crate) fn resolve_api_key_model_group_access(
     key_id: &str,
     platform_model_slug: &str,
 ) -> Result<Option<ModelGroupAccess>, String> {
+    let requested_model_slug = platform_model_slug.trim();
+    let catalog_model_slug = crate::models_v2::policy_catalog_slug(requested_model_slug);
     let owner = storage
         .find_api_key_owner(key_id)
         .map_err(|err| format!("read api key owner failed: {err}"))?;
@@ -311,11 +313,11 @@ pub(crate) fn resolve_api_key_model_group_access(
         return Err("API Key 归属用户已停用".to_string());
     }
     let access = storage
-        .resolve_model_group_access_for_user_v2(user_id, platform_model_slug, now_ts())
+        .resolve_model_group_access_for_user_v2(user_id, catalog_model_slug, now_ts())
         .map_err(|err| format!("read model group access failed: {err}"))?;
     match access {
         Some(access) => Ok(Some(access)),
-        None => Err(format!("model_not_allowed: {platform_model_slug}")),
+        None => Err(format!("model_not_allowed: {requested_model_slug}")),
     }
 }
 

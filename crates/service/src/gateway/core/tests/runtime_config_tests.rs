@@ -1595,6 +1595,34 @@ fn set_codex_user_agent_version_updates_env_and_user_agent() {
     assert!(current_codex_user_agent().contains("codex_cli_rs/0.102.1"));
 }
 
+#[test]
+fn gateway_user_agent_defaults_to_codex_and_accepts_valid_override() {
+    let _guard = crate::test_env_guard();
+    set_gateway_user_agent(None).expect("clear gateway user agent");
+    assert_eq!(current_gateway_user_agent(), current_codex_user_agent());
+
+    let applied =
+        set_gateway_user_agent(Some("  custom-client/1.2  ")).expect("set gateway user agent");
+    assert_eq!(applied.as_deref(), Some("custom-client/1.2"));
+    assert_eq!(current_gateway_user_agent(), "custom-client/1.2");
+
+    set_gateway_user_agent(None).expect("clear gateway user agent");
+}
+
+#[test]
+fn gateway_user_agent_rejects_unsafe_header_values() {
+    let _guard = crate::test_env_guard();
+    assert!(set_gateway_user_agent(Some("bad\r\nvalue"))
+        .expect_err("control characters must fail")
+        .contains("control characters"));
+    assert!(set_gateway_user_agent(Some(&"x".repeat(513)))
+        .expect_err("oversized value must fail")
+        .contains("must not exceed 512 bytes"));
+    assert!(set_gateway_user_agent(Some("客户端/1.0"))
+        .expect_err("non-header value must fail")
+        .contains("valid HTTP header value"));
+}
+
 /// 函数 `set_residency_requirement_updates_env_and_cache`
 ///
 /// 作者: gaohongshun

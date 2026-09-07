@@ -17,8 +17,8 @@ use super::{
     APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
-    APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
-    SERVICE_BIND_MODE_SETTING_KEY,
+    APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_KEY,
+    APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY, SERVICE_BIND_MODE_SETTING_KEY,
 };
 
 /// 函数 `process_env_has_value`
@@ -205,6 +205,14 @@ pub fn sync_runtime_settings_from_storage() {
                 log::warn!("sync persisted gateway user agent version failed: {err}");
             }
         }
+    }
+    if let Err(err) = gateway::set_gateway_user_agent(
+        settings
+            .get(APP_SETTING_GATEWAY_USER_AGENT_KEY)
+            .map(String::as_str),
+    ) {
+        log::warn!("sync persisted gateway user agent failed: {err}");
+        let _ = gateway::set_gateway_user_agent(None);
     }
     if !process_env_has_value("CODEXMANAGER_RESIDENCY_REQUIREMENT") {
         if let Some(residency_requirement) =

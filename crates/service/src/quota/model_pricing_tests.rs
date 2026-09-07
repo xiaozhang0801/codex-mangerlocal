@@ -19,7 +19,18 @@ fn prices() -> (Storage, Vec<CatalogModelPrice>) {
 #[test]
 fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     let (_storage, prices) = prices();
-    assert_eq!(prices.len(), 9);
+    assert_eq!(prices.len(), 10);
+    let astra = resolve_model_price_from_catalog(&prices, "gpt-6-astra", 0).expect("astra");
+    assert_close(astra.input_price_per_1m, 10.0);
+    assert_close(astra.cached_input_price_per_1m, 1.0);
+    assert_close(astra.cache_write_price_per_1m, 12.5);
+    assert_close(astra.output_price_per_1m, 50.0);
+    let astra_long =
+        resolve_model_price_from_catalog(&prices, "gpt-6-astra", 272_001).expect("astra long");
+    assert_close(astra_long.input_price_per_1m, 20.0);
+    assert_close(astra_long.cached_input_price_per_1m, 2.0);
+    assert_close(astra_long.cache_write_price_per_1m, 25.0);
+    assert_close(astra_long.output_price_per_1m, 75.0);
     let mini = resolve_model_price_from_catalog(&prices, "gpt-5.4-mini", 0).expect("mini");
     assert_eq!(mini.provider, "openai");
     assert_close(mini.input_price_per_1m, 0.75);
@@ -41,6 +52,17 @@ fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     assert_close(luna.cached_input_price_per_1m, 0.02);
     assert_close(luna.cache_write_price_per_1m, 0.25);
     assert_close(luna.output_price_per_1m, 1.2);
+    let reserve = resolve_model_price_from_catalog(&prices, "gpt-reserve", 0).expect("reserve");
+    assert_close(reserve.input_price_per_1m, luna.input_price_per_1m);
+    assert_close(
+        reserve.cached_input_price_per_1m,
+        luna.cached_input_price_per_1m,
+    );
+    assert_close(
+        reserve.cache_write_price_per_1m,
+        luna.cache_write_price_per_1m,
+    );
+    assert_close(reserve.output_price_per_1m, luna.output_price_per_1m);
     let image = resolve_model_price_from_catalog(&prices, "gpt-image-2", 0).expect("image");
     assert_close(image.input_price_per_1m, 8.0);
     assert_close(image.cached_input_price_per_1m, 2.0);

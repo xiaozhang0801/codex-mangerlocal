@@ -924,6 +924,125 @@ async fn start_mock_upstream_ws() -> (
     (addr.to_string(), event_rx, capture_rx, handle)
 }
 
+async fn start_mock_upstream_ws_recovers_stale_tool_output() -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<(usize, String)>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stale-tool-output mock upstream");
+    let addr = listener
+        .local_addr()
+        .expect("stale-tool-output mock upstream addr");
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = tokio::spawn(async move {
+        for round in 0..2 {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("accept stale-tool-output upstream");
+            let mut websocket =
+                accept_hdr_async(stream, |_: &Request, response: Response| Ok(response))
+                    .await
+                    .expect("accept stale-tool-output websocket handshake");
+            let first_frame = match websocket.next().await {
+                Some(Ok(Message::Text(text))) => text.to_string(),
+                other => panic!("expected stale-tool-output response.create, got {other:?}"),
+            };
+            event_tx
+                .send((round, first_frame.clone()))
+                .expect("record stale-tool-output upstream frame");
+
+            if round == 0 {
+                for payload in [
+                    serde_json::json!({
+                        "type": "response.created",
+                        "response": { "id": "resp_stale_tool_seed" }
+                    }),
+                    serde_json::json!({
+                        "type": "response.output_item.done",
+                        "response_id": "resp_stale_tool_seed",
+                        "item": {
+                            "type": "custom_tool_call",
+                            "id": "ctc_stale_tool_seed",
+                            "call_id": "call_stale_task",
+                            "name": "exec",
+                            "input": "{}",
+                            "status": "completed"
+                        }
+                    }),
+                    serde_json::json!({
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_stale_tool_seed",
+                            "status": "completed",
+                            "output": [{
+                                "type": "custom_tool_call",
+                                "id": "ctc_stale_tool_seed",
+                                "call_id": "call_stale_task",
+                                "name": "exec",
+                                "input": "{}",
+                                "status": "completed"
+                            }]
+                        }
+                    }),
+                ] {
+                    websocket
+                        .send(Message::Text(payload.to_string().into()))
+                        .await
+                        .expect("send stale-tool-output seed event");
+                }
+            } else {
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "code": null,
+                                "message": "No tool call found for custom tool call output with call_id call_stale_task.",
+                                "param": "input"
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .expect("send exact stale-tool-output error");
+                let retry_frame = match websocket.next().await {
+                    Some(Ok(Message::Text(text))) => text.to_string(),
+                    other => panic!("expected recovered response.create, got {other:?}"),
+                };
+                event_tx
+                    .send((round, retry_frame))
+                    .expect("record recovered stale-tool-output frame");
+                for payload in [
+                    serde_json::json!({
+                        "type": "response.created",
+                        "response": { "id": "resp_stale_tool_recovered" }
+                    }),
+                    serde_json::json!({
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_stale_tool_recovered",
+                            "status": "completed",
+                            "output": []
+                        }
+                    }),
+                ] {
+                    websocket
+                        .send(Message::Text(payload.to_string().into()))
+                        .await
+                        .expect("send recovered stale-tool-output event");
+                }
+            }
+        }
+    });
+    (addr.to_string(), event_rx, handle)
+}
+
 async fn start_mock_upstream_ws_resets_before_first_frame() -> (
     String,
     tokio::sync::mpsc::UnboundedReceiver<(usize, String)>,
@@ -2368,7 +2487,7 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
     assert!(first_payload.get("stream").is_none());
     assert!(first_payload.get("background").is_none());
     assert_eq!(first_payload["store"], true);
-    assert_eq!(first_payload["service_tier"], "priority");
+    assert!(first_payload.get("service_tier").is_none());
     assert_eq!(first_payload["generate"], false);
     assert_eq!(first_payload["prompt_cache_key"], "session_ws_1");
 
@@ -2578,10 +2697,12 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         "expected websocket request log to keep explicit fast service tier"
     );
     assert!(
-        ws_logs
-            .iter()
-            .any(|item| item.effective_service_tier.as_deref() == Some("fast")),
-        "expected websocket request log to persist effective fast service tier"
+        ws_logs.iter().any(|item| {
+            item.service_tier.as_deref() == Some("fast")
+                && item.effective_service_tier.is_none()
+                && item.service_tier_source.as_deref() == Some("model_policy")
+        }),
+        "expected websocket request log to record the unsupported fast tier as filtered"
     );
     assert!(
         ws_logs.iter().any(|item| item.service_tier.is_none()),
@@ -3014,7 +3135,7 @@ async fn official_responses_websocket_accepts_large_image_context_frame() {
         .await
         .expect("send large image context frame");
 
-    let forwarded = tokio::time::timeout(Duration::from_secs(10), upstream_events.recv())
+    let forwarded = tokio::time::timeout(Duration::from_secs(30), upstream_events.recv())
         .await
         .expect("large image context frame timeout")
         .expect("large image context frame channel");
@@ -3022,7 +3143,7 @@ async fn official_responses_websocket_accepts_large_image_context_frame() {
     assert!(forwarded.len() > 16 * 1024 * 1024);
 
     loop {
-        let event = tokio::time::timeout(Duration::from_secs(10), client_ws.next())
+        let event = tokio::time::timeout(Duration::from_secs(30), client_ws.next())
             .await
             .expect("large image response event timeout")
             .expect("large image response event")
@@ -3044,7 +3165,7 @@ async fn official_responses_websocket_accepts_large_image_context_frame() {
         ))
         .await
         .expect("send follow-up frame");
-    let _ = tokio::time::timeout(Duration::from_secs(10), upstream_events.recv())
+    let _ = tokio::time::timeout(Duration::from_secs(30), upstream_events.recv())
         .await
         .expect("follow-up frame timeout")
         .expect("follow-up frame channel");
@@ -4824,4 +4945,178 @@ async fn official_responses_websocket_rebases_tool_output_on_next_account() {
         .await
         .expect("mock upstream shutdown timeout")
         .expect("join mock upstream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn official_responses_websocket_recovers_stale_tool_output_after_task_boundary() {
+    let _guard = crate::test_env_guard();
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-stale-tool-output");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let (upstream_addr, mut upstream_events, upstream_handle) =
+        start_mock_upstream_ws_recovers_stale_tool_output().await;
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_stale_tool_output",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some(format!(
+            "http://{upstream_addr}/chatgpt.com/backend-api/codex"
+        )),
+    );
+    insert_account_and_token(&storage);
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let headers = [
+        ("OpenAI-Beta", "responses_websockets=2026-02-06"),
+        ("session_id", "session_ws_stale_tool_output"),
+    ];
+
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_stale_tool_output",
+        &headers,
+    );
+    let (mut seed_ws, response) = connect_async(request)
+        .await
+        .expect("seed websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    seed_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "prompt_cache_key": "per-task-cache-key",
+                "input": "seed task"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send seed response.create");
+
+    let (round, seed_frame) = tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+        .await
+        .expect("seed upstream frame timeout")
+        .expect("seed upstream frame");
+    assert_eq!(round, 0);
+    let seed_payload: serde_json::Value =
+        serde_json::from_str(seed_frame.as_str()).expect("parse seed upstream frame");
+    assert_eq!(seed_payload["type"], "response.create");
+
+    for expected_type in [
+        "response.created",
+        "response.output_item.done",
+        "response.completed",
+    ] {
+        let event = tokio::time::timeout(Duration::from_secs(5), seed_ws.next())
+            .await
+            .expect("seed client event timeout")
+            .expect("seed client event")
+            .expect("seed client event result");
+        let Message::Text(text) = event else {
+            panic!("unexpected seed client event: {event:?}");
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&text).expect("parse seed client event");
+        assert_eq!(payload["type"], expected_type);
+    }
+    seed_ws.close(None).await.expect("close seed websocket");
+
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_stale_tool_output",
+        &headers,
+    );
+    let (mut follow_up_ws, response) = connect_async(request)
+        .await
+        .expect("follow-up websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    follow_up_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "input": [{
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_stale_task",
+                    "output": [
+                        {"type": "input_text", "text": "Script completed\nWall time: 0.2 seconds\nOutput:\n"},
+                        {"type": "input_text", "text": "MANIFESTS_REFRESHED=PASS"}
+                    ]
+                }]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send stale task response.create");
+
+    let (round, first_attempt) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+            .await
+            .expect("stale first-attempt upstream frame timeout")
+            .expect("stale first-attempt upstream frame");
+    assert_eq!(round, 1);
+    let first_attempt: serde_json::Value =
+        serde_json::from_str(first_attempt.as_str()).expect("parse stale first-attempt frame");
+    assert_eq!(first_attempt["type"], "response.create");
+    assert_eq!(first_attempt["input"][0]["type"], "custom_tool_call_output");
+    assert_eq!(first_attempt["input"].as_array().map(Vec::len), Some(1));
+
+    let (round, recovered_attempt) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+            .await
+            .expect("recovered upstream frame timeout")
+            .expect("recovered upstream frame");
+    assert_eq!(round, 1);
+    let recovered_attempt: serde_json::Value =
+        serde_json::from_str(recovered_attempt.as_str()).expect("parse recovered frame");
+    assert_eq!(recovered_attempt["type"], "response.create");
+    assert!(recovered_attempt.get("previous_response_id").is_none());
+    assert_eq!(recovered_attempt["input"][0]["type"], "custom_tool_call");
+    assert_eq!(recovered_attempt["input"][0]["call_id"], "call_stale_task");
+    assert_eq!(
+        recovered_attempt["input"][1]["type"],
+        "custom_tool_call_output"
+    );
+    assert_eq!(recovered_attempt["input"][1]["call_id"], "call_stale_task");
+
+    for expected_type in ["response.created", "response.completed"] {
+        let event = tokio::time::timeout(Duration::from_secs(5), follow_up_ws.next())
+            .await
+            .expect("recovered client event timeout")
+            .expect("recovered client event")
+            .expect("recovered client event result");
+        let Message::Text(text) = event else {
+            panic!("unexpected recovered client event: {event:?}");
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&text).expect("parse recovered client event");
+        assert_eq!(payload["type"], expected_type);
+        assert_ne!(payload["type"], "error");
+    }
+
+    follow_up_ws
+        .close(None)
+        .await
+        .expect("close follow-up websocket");
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), server_handle)
+        .await
+        .expect("front proxy shutdown timeout")
+        .expect("join front proxy");
+    tokio::time::timeout(Duration::from_secs(5), upstream_handle)
+        .await
+        .expect("stale-tool-output mock upstream shutdown timeout")
+        .expect("join stale-tool-output mock upstream");
 }

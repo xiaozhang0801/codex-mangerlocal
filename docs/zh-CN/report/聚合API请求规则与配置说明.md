@@ -35,6 +35,7 @@
 
 - 供应商类型：`codex`、`claude`、`gemini`。
 - 上游基础地址：例如 `https://api.openai.com` 或带供应商前缀的 `https://open.bigmodel.cn/api/anthropic`。
+- 可选的单连接 `User-Agent` 覆盖。
 - 认证方式：API Key 或用户名密码。
 - 自定义鉴权参数。
 - 自定义 action path。
@@ -135,6 +136,7 @@ Service 侧还会按请求路径识别协议：
 | `supplierName` | 是 | 无 | 供应商显示名。 |
 | `sort` | 否 | `0` | 候选排序值，越小越靠前。 |
 | `url` | 否 | 按 providerType 默认 | 上游 base URL，只允许 `http` / `https`，尾部 `/` 会被移除。 |
+| `userAgent` | 否 | 继承网关全局值 | 当前聚合 API 专用的出站 `User-Agent`；留空时按全局值与 Codex 默认值继续回退。 |
 | `status` | 否 | `active` | `active` 或 `disabled`。 |
 | `authType` | 否 | `apikey` | `apikey` 或 `userpass`。 |
 | `key` | API Key 鉴权时是 | 无 | 聚合 API 的上游密钥，单独存储。 |
@@ -346,6 +348,7 @@ x-password: <password>
 - `transfer-encoding`
 - `upgrade`
 - `host`
+- `user-agent`
 - 自定义鉴权注入的 header 名
 
 流式请求还会丢弃客户端 `accept`，改为：
@@ -355,6 +358,8 @@ Accept: text/event-stream
 ```
 
 这样可以避免客户端旧鉴权、错误 host、错误 content-length 或重复鉴权污染上游请求。
+
+客户端传入的 `User-Agent` 不会作为最终上游值透传；Gateway 会按下文的统一优先级重新设置，避免不同客户端绕过管理员配置。
 
 ## 请求体处理规则
 
@@ -422,12 +427,12 @@ Accept: text/event-stream
 | `new_api` | `newapi`、`new_api` | New API 格式余额查询。 |
 | `custom` | `custom`、`custom_json` | 自定义余额接口和 JSON 字段路径。 |
 
-余额请求默认 header：
+余额请求会携带以下基础 header：
 
 ```http
 Accept: application/json
 Accept-Encoding: identity
-User-Agent: codex-manager/aggregate-api-balance
+User-Agent: <按聚合 API > 网关全局 > Codex 默认值解析>
 ```
 
 ### generic 模板
@@ -679,24 +684,29 @@ Gemini 模型同样在模型目录 V2 中手工新增并配置 route；管理员
 - 每个候选独立使用自己的 route `upstreamModel`，请求体不会在候选间泄漏。
 - 连接测试从引用当前聚合 API 的 enabled V2 routes 中选择具体模型，不做发现或导入。
 
-### 连通性测试客户端标识
+### User-Agent 优先级与适用范围
 
-聚合 API 页面右上角的“连通性测试设置”只影响 `codex` 和 `compatible` 类型使用 Codex 协议执行的 probe，不改变真实 route 转发请求。
+网关和聚合 API 的出站 `User-Agent` 按以下顺序解析，命中后不再继续回退：
 
-设置通过现有 `appSettings/get`、`appSettings/set` 持久化：
-
-| API 字段 | 存储键 | 默认值 | 说明 |
+| 优先级 | 配置入口 | 持久化位置 | 适用范围 |
 | --- | --- | --- | --- |
-| `aggregateApiProbeUserAgentMode` | `aggregate_api.probe_user_agent_mode` | `codex` | `codex` 或 `custom`。 |
-| `aggregateApiProbeUserAgent` | `aggregate_api.probe_user_agent` | 空 | `custom` 模式使用的完整 User-Agent。 |
+| 1 | 聚合 API 编辑页的 `userAgent` | `aggregate_apis.user_agent` | 当前聚合 API 的真实 route 转发、上游模型列表拉取、连通性 probe 和余额查询。 |
+| 2 | 网关设置的 `gatewayUserAgent` | `gateway.user_agent` | 所有网关上游请求；聚合 API 未单独配置时也继承此值。 |
+| 3 | 无需配置 | 动态生成 | 根据当前 Codex UA 版本和运行环境生成 Codex-compatible 默认值。 |
 
-`codex` 模式会模拟 Codex 官方客户端身份：
+也就是：
 
-- 使用当前 Gateway 配置生成官方格式的 `User-Agent` 和 `originator`。
-- 每次 probe 生成独立的 `session-id`、`thread-id` 和 `x-client-request-id`。
-- 发送与该请求锚点对应的 `x-codex-window-id`，用于满足会校验 Codex 客户端指纹的供应商。
+```text
+aggregate_apis.user_agent > gateway.user_agent > 动态 Codex 默认 User-Agent
+```
 
-`custom` 模式只发送用户指定的 `User-Agent`，不会附加 `originator` 或 `x-codex-*` 指纹。自定义值不能为空、不能包含控制字符，最大长度为 512 bytes。
+ChatGPT 账号的额度查询和 Token 刷新使用标准 Codex User-Agent，不继承上述自定义覆盖；网页订阅查询 `/accounts/check/v4-2023-04-27` 不设置 User-Agent，避免触发网页防护并影响额度刷新。
+
+两个自定义值都遵循相同校验规则：保存前去除首尾空白，空值表示清除覆盖并继承下一层；最多 512 bytes，不能包含控制字符，并且必须是合法的 HTTP header 值。
+
+不再为连通性测试单独选择 UA 模式。历史字段 `aggregateApiProbeUserAgentMode` 和 `aggregateApiProbeUserAgent` 不参与上述解析；需要为某个供应商定制时，在该聚合 API 的 `userAgent` 中配置，需要统一覆盖时在网关设置中配置。
+
+Codex/compatible 连通性 probe 仍会按 Codex 请求规则生成独立的 `session-id`、`thread-id`、`x-client-request-id` 和对应的 `x-codex-window-id`，并发送当前 `originator`；只有 `User-Agent` 改为遵循统一优先级。Claude、Gemini probe 以及余额和模型列表请求同样使用解析后的 `User-Agent`。
 
 ## 管理接口
 

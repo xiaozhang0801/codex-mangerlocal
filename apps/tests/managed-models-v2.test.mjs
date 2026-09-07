@@ -48,7 +48,7 @@ function model(overrides = {}) {
     defaultReasoningEffort: "low",
     capabilities: {
       reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-      service_tiers: ["priority"],
+      service_tiers: ["priority", "ultrafast"],
       additional_speed_tiers: ["fast"],
       input_modalities: ["text", "image"],
       output_modalities: ["text"],
@@ -120,7 +120,16 @@ test("managed model adapter carries non-prompt Codex runtime metadata", () => {
   assert.equal(info.compHash, "3000");
   assert.deepEqual(info.additionalSpeedTiers, ["fast"]);
   assert.deepEqual(info.serviceTiers, [
-    { id: "priority", name: "Fast", description: "" },
+    {
+      id: "priority",
+      name: "Fast",
+      description: "1.5x speed, increased usage",
+    },
+    {
+      id: "ultrafast",
+      name: "Ultrafast",
+      description: "The fastest available responses for latency-sensitive work.",
+    },
   ]);
   assert.deepEqual(info.outputModalities, ["text"]);
   assert.deepEqual(info.supportedEndpoints, [
@@ -152,4 +161,18 @@ test("managed model adapter accepts camelCase capability names and legacy defaul
   ]);
   assert.equal(imageInfo.supportsTextGeneration, false);
   assert.equal(legacyInfo.supportsTextGeneration, true);
+});
+
+test("managed model adapter does not invent Fast speed copy for custom models", () => {
+  const info = managedModelV2ToModelInfo(
+    model({
+      slug: "custom-fast-model",
+      origin: "custom",
+      capabilities: { service_tiers: ["priority"] },
+    }),
+  );
+
+  assert.deepEqual(info.serviceTiers, [
+    { id: "priority", name: "Fast", description: "" },
+  ]);
 });

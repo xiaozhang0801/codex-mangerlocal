@@ -96,7 +96,7 @@ pwsh -NoLogo -NoProfile -File scripts/rebuild.ps1 `
 
 ## Recommended checks before release
 
-1. Make sure the version has been updated with `scripts/bump-version.ps1`
+1. Synchronize the project version in the root `Cargo.toml`, `apps/package.json`, Tauri `Cargo.toml` / `tauri.conf.json`, and both `Cargo.lock` files
 2. Make sure `CHANGELOG.md` has been updated
 3. Make sure the desktop frontend build passes: `pnpm -C apps run build`
 4. Make sure core tests pass: `pnpm -C apps run test`, `cargo test --workspace`

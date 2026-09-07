@@ -5,6 +5,38 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-05
+
+### Fixed
+
+- Fixed a regression where a newly added subscription User-Agent triggered web protection, interrupted quota refresh, and surfaced a subsequent token authorization error. Subscription requests no longer set User-Agent.
+- Restored the standard Codex User-Agent for quota queries and token refresh, independent of custom gateway overrides, including default and account-specific proxy routes.
+
+### Changed
+
+- Bumped the workspace, frontend, Tauri desktop metadata, and lockfiles to `0.6.0`, retaining existing account and settings storage.
+- `release-all` now builds service and desktop artifacts concurrently across five platform targets while preserving Desktop, Service, Web, and Docker assets. Caches are separated by Cargo workspace; dispatching a pinned release commit from the default branch enables cache reuse across versions.
+
+## [0.5.7] - 2026-09-05
+
+### Added
+
+- Added a **Keep using account after quota exhaustion** switch to the account editor. It persists as `force_enabled`, is off by default, and keeps the account in the gateway candidate pool for manual quota handling.
+- Added `gpt-6-astra` to the default model catalog. Revision 8 seeds fresh and upgraded databases with its official API limits and cache-write-aware pricing, Codex runtime metadata, and the default account-pool route, while preserving same-slug custom models and user-edited builtins.
+- Added a remembered table/card view switch to the accounts page. Administrators can fetch upstream models for one explicitly selected ChatGPT account using that account's credentials, account identifier, and proxy, then selectively associate them with model catalog V2 account-pool routes without account-pool rotation.
+- Added Standard and Ultrafast API-key service tiers across Responses HTTP, WebSocket, and request logs. Standard uses the upstream default speed and is logged as `standard`, Fast maps to `priority`, and Ultrafast passes through unchanged; Flex remains accepted for compatibility, while actual availability still depends on the model and upstream.
+- Added configurable outbound gateway `User-Agent` handling: `gateway.user_agent` applies globally, per-connection `aggregate_apis.user_agent` takes priority for aggregate route forwarding, model discovery, probes, and balance requests, and unset values fall back to the dynamically generated Codex-compatible `User-Agent` (#459).
+
+### Changed
+
+- Bumped the release version to `0.5.7` and synchronized the workspace, frontend package, Tauri desktop metadata, and lockfiles.
+
+### Fixed
+
+- Fixed Responses WebSocket tool-output continuation: duplicate outputs for the same tool call are removed before forwarding, connection preamble events no longer consume terminal-recovery opportunities, and missing tool-call context can be restored within bounded limits across task boundaries (#458).
+- Fixed Luna Reserve usage disappearing from the account page after later refreshes or transient empty-list responses, and normalized both snake_case and camelCase additional-quota payloads.
+- Fixed the Luna Reserve routing boundary: only explicit `gpt-reserve` requests place accounts with usable Reserve quota in the Reserve candidate pool. Ordinary `gpt-5.6-luna` requests continue to use the regular account pool and cannot bypass exhausted standard 5-hour/7-day windows merely because Reserve remains available; hard authorization or deactivation states retain their existing handling.
+
 ## [0.5.6] - 2026-09-02
 
 ### Added

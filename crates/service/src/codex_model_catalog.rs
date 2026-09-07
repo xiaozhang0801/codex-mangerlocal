@@ -180,7 +180,7 @@ fn fetch_official_model_catalog(
                 )
                 .header(ACCEPT, "application/json")
                 .header(ACCEPT_ENCODING, "identity")
-                .header(USER_AGENT, crate::gateway::current_codex_user_agent())
+                .header(USER_AGENT, crate::gateway::current_gateway_user_agent())
                 .header("originator", crate::gateway::current_wire_originator());
             if let Some(account_id) = official_chatgpt_account_id(&account, &upstream_base) {
                 request = request.header("ChatGPT-Account-ID", account_id);

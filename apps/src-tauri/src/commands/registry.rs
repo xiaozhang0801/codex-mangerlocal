@@ -129,6 +129,8 @@ macro_rules! invoke_handler {
             crate::commands::account::remote::service_account_update,
             crate::commands::account::remote::service_account_update_sorts,
             crate::commands::account::remote::service_account_warmup,
+            crate::commands::account::remote::service_account_fetch_models,
+            crate::commands::account::remote::service_account_associate_models,
             crate::commands::account::remote::service_account_test_start,
             crate::commands::account::remote::service_account_test_cancel,
             crate::commands::account::remote::service_account_proxy_get,

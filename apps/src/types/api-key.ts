@@ -32,6 +32,7 @@ export interface AggregateApi {
   supplierName: string | null;
   sort: number;
   url: string;
+  userAgent: string | null;
   authType: string;
   authParams: Record<string, unknown> | null;
   action: string | null;

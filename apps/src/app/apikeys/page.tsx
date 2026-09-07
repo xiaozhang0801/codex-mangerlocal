@@ -276,20 +276,20 @@ export default function ApiKeysPage() {
     useState<ClientIpUsageSortKey>("todayTokens");
   const [browserOrigin, setBrowserOrigin] = useState("");
   const { data: accountManagerStatus } = useQuery({
-    queryKey: ["account-manager", "status"],
-    queryFn: () => appClient.getAccountManagerStatus(),
+    queryKey: ["account-manager", "status", serviceAddr || null],
+    queryFn: () => appClient.getAccountManagerStatus(serviceAddr),
     enabled: isUsageQueryEnabled && isPageActive && showMemberOwnership,
     retry: 1,
   });
   const { data: appUsers = [] } = useQuery<AppUser[]>({
-    queryKey: ["account-manager", "users"],
-    queryFn: () => appClient.listAppUsers(),
+    queryKey: ["account-manager", "users", serviceAddr || null],
+    queryFn: () => appClient.listAppUsers(serviceAddr),
     enabled: isUsageQueryEnabled && isPageActive && showMemberOwnership,
     retry: 1,
   });
   const { data: apiKeyOwners = [] } = useQuery<ApiKeyOwner[]>({
-    queryKey: ["account-manager", "api-key-owners"],
-    queryFn: () => appClient.listApiKeyOwners(),
+    queryKey: ["account-manager", "api-key-owners", serviceAddr || null],
+    queryFn: () => appClient.listApiKeyOwners(serviceAddr),
     enabled: isUsageQueryEnabled && isPageActive && showMemberOwnership,
     retry: 1,
   });
@@ -343,6 +343,15 @@ export default function ApiKeysPage() {
     setCcSwitchImportingId(null);
   }, [isPageActive]);
 
+  useEffect(() => {
+    setRevealedSecrets({});
+    setLoadingSecretId(null);
+    setApiKeyModalOpen(false);
+    setEditingKeyId(null);
+    setDeleteKeyId(null);
+    setCcSwitchImportingId(null);
+  }, [serviceAddr]);
+
   const editingApiKey = useMemo(
     () => apiKeys.find((item) => item.id === editingKeyId) || null,
     [apiKeys, editingKeyId],
@@ -350,10 +359,10 @@ export default function ApiKeysPage() {
   const handleOwnerSaved = async () => {
     await Promise.all([
       queryClient.invalidateQueries({
-        queryKey: ["account-manager", "api-key-owners"],
+        queryKey: ["account-manager", "api-key-owners", serviceAddr || null],
       }),
       queryClient.invalidateQueries({
-        queryKey: ["account-manager", "users"],
+        queryKey: ["account-manager", "users", serviceAddr || null],
       }),
       queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
     ]);
@@ -361,7 +370,7 @@ export default function ApiKeysPage() {
   const { data: usageOverview, isPending: isUsageOverviewLoading } = useQuery({
     queryKey: ["apikey-usage-overview", serviceAddr || null],
     queryFn: async () => {
-      const stats = await accountClient.listApiKeyUsageStats();
+      const stats = await accountClient.listApiKeyUsageStats(serviceAddr);
       const usageByKey = stats.reduce<Record<string, number>>(
         (result, item) => {
           const keyId = String(item.keyId || "").trim();
@@ -1221,6 +1230,7 @@ export default function ApiKeysPage() {
       </WorkPanel>
 
       <ApiKeyModal
+        key={serviceAddr || "default"}
         open={apiKeyModalOpen}
         onOpenChange={setApiKeyModalOpen}
         apiKey={editingApiKey}

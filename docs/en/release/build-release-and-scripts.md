@@ -43,12 +43,25 @@ The unified release workflow is `.github/workflows/release-all.yml`. Pushing a `
 - Purpose: publish Desktop + Service artifacts for all supported platforms in one run
 - Build targets: `Windows`, `macOS (dmg)`, `Linux`
 - The frontend `dist` is built once, then reused by the packaging jobs for each platform
+- Desktop and Service builds run concurrently for all five platform targets. Service jobs also stage the Web packages and Linux x86_64 Docker archive; publishing waits for both build groups.
+- Desktop caches use the `apps/src-tauri` workspace and Service caches use the root workspace, with separate keys to prevent cleanup across different dependency graphs.
 - Inputs:
   - `mode`: defaults to `build-and-publish`, options: `build-and-publish | build-artifacts | publish-artifacts`
   - `tag`: required
   - `ref`: defaults to `main`
   - `prerelease`: defaults to `auto`, options: `auto | true | false`
 - Behavior: packages and publishes artifacts only; it no longer includes server-side test gates
+
+### Cache reuse across versions
+
+After pushing the verified commit to `main`, dispatch from `main` with the build ref pinned to that commit:
+
+```powershell
+$releaseCommit = git rev-parse HEAD
+gh workflow run release-all.yml --ref main -f mode=build-and-publish -f tag=v0.6.0 -f ref=$releaseCommit -f prerelease=false
+```
+
+Do not also push the same release tag: publishing creates the tag and Release after successful builds. Caches saved on the default branch are available to later branch and tag releases; caches saved only under one version tag cannot be reused directly by other tags. Initial builds, toolchain changes, and cache eviction can still require cold builds.
 
 ## Release artifacts
 

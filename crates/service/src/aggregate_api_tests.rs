@@ -9,11 +9,13 @@ use tiny_http::{Response, Server};
 
 use super::{
     action_path_or_default, extract_custom_balance, extract_generic_balance,
-    extract_new_api_balance, list_aggregate_apis, models_endpoint, normalize_action_override,
+    extract_new_api_balance, fetch_aggregate_api_models, list_aggregate_apis, models_endpoint,
+    normalize_action_override, normalize_aggregate_api_user_agent,
     normalize_custom_balance_query_config, normalize_fetched_model_id, normalize_provider_type,
     normalize_provider_type_value, parse_fetched_models, probe_claude_endpoint,
-    probe_codex_endpoint, provider_default_url, read_aggregate_api_secret,
-    CustomBalanceQueryConfig, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_COMPATIBLE,
+    probe_codex_endpoint, provider_default_url, query_generic_balance_path,
+    read_aggregate_api_secret, resolved_aggregate_api_user_agent, CustomBalanceQueryConfig,
+    AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_COMPATIBLE,
     AGGREGATE_API_PROVIDER_GEMINI,
 };
 
@@ -68,6 +70,7 @@ fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
         auth_params_json: None,
         action: action.map(str::to_string),
         model_override: None,
+        user_agent: None,
         status: "active".to_string(),
         created_at: 0,
         updated_at: 0,
@@ -97,6 +100,7 @@ fn list_aggregate_apis_reads_model_assignments_from_v2_routes_only() {
     storage.init().expect("init db");
     let mut api = aggregate_api_with_action(None);
     api.id = "agg-listed".to_string();
+    api.user_agent = Some("Aggregate-Listed/1.0".to_string());
     storage.insert_aggregate_api(&api).expect("insert api");
     let mut model = storage
         .get_managed_model_v2("gpt-5.4")
@@ -131,7 +135,46 @@ fn list_aggregate_apis_reads_model_assignments_from_v2_routes_only() {
 
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, "agg-listed");
+    assert_eq!(items[0].user_agent.as_deref(), Some("Aggregate-Listed/1.0"));
     assert_eq!(items[0].model_slugs, vec!["gpt-5.4".to_string()]);
+}
+
+#[test]
+fn aggregate_api_user_agent_normalization_and_priority_are_strict() {
+    let _lock = crate::test_env_guard();
+    assert_eq!(
+        normalize_aggregate_api_user_agent(Some("  Aggregate/1.0  ".to_string()))
+            .expect("normalize user agent")
+            .as_deref(),
+        Some("Aggregate/1.0")
+    );
+    assert!(
+        normalize_aggregate_api_user_agent(Some("bad\nvalue".to_string()))
+            .expect_err("control characters must fail")
+            .contains("control characters")
+    );
+    assert!(normalize_aggregate_api_user_agent(Some("x".repeat(513)))
+        .expect_err("oversized user agent must fail")
+        .contains("must not exceed 512 bytes"));
+
+    crate::gateway::set_gateway_user_agent(Some("Global/1.0"))
+        .expect("set global gateway user agent");
+    let mut api = aggregate_api_with_action(None);
+    assert_eq!(
+        resolved_aggregate_api_user_agent(&api).expect("resolve global user agent"),
+        "Global/1.0"
+    );
+    api.user_agent = Some("Aggregate/2.0".to_string());
+    assert_eq!(
+        resolved_aggregate_api_user_agent(&api).expect("resolve aggregate user agent"),
+        "Aggregate/2.0"
+    );
+    crate::gateway::set_gateway_user_agent(None).expect("clear global gateway user agent");
+    api.user_agent = None;
+    assert_eq!(
+        resolved_aggregate_api_user_agent(&api).expect("resolve Codex fallback user agent"),
+        crate::gateway::current_codex_user_agent()
+    );
 }
 
 #[test]
@@ -460,6 +503,7 @@ fn codex_responses_probe_uses_valid_input_text_content() {
     let db_path = dir.join("codexmanager.db");
     let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     crate::initialize_storage_if_needed().expect("init storage");
+    crate::gateway::set_gateway_user_agent(None).expect("clear global gateway user agent");
     let server = Server::http("127.0.0.1:0").expect("start mock server");
     let base_url = format!("http://{}", server.server_addr());
     let (tx, rx) = mpsc::channel();
@@ -523,17 +567,14 @@ fn codex_responses_probe_uses_valid_input_text_content() {
 }
 
 #[test]
-fn codex_probe_custom_user_agent_does_not_add_codex_fingerprint_headers() {
+fn codex_probe_prefers_aggregate_api_user_agent_over_global_setting() {
     let _lock = crate::test_env_guard();
     let dir = new_test_dir("aggregate-api-custom-probe-user-agent");
     let db_path = dir.join("codexmanager.db");
     let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
     crate::initialize_storage_if_needed().expect("init storage");
-    crate::app_settings::set_aggregate_api_probe_user_agent_settings(
-        Some("custom"),
-        Some("Custom-Probe/2.0"),
-    )
-    .expect("set custom probe user agent");
+    crate::gateway::set_gateway_user_agent(Some("Global-Gateway/1.0"))
+        .expect("set global gateway user agent");
 
     let server = Server::http("127.0.0.1:0").expect("start mock server");
     let base_url = format!("http://{}", server.server_addr());
@@ -558,7 +599,8 @@ fn codex_probe_custom_user_agent_does_not_add_codex_fingerprint_headers() {
             .as_reader()
             .read_to_string(&mut body)
             .expect("read request body");
-        tx.send(headers).expect("send request headers");
+        tx.send((request.url().to_string(), headers))
+            .expect("send request headers");
         request
             .respond(Response::from_string(r#"{"id":"resp_probe"}"#))
             .expect("respond responses");
@@ -567,6 +609,9 @@ fn codex_probe_custom_user_agent_does_not_add_codex_fingerprint_headers() {
     let mut api = aggregate_api_with_action(None);
     api.provider_type = "codex".to_string();
     api.url = base_url;
+    api.auth_params_json =
+        Some(r#"{"location":"query","name":"api_key","headerValueFormat":"raw"}"#.to_string());
+    api.user_agent = Some("Aggregate-Override/2.0".to_string());
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -574,16 +619,126 @@ fn codex_probe_custom_user_agent_does_not_add_codex_fingerprint_headers() {
 
     probe_codex_endpoint(&client, &api, "secret", "gpt-5.6-sol").expect("probe succeeds");
 
-    let headers = rx
+    let (request_url, headers) = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("captured headers");
     join.join().expect("join mock server");
+    assert!(request_url.contains("api_key=secret"));
     assert_eq!(
         captured_header(&headers, "user-agent"),
-        Some("Custom-Probe/2.0")
+        Some("Aggregate-Override/2.0")
     );
-    assert_eq!(captured_header(&headers, "originator"), None);
-    assert_eq!(captured_header(&headers, "x-codex-window-id"), None);
+    assert_eq!(
+        captured_header(&headers, "originator"),
+        Some("codex_cli_rs")
+    );
+    assert!(captured_header(&headers, "x-codex-window-id").is_some());
+    crate::gateway::set_gateway_user_agent(None).expect("clear global gateway user agent");
+}
+
+#[test]
+fn fetch_models_keeps_aggregate_user_agent_after_query_auth_url_rebuild() {
+    let _lock = crate::test_env_guard();
+    let dir = new_test_dir("aggregate-api-fetch-models-user-agent");
+    let db_path = dir.join("codexmanager.db");
+    let _guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    crate::initialize_storage_if_needed().expect("init storage");
+    crate::gateway::set_gateway_user_agent(Some("Global-Models/1.0"))
+        .expect("set global gateway user agent");
+
+    let server = Server::http("127.0.0.1:0").expect("start models server");
+    let base_url = format!("http://{}", server.server_addr());
+    let (tx, rx) = mpsc::channel();
+    let join = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive models request")
+            .expect("models request present");
+        let user_agent = request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("User-Agent"))
+            .map(|header| header.value.as_str().to_string());
+        tx.send((request.url().to_string(), user_agent))
+            .expect("send captured models request");
+        request
+            .respond(Response::from_string(r#"{"data":[{"id":"gpt-test"}]}"#))
+            .expect("respond models");
+    });
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let mut api = aggregate_api_with_action(None);
+    api.id = "agg-models-ua".to_string();
+    api.provider_type = "codex".to_string();
+    api.url = base_url;
+    api.auth_params_json =
+        Some(r#"{"location":"query","name":"api_key","headerValueFormat":"raw"}"#.to_string());
+    api.user_agent = Some("Aggregate-Models/2.0".to_string());
+    storage.insert_aggregate_api(&api).expect("insert api");
+    storage
+        .upsert_aggregate_api_secret(api.id.as_str(), "model-secret")
+        .expect("insert secret");
+
+    let result = fetch_aggregate_api_models(api.id.as_str()).expect("fetch models");
+    let (request_url, user_agent) = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("captured models request");
+    join.join().expect("join models server");
+    assert!(request_url.contains("api_key=model-secret"));
+    assert_eq!(user_agent.as_deref(), Some("Aggregate-Models/2.0"));
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].upstream_model, "gpt-test");
+
+    crate::gateway::set_gateway_user_agent(None).expect("clear global gateway user agent");
+}
+
+#[test]
+fn balance_request_uses_aggregate_user_agent() {
+    let server = Server::http("127.0.0.1:0").expect("start balance server");
+    let base_url = format!("http://{}", server.server_addr());
+    let (tx, rx) = mpsc::channel();
+    let join = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive balance request")
+            .expect("balance request present");
+        let user_agent = request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("User-Agent"))
+            .map(|header| header.value.as_str().to_string());
+        tx.send(user_agent).expect("send captured user agent");
+        request
+            .respond(Response::from_string(
+                r#"{"is_active":true,"balance":12.5,"currency":"USD"}"#,
+            ))
+            .expect("respond balance");
+    });
+
+    let mut api = aggregate_api_with_action(None);
+    api.url = base_url.clone();
+    api.user_agent = Some("Aggregate-Balance/3.0".to_string());
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("build client");
+    let snapshot = query_generic_balance_path(
+        &client,
+        &api,
+        "balance-secret",
+        base_url.as_str(),
+        "/user/balance",
+    )
+    .expect("query balance");
+    assert_eq!(snapshot.remaining, Some(12.5));
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("captured balance user agent")
+            .as_deref(),
+        Some("Aggregate-Balance/3.0")
+    );
+    join.join().expect("join balance server");
 }
 
 #[test]

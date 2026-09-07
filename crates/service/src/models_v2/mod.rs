@@ -107,6 +107,31 @@ fn capability<'a>(model: &'a ManagedModelV2, keys: &[&str]) -> Option<&'a Value>
     keys.iter().find_map(|key| model.capabilities.get(*key))
 }
 
+pub(crate) fn policy_catalog_slug(model_slug: &str) -> &str {
+    let model_slug = model_slug.trim();
+    if codexmanager_core::usage::is_luna_reserve_model(Some(model_slug)) {
+        codexmanager_core::usage::LUNA_MODEL_SLUG
+    } else {
+        model_slug
+    }
+}
+
+pub(crate) fn should_preserve_luna_reserve_alias(
+    request_model: Option<&str>,
+    configured_model: Option<&str>,
+) -> bool {
+    if !codexmanager_core::usage::is_luna_reserve_model(request_model) {
+        return false;
+    }
+    configured_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .is_none_or(|model| {
+            model.eq_ignore_ascii_case(codexmanager_core::usage::LUNA_MODEL_SLUG)
+                || codexmanager_core::usage::is_luna_reserve_model(Some(model))
+        })
+}
+
 pub(crate) fn supports_text_generation(model: &ManagedModelV2) -> bool {
     capability(
         model,
@@ -133,7 +158,7 @@ pub(crate) fn ensure_text_generation_model(
         return Ok(());
     };
     let Some(model) = storage
-        .get_managed_model_v2(slug)
+        .get_managed_model_v2(policy_catalog_slug(slug))
         .map_err(|err| format!("read managed model V2 failed: {err}"))?
     else {
         // Preserve existing behavior for external or not-yet-cataloged model slugs.
@@ -151,8 +176,37 @@ pub(crate) fn ensure_text_generation_model(
 fn service_tier_display_name(id: &str) -> &str {
     if id.eq_ignore_ascii_case("priority") {
         "Fast"
+    } else if id.eq_ignore_ascii_case("ultrafast") {
+        "Ultrafast"
+    } else if id.eq_ignore_ascii_case("flex") {
+        "Flex"
     } else {
         id
+    }
+}
+
+fn service_tier_description(model_slug: &str, id: &str) -> &'static str {
+    if id.eq_ignore_ascii_case("priority") {
+        if model_slug.eq_ignore_ascii_case("gpt-6-astra") {
+            "2x speed, increased usage"
+        } else if [
+            "gpt-5.4",
+            "gpt-5.5",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ]
+        .iter()
+        .any(|known_slug| model_slug.eq_ignore_ascii_case(known_slug))
+        {
+            "1.5x speed, increased usage"
+        } else {
+            ""
+        }
+    } else if id.eq_ignore_ascii_case("ultrafast") {
+        "The fastest available responses for latency-sensitive work."
+    } else {
+        ""
     }
 }
 
@@ -182,6 +236,7 @@ pub(crate) fn model_info(model: &ManagedModelV2) -> ModelInfo {
         .into_iter()
         .map(|id| ModelServiceTier {
             name: service_tier_display_name(&id).to_string(),
+            description: service_tier_description(model.slug.as_str(), &id).to_string(),
             id,
             ..Default::default()
         })
@@ -385,6 +440,12 @@ mod tests {
     use codexmanager_core::storage::Storage;
 
     #[test]
+    fn policy_catalog_slug_normalizes_reserve_alias_and_whitespace() {
+        assert_eq!(policy_catalog_slug(" GPT-RESERVE "), "gpt-5.6-luna");
+        assert_eq!(policy_catalog_slug(" gpt-5.4 "), "gpt-5.4");
+    }
+
+    #[test]
     fn image_model_is_exposed_with_capabilities_but_excluded_from_text_catalog() {
         let storage = Storage::open_in_memory().expect("open storage");
         storage.init().expect("init storage");
@@ -395,10 +456,10 @@ mod tests {
             .iter()
             .find(|model| model.slug == "gpt-5.6-sol")
             .expect("text model");
-        assert_eq!(text_model.shell_type.as_deref(), Some("shell_command"));
+        assert_eq!(text_model.shell_type.as_deref(), Some("unified_exec"));
         assert_eq!(text_model.base_instructions.as_deref(), Some(""));
         assert_eq!(text_model.effective_context_window_percent, Some(95));
-        assert_eq!(text_model.extra["max_context_window"], 372_000);
+        assert_eq!(text_model.extra["max_context_window"], 872_000);
         assert_eq!(text_model.extra["comp_hash"], "3000");
         assert_eq!(text_model.extra["tool_mode"], "code_mode_only");
         assert_eq!(text_model.extra["multi_agent_version"], "v2");
@@ -429,10 +490,10 @@ mod tests {
     #[test]
     fn model_info_exposes_fast_service_tier_for_codex_clients() {
         let model = ManagedModelV2 {
-            slug: "fast-model".to_string(),
+            slug: "gpt-5.6-sol".to_string(),
             display_name: "Fast Model".to_string(),
             capabilities: serde_json::json!({
-                "service_tiers": ["priority", "flex"],
+                "service_tiers": ["priority", "ultrafast", "flex"],
                 "additional_speed_tiers": ["fast"],
                 "default_service_tier": "priority"
             }),
@@ -442,11 +503,48 @@ mod tests {
         let info = model_info(&model);
         assert_eq!(info.additional_speed_tiers, ["fast"]);
         assert_eq!(info.default_service_tier.as_deref(), Some("priority"));
-        assert_eq!(info.service_tiers.len(), 2);
+        assert_eq!(info.service_tiers.len(), 3);
         assert_eq!(info.service_tiers[0].id, "priority");
         assert_eq!(info.service_tiers[0].name, "Fast");
-        assert_eq!(info.service_tiers[1].id, "flex");
-        assert_eq!(info.service_tiers[1].name, "flex");
+        assert_eq!(
+            info.service_tiers[0].description,
+            "1.5x speed, increased usage"
+        );
+        assert_eq!(info.service_tiers[1].id, "ultrafast");
+        assert_eq!(info.service_tiers[1].name, "Ultrafast");
+        assert_eq!(
+            info.service_tiers[1].description,
+            "The fastest available responses for latency-sensitive work."
+        );
+        assert_eq!(info.service_tiers[2].id, "flex");
+        assert_eq!(info.service_tiers[2].name, "Flex");
+    }
+
+    #[test]
+    fn astra_fast_service_tier_uses_catalog_usage_copy() {
+        let model = ManagedModelV2 {
+            slug: "gpt-6-astra".to_string(),
+            capabilities: serde_json::json!({ "service_tiers": ["priority"] }),
+            ..Default::default()
+        };
+
+        let info = model_info(&model);
+        assert_eq!(
+            info.service_tiers[0].description,
+            "2x speed, increased usage"
+        );
+    }
+
+    #[test]
+    fn custom_model_fast_service_tier_does_not_invent_a_speed_claim() {
+        let model = ManagedModelV2 {
+            slug: "custom-fast-model".to_string(),
+            capabilities: serde_json::json!({ "service_tiers": ["priority"] }),
+            ..Default::default()
+        };
+
+        let info = model_info(&model);
+        assert_eq!(info.service_tiers[0].description, "");
     }
 
     #[test]

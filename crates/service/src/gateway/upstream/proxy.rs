@@ -209,8 +209,9 @@ fn validate_model_route(
     let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    let catalog_model = crate::models_v2::policy_catalog_slug(model);
     let managed_model: Option<ManagedModelV2> = storage
-        .get_enabled_model_v2(model)
+        .get_enabled_model_v2(catalog_model)
         .map_err(|err| (500, format!("model_catalog_v2_read_failed: {err}")))?;
     let Some(managed_model) = managed_model else {
         return Err((404, format!("model_not_found: {model}")));
@@ -390,8 +391,9 @@ fn apply_aggregate_model_filter(
     else {
         return Ok(candidates);
     };
+    let catalog_model = crate::models_v2::policy_catalog_slug(model);
     let managed_model = storage
-        .get_enabled_model_v2(model)
+        .get_enabled_model_v2(catalog_model)
         .map_err(|err| format!("read aggregate model routes V2 failed: {err}"))?
         .ok_or_else(|| format!("model_not_found: {model}"))?;
     let mut routes = std::collections::HashMap::new();
@@ -411,7 +413,14 @@ fn apply_aggregate_model_filter(
         let Some(route) = routes.get(&api.id) else {
             return false;
         };
-        api.model_override = Some(route.upstream_model.clone());
+        api.model_override = if crate::models_v2::should_preserve_luna_reserve_alias(
+            Some(model),
+            Some(route.upstream_model.as_str()),
+        ) {
+            None
+        } else {
+            Some(route.upstream_model.clone())
+        };
         true
     });
     if candidates.is_empty() {

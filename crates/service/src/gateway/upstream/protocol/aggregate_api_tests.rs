@@ -1,10 +1,10 @@
 use codexmanager_core::storage::{now_ts, AggregateApi, Storage};
 
 use super::{
-    build_anthropic_bridge_aggregate_api_request, build_upstream_url, effective_action_path,
-    resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
-    responses_to_anthropic_messages_action_path, rewrite_body_model_override,
-    should_bridge_responses_to_anthropic,
+    build_aggregate_api_request, build_anthropic_bridge_aggregate_api_request, build_upstream_url,
+    effective_action_path, resolve_aggregate_api_rotation_candidates,
+    resolve_passthrough_sse_protocol, responses_to_anthropic_messages_action_path,
+    rewrite_body_model_override, should_bridge_responses_to_anthropic, AggregateApiAuthConfig,
 };
 use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
@@ -24,6 +24,7 @@ fn aggregate_api_with_action(action: Option<&str>) -> AggregateApi {
         auth_params_json: None,
         action: action.map(str::to_string),
         model_override: None,
+        user_agent: None,
         status: "active".to_string(),
         created_at: 0,
         updated_at: 0,
@@ -147,9 +148,13 @@ fn anthropic_bridge_request_adds_required_messages_headers_with_default_auth() {
             tiny_http::Header::from_bytes("Authorization", "Bearer client-key")
                 .expect("auth header"),
         )
+        .with_header(
+            tiny_http::Header::from_bytes("User-Agent", "incoming-client/9.9")
+                .expect("user agent header"),
+        )
         .into();
     let client = reqwest::blocking::Client::new();
-    let builder = build_anthropic_bridge_aggregate_api_request(
+    let built = build_anthropic_bridge_aggregate_api_request(
         &client,
         &request,
         &reqwest::Method::POST,
@@ -158,41 +163,84 @@ fn anthropic_bridge_request_adds_required_messages_headers_with_default_auth() {
         "sk-ant-test",
         &crate::gateway::upstream::protocol::aggregate_api::AggregateApiAuthConfig::ApiKeyDefaultBearer,
         &std::collections::HashSet::new(),
+        "aggregate-client/1.0",
         None,
         true,
     )
-    .expect("build request")
-    .build()
-    .expect("finalize request");
+    .expect("build request");
 
     assert_eq!(
-        builder
+        built
             .headers()
             .get("authorization")
             .and_then(|value| value.to_str().ok()),
         Some("Bearer sk-ant-test")
     );
     assert_eq!(
-        builder
+        built
             .headers()
             .get("x-api-key")
             .and_then(|value| value.to_str().ok()),
         Some("sk-ant-test")
     );
     assert_eq!(
-        builder
+        built
             .headers()
             .get("anthropic-version")
             .and_then(|value| value.to_str().ok()),
         Some("2023-06-01")
     );
     assert_eq!(
-        builder
+        built
             .headers()
             .get("accept")
             .and_then(|value| value.to_str().ok()),
         Some("text/event-stream")
     );
+    assert_eq!(
+        built
+            .headers()
+            .get("user-agent")
+            .and_then(|value| value.to_str().ok()),
+        Some("aggregate-client/1.0")
+    );
+}
+
+#[test]
+fn aggregate_request_user_agent_override_replaces_conflicting_auth_header() {
+    let request: tiny_http::Request = tiny_http::TestRequest::new()
+        .with_header(
+            tiny_http::Header::from_bytes("User-Agent", "incoming-client/9.9")
+                .expect("incoming user agent"),
+        )
+        .into();
+    let client = reqwest::blocking::Client::new();
+    let built = build_aggregate_api_request(
+        &client,
+        &request,
+        &reqwest::Method::POST,
+        reqwest::Url::parse("https://example.com/v1/responses").expect("url"),
+        &Bytes::from_static(br#"{"model":"gpt-test"}"#),
+        "must-not-leak",
+        &AggregateApiAuthConfig::ApiKeyHeader {
+            name: "user-agent".to_string(),
+            format: "raw".to_string(),
+        },
+        &std::collections::HashSet::from(["user-agent".to_string()]),
+        "Aggregate-Override/4.0",
+        None,
+        false,
+    )
+    .expect("build aggregate request");
+
+    let values = built
+        .headers()
+        .get_all("user-agent")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>();
+    assert_eq!(values, vec!["Aggregate-Override/4.0"]);
+    assert!(!values.iter().any(|value| value.contains("must-not-leak")));
 }
 
 #[test]
@@ -228,6 +276,7 @@ fn gemini_native_candidates_resolve_to_gemini_provider_only() {
                 auth_params_json: None,
                 action: None,
                 model_override: None,
+                user_agent: None,
                 status: "active".to_string(),
                 created_at: now,
                 updated_at: now,
@@ -310,6 +359,7 @@ fn explicit_aggregate_api_id_promotes_matching_active_provider_candidate_only() 
                 auth_params_json: None,
                 action: None,
                 model_override: None,
+                user_agent: None,
                 status: "active".to_string(),
                 created_at: now,
                 updated_at: now,

@@ -5,9 +5,6 @@ use chrono::Local;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
-use super::super::aggregate_api::{
-    current_aggregate_api_probe_user_agent, current_aggregate_api_probe_user_agent_mode,
-};
 use super::author_links::{
     default_author_server_recommendations, default_author_sponsors, load_author_link_items,
     serialize_author_link_items,
@@ -20,11 +17,12 @@ use super::{
     current_gateway_sse_keepalive_enabled, current_gateway_sse_keepalive_interval_ms,
     current_gateway_thread_aware_account_distribution_enabled,
     current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
-    current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
-    current_saved_service_addr, current_service_bind_mode, default_gateway_originator,
-    default_gateway_user_agent_version, env_override_catalog_value, env_override_reserved_keys,
-    env_override_unsupported_keys, normalize_optional_text, normalize_ui_appearance_preset,
-    normalize_ui_locale, normalize_ui_theme, normalize_ui_zoom_factor, parse_bool_with_default,
+    current_gateway_upstream_total_timeout_ms, current_gateway_user_agent,
+    current_gateway_user_agent_version, current_saved_service_addr, current_service_bind_mode,
+    default_gateway_originator, default_gateway_user_agent, default_gateway_user_agent_version,
+    env_override_catalog_value, env_override_reserved_keys, env_override_unsupported_keys,
+    normalize_optional_text, normalize_ui_appearance_preset, normalize_ui_locale,
+    normalize_ui_theme, normalize_ui_zoom_factor, parse_bool_with_default,
     residency_requirement_options, save_env_overrides_value, save_persisted_app_setting,
     save_persisted_bool_setting, sync_runtime_settings_from_storage,
     APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
@@ -221,10 +219,10 @@ fn current_app_settings_value_inner(
     let account_max_inflight = current_gateway_account_max_inflight();
     let thread_aware_account_distribution_enabled =
         current_gateway_thread_aware_account_distribution_enabled();
-    let aggregate_api_probe_user_agent_mode = current_aggregate_api_probe_user_agent_mode();
-    let aggregate_api_probe_user_agent = current_aggregate_api_probe_user_agent();
     let quota_guard = current_gateway_quota_guard();
     let gateway_originator = current_gateway_originator();
+    let gateway_user_agent = current_gateway_user_agent();
+    let gateway_user_agent_default = default_gateway_user_agent();
     let gateway_user_agent_version = current_gateway_user_agent_version();
     let gateway_originator_default = default_gateway_originator();
     let gateway_user_agent_version_default = default_gateway_user_agent_version();
@@ -394,13 +392,10 @@ fn current_app_settings_value_inner(
     });
     if let Some(object) = result.as_object_mut() {
         object.insert("zoomFactor".to_string(), zoom_factor.into());
+        object.insert("gatewayUserAgent".to_string(), gateway_user_agent.into());
         object.insert(
-            "aggregateApiProbeUserAgentMode".to_string(),
-            aggregate_api_probe_user_agent_mode.into(),
-        );
-        object.insert(
-            "aggregateApiProbeUserAgent".to_string(),
-            aggregate_api_probe_user_agent.into(),
+            "gatewayUserAgentDefault".to_string(),
+            gateway_user_agent_default.into(),
         );
     }
     if let Some(object) = result.as_object_mut() {

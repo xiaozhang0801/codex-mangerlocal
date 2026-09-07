@@ -183,7 +183,10 @@ fn gateway_applies_model_fast_policy_to_forwarded_requests() {
     );
     server.join();
     assert_eq!(status, 400, "gateway response: {response_body}");
-    assert!(response_body.contains("does not allow Fast requests"));
+    assert!(
+        response_body.contains("does not allow Fast requests"),
+        "unexpected block response: {response_body}"
+    );
     assert!(
         upstream_rx
             .recv_timeout(Duration::from_millis(300))

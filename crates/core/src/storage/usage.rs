@@ -1,4 +1,4 @@
-use rusqlite::{params_from_iter, Result, Row};
+use rusqlite::{params_from_iter, OptionalExtension, Result, Row};
 
 use super::key_id_filters::{normalize_text_ids, text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
 use super::{
@@ -34,6 +34,19 @@ fn latest_usage_snapshot_for_account_sql() -> &'static str {
     "SELECT account_id, used_percent, window_minutes, resets_at, secondary_used_percent, secondary_window_minutes, secondary_resets_at, credits_json, captured_at
      FROM usage_snapshots
      WHERE account_id = ?1
+     ORDER BY captured_at DESC, id DESC
+     LIMIT 1"
+}
+
+fn latest_usage_snapshot_with_extra_rate_limits_for_account_sql() -> &'static str {
+    "SELECT account_id, used_percent, window_minutes, resets_at, secondary_used_percent, secondary_window_minutes, secondary_resets_at, credits_json, captured_at
+     FROM usage_snapshots
+     WHERE account_id = ?1
+       AND CASE
+             WHEN json_valid(credits_json)
+             THEN COALESCE(json_array_length(credits_json, '$._codexmanager_extra_rate_limits'), 0)
+             ELSE 0
+           END > 0
      ORDER BY captured_at DESC, id DESC
      LIMIT 1"
 }
@@ -124,6 +137,73 @@ impl Storage {
             ),
         )?;
         Ok(())
+    }
+
+    /// Inserts one usage snapshot and prunes older rows for the same account in
+    /// a single transaction. A retain value of zero preserves the existing
+    /// unlimited-retention behavior.
+    pub fn insert_usage_snapshot_and_prune(
+        &self,
+        snap: &UsageSnapshotRecord,
+        retain: usize,
+    ) -> Result<usize> {
+        self.insert_usage_snapshot_and_prune_with_previous(snap, retain, |_, _| Ok(()))
+            .map(|(_, pruned)| pruned)
+    }
+
+    /// Resolves a snapshot against the immediately previous row while holding
+    /// the same immediate transaction used for insertion and pruning. This
+    /// keeps read-modify-write decisions account-serializable across storage
+    /// connections.
+    pub fn insert_usage_snapshot_and_prune_with_previous<F>(
+        &self,
+        snap: &UsageSnapshotRecord,
+        retain: usize,
+        resolve: F,
+    ) -> Result<(UsageSnapshotRecord, usize)>
+    where
+        F: FnOnce(Option<&UsageSnapshotRecord>, &mut Option<String>) -> Result<()>,
+    {
+        let tx = self.conn.unchecked_transaction()?;
+        let previous = tx
+            .query_row(
+                latest_usage_snapshot_for_account_sql(),
+                [&snap.account_id],
+                |row| map_usage_snapshot_row(row),
+            )
+            .optional()?;
+        let mut resolved = snap.clone();
+        if let Some(previous) = previous.as_ref() {
+            // Locally captured snapshots are ordered by arrival. Keep the
+            // persisted timestamp monotonic so a corrected system clock cannot
+            // make an older, future-dated row survive pruning indefinitely.
+            resolved.captured_at = resolved.captured_at.max(previous.captured_at);
+        }
+        resolve(previous.as_ref(), &mut resolved.credits_json)?;
+        tx.execute(
+            "INSERT INTO usage_snapshots (account_id, used_percent, window_minutes, resets_at, secondary_used_percent, secondary_window_minutes, secondary_resets_at, credits_json, captured_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            (
+                &resolved.account_id,
+                resolved.used_percent,
+                resolved.window_minutes,
+                resolved.resets_at,
+                resolved.secondary_used_percent,
+                resolved.secondary_window_minutes,
+                resolved.secondary_resets_at,
+                &resolved.credits_json,
+                resolved.captured_at,
+            ),
+        )?;
+        let pruned = if retain > 0 {
+            tx.execute(
+                prune_usage_snapshots_for_account_sql(),
+                (&resolved.account_id, retain as i64),
+            )?
+        } else {
+            0
+        };
+        tx.commit()?;
+        Ok((resolved, pruned))
     }
 
     /// 函数 `prune_usage_snapshots_for_account`
@@ -224,6 +304,28 @@ impl Storage {
         account_id: &str,
     ) -> Result<Option<UsageSnapshotRecord>> {
         let mut stmt = self.conn.prepare(latest_usage_snapshot_for_account_sql())?;
+        let mut rows = stmt.query([account_id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(map_usage_snapshot_row(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Returns the newest snapshot for an account that still contains at least
+    /// one normalized optional rate-limit bucket.
+    ///
+    /// A previous application version could persist an empty optional bucket
+    /// list when the upstream response temporarily returned `null`.  Keeping
+    /// this lookup account-scoped lets the service recover a still-valid
+    /// reserve bucket without mixing data between accounts.
+    pub fn latest_usage_snapshot_with_extra_rate_limits_for_account(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<UsageSnapshotRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare(latest_usage_snapshot_with_extra_rate_limits_for_account_sql())?;
         let mut rows = stmt.query([account_id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(map_usage_snapshot_row(row)?))

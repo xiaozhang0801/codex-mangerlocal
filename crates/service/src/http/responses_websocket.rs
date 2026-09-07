@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::IpAddr;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -34,9 +35,9 @@ use crate::storage_helpers::open_storage;
 mod responses_websocket_rebase;
 
 use responses_websocket_rebase::{
-    expand_response_create_previous_response, rebase_response_create_for_account_change,
-    rebase_response_create_for_missing_tool_call, CompletedWsResponseCache,
-    CompletedWsToolCallCache, WsToolCallKind,
+    expand_response_create_previous_response, normalize_ws_tool_call_outputs,
+    rebase_response_create_for_account_change, rebase_response_create_for_missing_tool_call,
+    CompletedWsResponseCache, CompletedWsToolCallCache, WsToolCallKind,
 };
 
 const RESPONSES_WS_ERROR_CODE: &str = "responses_websocket_error";
@@ -59,6 +60,13 @@ const RESPONSES_WS_MAX_PENDING_FRAME_SEND_ATTEMPTS: usize = 2;
 // A response can emit only connection preamble events before a transport reset. Reconnect the
 // lane at most twice in that state; once substantive output exists, replay is not safe.
 const RESPONSES_WS_MAX_PRE_COMPLETION_RECOVERY_ATTEMPTS: u8 = 2;
+// Tool-call output can arrive in a new frontend task after the upstream websocket was closed.
+// Retain only the call descriptors needed to make that output self-contained; response history
+// is intentionally not retained here because it was the source of the previous over-broad fix.
+const RESPONSES_WS_TOOL_CALL_REGISTRY_TTL: Duration = Duration::from_secs(30 * 60);
+const RESPONSES_WS_MAX_TOOL_CALL_REGISTRIES: usize = 128;
+const RESPONSES_WS_MAX_TOOL_CALL_REGISTRY_BYTES: usize = 32 * 1024 * 1024;
+const RESPONSES_WS_MAX_TOOL_CALL_ENTRY_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 struct WsRequestContext {
@@ -120,6 +128,16 @@ struct ConnectedUpstreamWebsocket {
     route_strategy: &'static str,
     route_source: &'static str,
 }
+
+struct StoredWsToolCallRegistry {
+    calls: CompletedWsToolCallCache,
+    last_used_at: Instant,
+    retained_bytes: usize,
+}
+
+static RESPONSES_WS_TOOL_CALL_REGISTRIES: OnceLock<
+    Mutex<HashMap<String, StoredWsToolCallRegistry>>,
+> = OnceLock::new();
 
 #[derive(Clone)]
 struct WsUpstreamAuthorization {
@@ -339,6 +357,130 @@ pub(super) async fn upgrade_responses_websocket(request: HttpRequest<Body>) -> R
         })
 }
 
+fn ws_tool_call_registry_key(
+    context: &WsRequestContext,
+    prepared: &PreparedClientFrame,
+) -> Option<String> {
+    // The frontend can add or omit prompt_cache_key when it opens the next task. If a
+    // session_id exists, use that stable root anchor instead of making the registry depend on
+    // the shape of an individual response.create frame.
+    let (route_conversation_id, _) = if context
+        .cache_affinity_key
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        ws_route_binding(context)
+    } else {
+        ws_route_binding_for_frame(context, prepared)
+    };
+    let route_conversation_id = route_conversation_id?.trim().to_string();
+    if route_conversation_id.is_empty() {
+        return None;
+    }
+    let model = prepared
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("-");
+    Some(format!(
+        "{}:{}:{}:{}",
+        context.api_key.key_hash, context.api_key.protocol_type, model, route_conversation_id,
+    ))
+}
+
+fn store_ws_tool_call_registry(
+    context: &WsRequestContext,
+    prepared: &PreparedClientFrame,
+    observed: &CompletedWsToolCallCache,
+) {
+    if observed.is_empty() {
+        return;
+    }
+    let Some(key) = ws_tool_call_registry_key(context, prepared) else {
+        return;
+    };
+    let now = Instant::now();
+    let mutex = RESPONSES_WS_TOOL_CALL_REGISTRIES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registries = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registries.retain(|_, entry| {
+        now.duration_since(entry.last_used_at) <= RESPONSES_WS_TOOL_CALL_REGISTRY_TTL
+    });
+
+    let retained_bytes = {
+        let entry = registries
+            .entry(key.clone())
+            .or_insert_with(|| StoredWsToolCallRegistry {
+                calls: CompletedWsToolCallCache::default(),
+                last_used_at: now,
+                retained_bytes: 0,
+            });
+        entry.calls.merge_from(observed);
+        entry.last_used_at = now;
+        entry.retained_bytes = entry.calls.estimated_bytes();
+        entry.retained_bytes
+    };
+    if retained_bytes > RESPONSES_WS_MAX_TOOL_CALL_ENTRY_BYTES {
+        registries.remove(&key);
+        return;
+    }
+
+    let mut total_bytes = registries.values().fold(0usize, |total, entry| {
+        total.saturating_add(entry.retained_bytes)
+    });
+    while !registries.is_empty()
+        && (registries.len() > RESPONSES_WS_MAX_TOOL_CALL_REGISTRIES
+            || total_bytes > RESPONSES_WS_MAX_TOOL_CALL_REGISTRY_BYTES)
+    {
+        let oldest_key = registries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used_at)
+            .map(|(key, _)| key.clone());
+        let Some(oldest_key) = oldest_key else {
+            break;
+        };
+        if let Some(oldest) = registries.remove(&oldest_key) {
+            total_bytes = total_bytes.saturating_sub(oldest.retained_bytes);
+        }
+    }
+}
+
+fn load_ws_tool_call_registry(
+    context: &WsRequestContext,
+    prepared: &PreparedClientFrame,
+) -> Option<CompletedWsToolCallCache> {
+    let key = ws_tool_call_registry_key(context, prepared)?;
+    let now = Instant::now();
+    let mutex = RESPONSES_WS_TOOL_CALL_REGISTRIES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registries = mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registries.retain(|_, entry| {
+        now.duration_since(entry.last_used_at) <= RESPONSES_WS_TOOL_CALL_REGISTRY_TTL
+    });
+    let entry = registries.get_mut(&key)?;
+    entry.last_used_at = now;
+    Some(entry.calls.clone())
+}
+
+fn remember_ws_tool_calls_from_input(context: &WsRequestContext, prepared: &PreparedClientFrame) {
+    let mut observed = CompletedWsToolCallCache::default();
+    observed.observe_input(&prepared.input);
+    store_ws_tool_call_registry(context, prepared, &observed);
+}
+
+fn remember_ws_tool_calls_from_upstream_event(
+    context: &WsRequestContext,
+    prepared: &PreparedClientFrame,
+    text: &str,
+) {
+    let mut observed = CompletedWsToolCallCache::default();
+    observed.observe_upstream_event(text);
+    store_ws_tool_call_registry(context, prepared, &observed);
+}
+
 async fn run_responses_websocket_session(mut socket: WebSocket, context: WsRequestContext) {
     let first_text = match receive_initial_request(&mut socket).await {
         Ok(Some(text)) => text,
@@ -364,6 +506,15 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                 return;
             }
         };
+
+    let mut completed_tool_calls = if ws_request_has_tool_call_output(prepared_first.text.as_str())
+    {
+        load_ws_tool_call_registry(&context, &prepared_first).unwrap_or_default()
+    } else {
+        CompletedWsToolCallCache::default()
+    };
+    completed_tool_calls.observe_input(&prepared_first.input);
+    remember_ws_tool_calls_from_input(&context, &prepared_first);
 
     let mut first_log = begin_ws_request_log(
         &context,
@@ -410,7 +561,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         retried_missing_tool_call_context: false,
     };
 
-    let mut completed_tool_calls = CompletedWsToolCallCache::default();
     let mut completed_responses = CompletedWsResponseCache::default();
     if let Err(err) = upstream
         .stream
@@ -586,6 +736,15 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         break;
                                     }
                                 };
+                                if ws_request_has_tool_call_output(prepared.text.as_str()) {
+                                    if let Some(stored) =
+                                        load_ws_tool_call_registry(&context, &prepared)
+                                    {
+                                        completed_tool_calls.merge_from(&stored);
+                                    }
+                                }
+                                completed_tool_calls.observe_input(&prepared.input);
+                                remember_ws_tool_calls_from_input(&context, &prepared);
                                 let attempted_account_ids =
                                     HashSet::from([upstream.account_id.clone()]);
                                 let buffer_retry_preamble = should_buffer_ws_retry_preamble(
@@ -883,6 +1042,13 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                 match upstream_result {
                     Ok(UpstreamMessage::Text(text)) => {
                         completed_tool_calls.observe_upstream_event(text.as_str());
+                        if let Some(pending) = pending_request.as_ref() {
+                            remember_ws_tool_calls_from_upstream_event(
+                                &context,
+                                &pending.prepared,
+                                text.as_str(),
+                            );
+                        }
                         if let Some(terminal) = inspect_ws_terminal_event(text.as_str()) {
                             if terminal.is_websocket_connection_limit {
                                 if let Some(pending) = pending_request.as_mut() {
@@ -969,7 +1135,10 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 &terminal,
                             );
                             let retry_result = if let Some(pending) = pending_request.as_mut() {
-                                if !pending.forwarded_upstream_event {
+                                if should_attempt_ws_terminal_retry(
+                                    terminal.status_code,
+                                    pending.forwarded_non_preamble_event,
+                                ) {
                                     try_retry_ws_request_after_terminal(
                                         &context,
                                         &mut upstream,
@@ -1492,7 +1661,7 @@ fn apply_model_fast_policy_with_storage(
         return Ok(prepared);
     };
     let model = storage
-        .get_enabled_model_v2(model_slug)
+        .get_enabled_model_v2(crate::models_v2::policy_catalog_slug(model_slug))
         .map_err(|err| {
             WsSessionError::new(
                 500,
@@ -1509,16 +1678,18 @@ fn apply_model_fast_policy_with_storage(
         })?;
     let (body, applied) = crate::models_v2::fast_policy::apply(
         prepared.text.as_bytes().to_vec(),
-        model.fast_policy,
-        prepared.has_service_tier_field,
+        &model,
+        prepared.raw_service_tier.as_deref(),
     )
     .map_err(|_| {
         WsSessionError::new(
             400,
             crate::models_v2::fast_policy::FAST_REQUEST_BLOCKED,
             crate::gateway::bilingual_error(
-                format!("模型 {model_slug} 不允许 Fast 请求"),
-                format!("model {model_slug} does not allow Fast requests"),
+                format!("模型 {model_slug} 不允许 Fast 请求（加速服务等级）"),
+                format!(
+                    "model {model_slug} does not allow Fast requests (accelerated service tier)"
+                ),
             ),
         )
     })?;
@@ -1649,6 +1820,18 @@ fn rewrite_client_frame(
         rewritten_object.insert("client_metadata".to_string(), client_metadata);
     }
 
+    let duplicate_tool_outputs_dropped = rewritten_object
+        .get_mut("input")
+        .map(normalize_ws_tool_call_outputs)
+        .unwrap_or_default();
+    if duplicate_tool_outputs_dropped > 0 {
+        log::warn!(
+            "event=responses_ws_duplicate_tool_outputs_dropped count={} model={}",
+            duplicate_tool_outputs_dropped,
+            client_model_for_log.as_deref().unwrap_or("-")
+        );
+    }
+
     let request: ResponseCreateWsRequest =
         serde_json::from_value(Value::Object(rewritten_object.clone())).map_err(|err| {
             WsSessionError::bad_request_bilingual(
@@ -1661,8 +1844,14 @@ fn rewrite_client_frame(
         .as_deref()
         .and_then(crate::apikey::service_tier::normalize_service_tier_for_log)
         .map(str::to_string);
-    let service_tier_source = resolve_ws_service_tier_source_for_log(
+    let effective_service_tier = crate::apikey::service_tier::recover_omitted_standard_tier_for_log(
+        effective_service_tier,
+        context.api_key.service_tier.as_deref(),
         explicit_service_tier_for_log.as_deref(),
+        false,
+    );
+    let service_tier_source = resolve_ws_service_tier_source_for_log(
+        service_tier_diagnostic.raw_value.as_deref(),
         effective_service_tier.as_deref(),
         context.api_key.service_tier.as_deref(),
     );
@@ -1718,7 +1907,11 @@ fn resolve_ws_service_tier_source_for_log(
     api_key_service_tier: Option<&str>,
 ) -> Option<String> {
     match (client_service_tier, effective_service_tier) {
-        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+        (Some(client), Some(effective))
+            if crate::apikey::service_tier::service_tier_request_matches_log_value(
+                client, effective,
+            ) =>
+        {
             Some("client_request".to_string())
         }
         (Some(_), Some(_)) => Some("gateway_override".to_string()),
@@ -3014,7 +3207,7 @@ fn build_upstream_websocket_request(
     insert_header(
         headers,
         "User-Agent",
-        &crate::gateway::current_codex_user_agent(),
+        &crate::gateway::current_gateway_user_agent(),
     )?;
     insert_header(
         headers,
@@ -3481,6 +3674,10 @@ fn should_rotate_ws_upstream(status_code: u16) -> bool {
     matches!(status_code, 401 | 403 | 404 | 408 | 409 | 429)
 }
 
+fn should_attempt_ws_terminal_retry(status_code: u16, forwarded_non_preamble_event: bool) -> bool {
+    status_code != 200 && !forwarded_non_preamble_event
+}
+
 fn apply_ws_terminal_account_follow_up(account_id: &str, terminal: &WsTerminalEvent) {
     if !should_rotate_ws_upstream(terminal.status_code) {
         return;
@@ -3515,7 +3712,8 @@ async fn try_retry_ws_request_after_terminal(
     completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<bool, WsSessionError> {
-    if terminal.status_code == 200 || pending.forwarded_upstream_event {
+    if !should_attempt_ws_terminal_retry(terminal.status_code, pending.forwarded_non_preamble_event)
+    {
         return Ok(false);
     }
     let mut retry_text = None;

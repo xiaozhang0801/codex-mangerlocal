@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, ListChecks, ListX, Search, SearchX } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -17,34 +17,59 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/lib/i18n/provider";
-import type { AggregateApi, AggregateApiFetchedModel } from "@/types/api-key";
+import type { AggregateApi } from "@/types/api-key";
+
+interface ModelAssociationItem {
+  upstreamModel: string;
+  displayName: string | null;
+  existingModelSlug: string | null;
+  alreadyLinked: boolean;
+}
 
 interface AggregateApiModelAssociationModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  aggregateApi: AggregateApi | null;
-  items: AggregateApiFetchedModel[];
+  aggregateApi?: AggregateApi | null;
+  sourceName?: string | null;
+  items: ModelAssociationItem[];
   isSaving?: boolean;
   onAssociate: (upstreamModels: string[]) => Promise<void>;
+}
+
+interface ModelAssociationDraft {
+  items: ModelAssociationItem[];
+  search: string;
+  selected: Set<string>;
 }
 
 export function AggregateApiModelAssociationModal({
   open,
   onOpenChange,
   aggregateApi,
+  sourceName,
   items,
   isSaving = false,
   onAssociate,
 }: AggregateApiModelAssociationModalProps) {
   const { t } = useI18n();
-  const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [draft, setDraft] = useState<ModelAssociationDraft>(() => ({
+    items,
+    search: "",
+    selected: new Set(items.map((item) => item.upstreamModel)),
+  }));
+  const draftMatchesItems = draft.items === items;
+  const search = draftMatchesItems ? draft.search : "";
+  const selected = draftMatchesItems
+    ? draft.selected
+    : new Set(items.map((item) => item.upstreamModel));
 
-  useEffect(() => {
-    if (!open) return;
-    setSearch("");
-    setSelected(new Set(items.map((item) => item.upstreamModel)));
-  }, [open, items]);
+  const setSearch = (value: string) => {
+    setDraft({ items, search: value, selected });
+  };
+
+  const setSelected = (next: Set<string>) => {
+    setDraft({ items, search, selected: next });
+  };
 
   const filteredItems = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -56,15 +81,17 @@ export function AggregateApiModelAssociationModal({
 
   const allSelected = items.length > 0 && items.every((item) => selected.has(item.upstreamModel));
   const selectedCount = selected.size;
-  const supplierName = aggregateApi?.supplierName?.trim() || aggregateApi?.url || t("聚合 API");
+  const supplierName =
+    sourceName?.trim() ||
+    aggregateApi?.supplierName?.trim() ||
+    aggregateApi?.url ||
+    t("聚合 API");
 
   const toggle = (model: string, checked: boolean) => {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (checked) next.add(model);
-      else next.delete(model);
-      return next;
-    });
+    const next = new Set(selected);
+    if (checked) next.add(model);
+    else next.delete(model);
+    setSelected(next);
   };
 
   return (

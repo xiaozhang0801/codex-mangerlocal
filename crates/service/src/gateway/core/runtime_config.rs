@@ -2,6 +2,7 @@ use codexmanager_core::auth::DEFAULT_ORIGINATOR;
 use codexmanager_core::auth::{DEFAULT_CLIENT_ID, DEFAULT_ISSUER};
 use codexmanager_core::storage::Storage;
 use reqwest::blocking::Client;
+use reqwest::header::HeaderValue;
 use reqwest::Proxy;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -62,6 +63,7 @@ static CODEX_IMAGE_MAIN_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_IMAGE_TOOL_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static ORIGINATOR: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_USER_AGENT_VERSION: OnceLock<RwLock<String>> = OnceLock::new();
+static GATEWAY_USER_AGENT: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static RESIDENCY_REQUIREMENT: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static TOKEN_EXCHANGE_CLIENT_ID: OnceLock<RwLock<String>> = OnceLock::new();
 static TOKEN_EXCHANGE_ISSUER: OnceLock<RwLock<String>> = OnceLock::new();
@@ -89,7 +91,8 @@ const DEFAULT_MODEL_FORWARD_RULES: &str = "";
 const DEFAULT_COMPACT_MODEL_FORWARD_RULES: &str = "";
 const DEFAULT_CODEX_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_CODEX_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
-const DEFAULT_CODEX_USER_AGENT_VERSION: &str = "0.130.0";
+const DEFAULT_CODEX_USER_AGENT_VERSION: &str = "0.153.0";
+const MAX_GATEWAY_USER_AGENT_BYTES: usize = 512;
 const MAX_UPSTREAM_PROXY_POOL_SIZE: usize = 5;
 const MAX_CANDIDATE_CLIENT_CACHE_ENTRIES: usize = 512;
 
@@ -1422,6 +1425,44 @@ pub(crate) fn current_codex_user_agent() -> String {
     )
 }
 
+pub(crate) fn normalize_gateway_user_agent(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.len() > MAX_GATEWAY_USER_AGENT_BYTES {
+        return Err(format!(
+            "gateway user agent must not exceed {MAX_GATEWAY_USER_AGENT_BYTES} bytes"
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err("gateway user agent contains control characters".to_string());
+    }
+    if !value.is_ascii() {
+        return Err("gateway user agent is not a valid HTTP header value".to_string());
+    }
+    HeaderValue::from_str(value)
+        .map_err(|_| "gateway user agent is not a valid HTTP header value".to_string())?;
+    Ok(Some(value.to_string()))
+}
+
+pub(crate) fn set_gateway_user_agent(value: Option<&str>) -> Result<Option<String>, String> {
+    ensure_runtime_config_loaded();
+    let normalized = normalize_gateway_user_agent(value)?;
+    let mut cached =
+        crate::lock_utils::write_recover(gateway_user_agent_cell(), "gateway_user_agent");
+    *cached = normalized.clone();
+    Ok(normalized)
+}
+
+pub(crate) fn current_gateway_user_agent_override() -> Option<String> {
+    ensure_runtime_config_loaded();
+    crate::lock_utils::read_recover(gateway_user_agent_cell(), "gateway_user_agent").clone()
+}
+
+pub(crate) fn current_gateway_user_agent() -> String {
+    current_gateway_user_agent_override().unwrap_or_else(current_codex_user_agent)
+}
+
 /// 函数 `current_residency_requirement`
 ///
 /// 作者: gaohongshun
@@ -2289,6 +2330,10 @@ fn originator_cell() -> &'static RwLock<String> {
 fn codex_user_agent_version_cell() -> &'static RwLock<String> {
     CODEX_USER_AGENT_VERSION
         .get_or_init(|| RwLock::new(DEFAULT_CODEX_USER_AGENT_VERSION.to_string()))
+}
+
+fn gateway_user_agent_cell() -> &'static RwLock<Option<String>> {
+    GATEWAY_USER_AGENT.get_or_init(|| RwLock::new(None))
 }
 
 /// 函数 `residency_requirement_cell`

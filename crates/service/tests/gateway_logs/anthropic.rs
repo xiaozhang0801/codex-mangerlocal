@@ -202,6 +202,7 @@ fn gateway_aggregate_compatible_messages_passthrough_accepts_message_stop() {
             auth_params_json: None,
             action: None,
             model_override: None,
+            user_agent: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,
@@ -364,6 +365,7 @@ fn gateway_aggregate_responses_bridge_adds_anthropic_headers_and_messages_path()
             auth_params_json: None,
             action: None,
             model_override: None,
+            user_agent: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,
@@ -583,8 +585,8 @@ fn gateway_claude_messages_stay_on_chatgpt_codex_base() {
     let upstream_body =
         String::from_utf8(decode_upstream_request_body(&captured)).expect("upstream body utf8");
     assert!(
-        upstream_body.contains("\"service_tier\":\"priority\""),
-        "unexpected upstream body: {upstream_body}"
+        !upstream_body.contains("\"service_tier\""),
+        "gpt-5.4-mini does not advertise an accelerated tier: {upstream_body}"
     );
 }
 
@@ -825,18 +827,13 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
     });
     let err_body = serde_json::to_string(&first_response).expect("serialize first response");
     let ok_body = serde_json::to_string(&second_response).expect("serialize second response");
-    // A 404 can trigger alternate-path + stateless retries, and the candidate executor gives the
-    // same account one final retry before failover. Force both rounds to 404 so the gateway
-    // actually fails over to wsB.
+    // A failover decision gets one same-account retry, and each cycle can retry statelessly.
+    // Keep all four wsA attempts rate-limited so the successful response is served by wsB.
     let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body),
+        (429, err_body.clone()),
+        (429, err_body.clone()),
+        (429, err_body.clone()),
+        (429, err_body),
         (200, ok_body),
     ]);
     let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
@@ -946,7 +943,7 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
     assert_eq!(status, 200, "gateway response: {response_body}");
 
     let mut captured = Vec::new();
-    for idx in 0..9 {
+    for idx in 0..5 {
         captured.push(
             upstream_rx
                 .recv_timeout(Duration::from_secs(2))
@@ -954,7 +951,17 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
         );
     }
     upstream_join.join().expect("join upstream");
-    let captured_debug = format!("{captured:#?}");
+    let captured_debug = format!(
+        "{:?}",
+        captured
+            .iter()
+            .map(|request| (
+                request.path.as_str(),
+                request.headers.get("authorization").map(String::as_str),
+                request.headers.contains_key("x-codex-turn-state"),
+            ))
+            .collect::<Vec<_>>()
+    );
 
     let ws_a_stateful = captured
         .iter()
@@ -974,7 +981,7 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
                 .map(|v| v.contains("access_token_ws_b"))
                 .unwrap_or(false)
         })
-        .expect("expected wsB upstream request");
+        .unwrap_or_else(|| panic!("expected wsB upstream request: {captured_debug}"));
 
     assert_eq!(
         ws_a_stateful
@@ -1010,7 +1017,7 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
     );
 }
 
-/// 函数 `gateway_claude_failover_same_workspace_preserves_session_affinity_headers`
+/// 函数 `gateway_claude_failover_same_workspace_still_strips_session_affinity_headers`
 ///
 /// 作者: gaohongshun
 ///
@@ -1022,7 +1029,7 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
 /// # 返回
 /// 无
 #[test]
-fn gateway_claude_failover_same_workspace_preserves_session_affinity_headers() {
+fn gateway_claude_failover_same_workspace_still_strips_session_affinity_headers() {
     let _lock = test_env_guard();
     let dir = new_test_dir("codexmanager-gateway-claude-strip-same-workspace");
     let db_path: PathBuf = dir.join("codexmanager.db");
@@ -1047,18 +1054,13 @@ fn gateway_claude_failover_same_workspace_preserves_session_affinity_headers() {
     });
     let err_body = serde_json::to_string(&first_response).expect("serialize first response");
     let ok_body = serde_json::to_string(&second_response).expect("serialize second response");
-    // A 404 can trigger alternate-path + stateless retries, and the candidate executor gives the
-    // same account one final retry before failover. Force both rounds to 404 so the gateway
-    // actually fails over to the 2nd account (same workspace scope).
+    // A failover decision gets one same-account retry, and each cycle can retry statelessly.
+    // Keep all four first-account attempts rate-limited so the 2nd account serves the response.
     let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body.clone()),
-        (404, err_body),
+        (429, err_body.clone()),
+        (429, err_body.clone()),
+        (429, err_body.clone()),
+        (429, err_body),
         (200, ok_body),
     ]);
     let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
@@ -1145,7 +1147,7 @@ fn gateway_claude_failover_same_workspace_preserves_session_affinity_headers() {
     assert_eq!(status, 200, "gateway response: {response_body}");
 
     let mut captured = Vec::new();
-    for idx in 0..9 {
+    for idx in 0..5 {
         captured.push(
             upstream_rx
                 .recv_timeout(Duration::from_secs(2))
@@ -1153,7 +1155,17 @@ fn gateway_claude_failover_same_workspace_preserves_session_affinity_headers() {
         );
     }
     upstream_join.join().expect("join upstream");
-    let captured_debug = format!("{captured:#?}");
+    let captured_debug = format!(
+        "{:?}",
+        captured
+            .iter()
+            .map(|request| (
+                request.path.as_str(),
+                request.headers.get("authorization").map(String::as_str),
+                request.headers.contains_key("x-codex-turn-state"),
+            ))
+            .collect::<Vec<_>>()
+    );
 
     let account_2 = captured
         .iter()
@@ -1163,15 +1175,15 @@ fn gateway_claude_failover_same_workspace_preserves_session_affinity_headers() {
                 .map(|v| v.contains("access_token_ws_same_2"))
                 .unwrap_or(false)
         })
-        .expect("expected upstream request for account 2");
+        .unwrap_or_else(|| panic!("expected upstream request for account 2: {captured_debug}"));
 
     assert_eq!(
         account_2
             .headers
             .get("x-codex-turn-state")
             .map(String::as_str),
-        Some("turn_state_same_ws"),
-        "captured upstream requests: {captured_debug}"
+        None,
+        "cross-account failover must reset session affinity even within one workspace: {captured_debug}"
     );
     assert_eq!(
         account_2.headers.get("conversation_id").map(String::as_str),

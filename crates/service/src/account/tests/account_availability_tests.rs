@@ -114,6 +114,34 @@ fn availability_marks_exhausted_secondary_unavailable() {
     ));
 }
 
+#[test]
+fn availability_keeps_exhausted_standard_windows_available_with_luna_reserve() {
+    let mut record = snap(Some(100.0), Some(300), Some(100.0), Some(10080));
+    record.credits_json = Some(
+        r#"{"_codexmanager_extra_rate_limits":[{"limit_name":"Luna Reserve","primary_window":{"used_percent":25.0}}]}"#
+            .to_string(),
+    );
+
+    assert!(matches!(
+        evaluate_snapshot(&record),
+        Availability::Available
+    ));
+}
+
+#[test]
+fn availability_rejects_expired_luna_reserve() {
+    let mut record = snap(Some(100.0), Some(300), Some(100.0), Some(10080));
+    record.credits_json = Some(
+        r#"{"_codexmanager_extra_rate_limits":[{"limit_name":"Luna Reserve","primary_window":{"remaining_percent":100.0,"reset_at":1}}]}"#
+            .to_string(),
+    );
+
+    assert!(matches!(
+        evaluate_snapshot(&record),
+        Availability::Unavailable("usage_exhausted_primary")
+    ));
+}
+
 /// 函数 `availability_marks_ok_available`
 ///
 /// 作者: gaohongshun

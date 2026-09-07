@@ -22,12 +22,71 @@ pub(crate) fn bilingual_error(
 }
 
 pub(crate) fn extract_raw_error_message(message: &str) -> Option<&str> {
-    let (_, tail) = message.rsplit_once('(')?;
-    let tail = tail.strip_suffix(')')?.trim();
+    let message = message.trim();
+    if !message.ends_with(')') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut opening = None;
+    for (index, ch) in message.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    opening = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let opening = opening?;
+    if !message[..opening].chars().any(|ch| !ch.is_ascii()) {
+        return None;
+    }
+    let tail = message[opening + 1..message.len() - 1].trim();
     if tail.is_empty() || !tail.is_ascii() || !tail.chars().any(|ch| ch.is_ascii_alphabetic()) {
         return None;
     }
     Some(tail)
+}
+
+#[cfg(test)]
+mod bilingual_error_tests {
+    use super::*;
+
+    #[test]
+    fn raw_error_extraction_preserves_nested_parentheses() {
+        let message = bilingual_error(
+            "模型不允许加速请求",
+            "model does not allow Fast requests (accelerated service tier)",
+        );
+        assert_eq!(
+            extract_raw_error_message(&message),
+            Some("model does not allow Fast requests (accelerated service tier)")
+        );
+    }
+
+    #[test]
+    fn raw_error_extraction_keeps_simple_messages_and_rejects_non_bilingual_text() {
+        assert_eq!(
+            extract_raw_error_message(&bilingual_error("缺少 API Key", "missing api key")),
+            Some("missing api key")
+        );
+        assert_eq!(extract_raw_error_message("plain error"), None);
+        assert_eq!(
+            extract_raw_error_message(
+                "model does not allow Fast requests (accelerated service tier)"
+            ),
+            None
+        );
+        assert_eq!(extract_raw_error_message("中文错误（无英文）"), None);
+    }
 }
 
 fn is_codex_user_agent(value: &str) -> bool {
@@ -675,7 +734,12 @@ pub(crate) fn default_codex_user_agent_version() -> &'static str {
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn set_originator(originator: &str) -> Result<String, String> {
-    runtime_config::set_originator(originator)
+    let previous_user_agent = runtime_config::current_gateway_user_agent();
+    let applied = runtime_config::set_originator(originator)?;
+    if runtime_config::current_gateway_user_agent() != previous_user_agent {
+        crate::usage_http::reload_usage_http_client_from_env();
+    }
+    Ok(applied)
 }
 
 /// 函数 `set_codex_user_agent_version`
@@ -690,7 +754,12 @@ pub(crate) fn set_originator(originator: &str) -> Result<String, String> {
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn set_codex_user_agent_version(version: &str) -> Result<String, String> {
-    runtime_config::set_codex_user_agent_version(version)
+    let previous_user_agent = runtime_config::current_gateway_user_agent();
+    let applied = runtime_config::set_codex_user_agent_version(version)?;
+    if runtime_config::current_gateway_user_agent() != previous_user_agent {
+        crate::usage_http::reload_usage_http_client_from_env();
+    }
+    Ok(applied)
 }
 
 /// 函数 `current_residency_requirement`
@@ -736,6 +805,23 @@ pub(crate) fn set_residency_requirement(value: Option<&str>) -> Result<Option<St
 /// 返回函数执行结果
 pub(crate) fn current_codex_user_agent() -> String {
     runtime_config::current_codex_user_agent()
+}
+
+pub(crate) fn set_gateway_user_agent(value: Option<&str>) -> Result<Option<String>, String> {
+    let previous_user_agent = runtime_config::current_gateway_user_agent();
+    let applied = runtime_config::set_gateway_user_agent(value)?;
+    if runtime_config::current_gateway_user_agent() != previous_user_agent {
+        crate::usage_http::reload_usage_http_client_from_env();
+    }
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_user_agent_override() -> Option<String> {
+    runtime_config::current_gateway_user_agent_override()
+}
+
+pub(crate) fn current_gateway_user_agent() -> String {
+    runtime_config::current_gateway_user_agent()
 }
 
 /// 函数 `set_free_account_max_model`
@@ -1053,6 +1139,10 @@ pub(crate) fn gateway_resolve_effective_upstream_base(
         .as_deref()
         .map(upstream::config::normalize_upstream_base_url)
         .unwrap_or_else(resolve_upstream_base_url)
+}
+
+pub(crate) fn gateway_resolve_default_upstream_base_url() -> String {
+    resolve_upstream_base_url()
 }
 
 pub(crate) fn gateway_should_send_chatgpt_account_header(base: &str) -> bool {

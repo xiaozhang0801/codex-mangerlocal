@@ -163,6 +163,37 @@ fn should_retry_same_account_after_failover(retry_count: u8) -> bool {
     retry_count == 0
 }
 
+fn account_model_override_for_request(
+    storage: &Storage,
+    model_for_log: Option<&str>,
+) -> Option<String> {
+    model_for_log
+        .and_then(|model| {
+            storage
+                .get_enabled_model_v2(crate::models_v2::policy_catalog_slug(model))
+                .ok()
+                .flatten()
+        })
+        .and_then(|model| {
+            model
+                .routes
+                .into_iter()
+                .filter(|route| {
+                    route.enabled
+                        && route.source_kind == "account_pool"
+                        && route.source_id == "default"
+                })
+                .max_by_key(|route| route.priority)
+                .map(|route| route.upstream_model)
+        })
+        .filter(|configured_model| {
+            !crate::models_v2::should_preserve_luna_reserve_alias(
+                model_for_log,
+                Some(configured_model.as_str()),
+            )
+        })
+}
+
 fn should_failover_terminal_gateway_error(
     context: &GatewayUpstreamExecutionContext<'_>,
     account_id: &str,
@@ -257,20 +288,7 @@ pub(in super::super) fn execute_candidate_sequence(
     let mut last_attempt_url = None;
     let mut last_attempt_error = None;
     let mut force_strip_session_affinity_after_challenge = false;
-    let account_model_override = model_for_log
-        .and_then(|model| storage.get_enabled_model_v2(model).ok().flatten())
-        .and_then(|model| {
-            model
-                .routes
-                .into_iter()
-                .filter(|route| {
-                    route.enabled
-                        && route.source_kind == "account_pool"
-                        && route.source_id == "default"
-                })
-                .max_by_key(|route| route.priority)
-                .map(|route| route.upstream_model)
-        });
+    let account_model_override = account_model_override_for_request(storage, model_for_log);
     let usage_snapshots = usage_snapshots_for_candidate_plans(storage, &candidates);
     let ordered_account_ids = candidates
         .iter()

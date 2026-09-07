@@ -512,7 +512,7 @@ fn register_agent_identity(
         // normal Responses calls, but agent registration also relies on the
         // Codex originator and User-Agent headers for request classification.
         .header("originator", crate::gateway::current_wire_originator())
-        .header("User-Agent", crate::gateway::current_codex_user_agent())
+        .header("User-Agent", crate::gateway::current_gateway_user_agent())
         .bearer_auth(access_token)
         .json(&request);
     if is_fedramp {
@@ -680,7 +680,7 @@ fn register_agent_identity_task(
         // The official Codex auth client applies the same identity headers to
         // task registration as to runtime registration.
         .header("originator", crate::gateway::current_wire_originator())
-        .header("User-Agent", crate::gateway::current_codex_user_agent())
+        .header("User-Agent", crate::gateway::current_gateway_user_agent())
         .json(&request)
         .send()
         .map_err(|err| format!("agent task registration request failed: {err}"))?;
@@ -1086,7 +1086,7 @@ mod tests {
         );
         assert_eq!(
             registration_user_agent.as_deref(),
-            Some(crate::gateway::current_codex_user_agent().as_str())
+            Some(crate::gateway::current_gateway_user_agent().as_str())
         );
         let registration_body: serde_json::Value =
             serde_json::from_str(&registration_body).expect("parse registration body");
@@ -1426,7 +1426,7 @@ mod tests {
         );
         assert_eq!(
             user_agent.as_deref(),
-            Some(crate::gateway::current_codex_user_agent().as_str())
+            Some(crate::gateway::current_gateway_user_agent().as_str())
         );
         let body: serde_json::Value = serde_json::from_str(&body).expect("parse request body");
         let timestamp = body["timestamp"].as_str().expect("timestamp");

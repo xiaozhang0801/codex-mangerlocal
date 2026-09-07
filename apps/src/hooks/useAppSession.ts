@@ -33,7 +33,7 @@ export function useAppSession(options: UseAppSessionOptions = {}) {
 
   const sessionQuery = useQuery<AppSessionResult>({
     queryKey: [...APP_SESSION_QUERY_KEY, serviceStatus.addr],
-    queryFn: () => appClient.getCurrentSession(),
+    queryFn: () => appClient.getCurrentSession(serviceStatus.addr),
     enabled: isQueryEnabled,
     staleTime: 30_000,
     retry: 1,

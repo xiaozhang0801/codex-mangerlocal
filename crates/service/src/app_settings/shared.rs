@@ -26,6 +26,7 @@ pub const APP_SETTING_GATEWAY_QUOTA_GUARD_KEY: &str = "gateway.quota_guard";
 pub const APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY: &str =
     "gateway.request_compression_enabled";
 pub const APP_SETTING_GATEWAY_ORIGINATOR_KEY: &str = "gateway.originator";
+pub const APP_SETTING_GATEWAY_USER_AGENT_KEY: &str = "gateway.user_agent";
 pub const APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY: &str = "gateway.user_agent_version";
 pub const APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY: &str = "gateway.residency_requirement";
 pub const APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY: &str = "gateway.upstream_proxy_url";
@@ -39,9 +40,6 @@ pub const APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY: &str = "gateway.sse_kee
 pub const APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY: &str =
     "gateway.sse_keepalive_interval_ms";
 pub const APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY: &str = "gateway.background_tasks";
-pub const APP_SETTING_AGGREGATE_API_PROBE_USER_AGENT_MODE_KEY: &str =
-    "aggregate_api.probe_user_agent_mode";
-pub const APP_SETTING_AGGREGATE_API_PROBE_USER_AGENT_KEY: &str = "aggregate_api.probe_user_agent";
 pub const APP_SETTING_PLUGIN_MARKET_MODE_KEY: &str = "plugin.market_mode";
 pub const APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY: &str = "plugin.market_source_url";
 pub const APP_SETTING_ENV_OVERRIDES_KEY: &str = "app.env_overrides";

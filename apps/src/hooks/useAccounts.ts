@@ -4,6 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { accountClient, type AccountUsageRefreshResult } from "@/lib/api/account-client";
+import {
+  buildAccountListQueryKey,
+  buildAccountUsageListQueryKey,
+} from "@/lib/api/account-query-keys";
 import { CODEX_PROFILE_CANDIDATES_QUERY_KEY } from "@/lib/api/codex-profile-client";
 import { attachUsagesToAccounts } from "@/lib/api/normalize";
 import { serviceClient } from "@/lib/api/service-client";
@@ -227,11 +231,27 @@ export function useAccounts() {
     areAccountQueriesEnabled && backgroundTasks.usagePollingEnabled,
     backgroundTasks.usagePollIntervalSecs,
   );
+  const accountListQueryKey = useMemo(
+    () => buildAccountListQueryKey(serviceStatus.addr),
+    [serviceStatus.addr],
+  );
+  const usageListQueryKey = useMemo(
+    () => buildAccountUsageListQueryKey(serviceStatus.addr),
+    [serviceStatus.addr],
+  );
   const usageListFingerprintRef = useRef<string | null>(null);
   const importedUsageRefreshIdsRef = useRef<Set<string>>(new Set());
   const importedUsageRefreshInFlightRef = useRef<Set<string>>(new Set());
   const [importedUsageRefreshVersion, setImportedUsageRefreshVersion] = useState(0);
   const allowEmptyAccountListRef = useRef(false);
+
+  useEffect(() => {
+    usageListFingerprintRef.current = null;
+    importedUsageRefreshIdsRef.current.clear();
+    importedUsageRefreshInFlightRef.current.clear();
+    allowEmptyAccountListRef.current = false;
+  }, [serviceStatus.addr]);
+
   const startupSnapshotQueryKey = buildStartupSnapshotQueryKey(
     serviceStatus.addr,
     STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
@@ -301,11 +321,11 @@ export function useAccounts() {
       setImportedUsageRefreshVersion((version) => version + 1);
     }
   };
-  // 账号实体列表只在显式账号操作/手动刷新时更新；用量轮询通过 usage/list 合并展示，避免临时空读覆盖账号池。
+  // 账号实体列表只在显式账号操作/手动刷新时更新；用量轮询只更新当前服务的用量快照。
   const accountsQuery = useQuery({
-    queryKey: ["accounts", "list"],
+    queryKey: accountListQueryKey,
     queryFn: async () => {
-      const data = await accountClient.list();
+      const data = await accountClient.list(serviceStatus.addr);
       if (data.items.length > 0) {
         allowEmptyAccountListRef.current = false;
         return data;
@@ -335,21 +355,20 @@ export function useAccounts() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     initialData: () =>
-      queryClient.getQueryData<AccountListResult>(["accounts", "list"]) ||
+      queryClient.getQueryData<AccountListResult>(accountListQueryKey) ||
       startupAccountList,
-    placeholderData: (previousData): AccountListResult | undefined =>
-      previousData || startupAccountList,
+    placeholderData: (): AccountListResult | undefined => startupAccountList,
   });
 
   const usagesQuery = useQuery({
-    queryKey: ["usage", "list"],
-    queryFn: () => accountClient.listUsage(),
+    queryKey: usageListQueryKey,
+    queryFn: () => accountClient.listUsage(serviceStatus.addr),
     enabled: areAccountQueriesEnabled,
     retry: 1,
     refetchInterval: usageListRefreshIntervalMs,
     refetchIntervalInBackground: false,
-    placeholderData: (previousData) =>
-      previousData || (startupUsages.length > 0 ? startupUsages : undefined),
+    placeholderData: () =>
+      startupUsages.length > 0 ? startupUsages : undefined,
   });
 
   const usageListFingerprint = useMemo(
@@ -416,7 +435,7 @@ export function useAccounts() {
         })
       );
       if (!disposed) {
-        await queryClient.refetchQueries({ queryKey: ["usage", "list"], type: "active" });
+        await queryClient.refetchQueries({ queryKey: usageListQueryKey, type: "active" });
       }
     };
 
@@ -430,7 +449,12 @@ export function useAccounts() {
       disposed = true;
       window.clearInterval(intervalId);
     };
-  }, [areAccountQueriesEnabled, importedUsageRefreshVersion, queryClient]);
+  }, [
+    areAccountQueriesEnabled,
+    importedUsageRefreshVersion,
+    queryClient,
+    usageListQueryKey,
+  ]);
 
   useEffect(() => {
     if (!areAccountQueriesEnabled) {
@@ -441,7 +465,7 @@ export function useAccounts() {
     let unlisten: (() => void) | null = null;
     const refreshVisibleUsageData = () => {
       void Promise.all([
-        queryClient.refetchQueries({ queryKey: ["usage", "list"], type: "active" }),
+        queryClient.refetchQueries({ queryKey: usageListQueryKey, type: "active" }),
         queryClient.invalidateQueries({ queryKey: ["usage-aggregate"] }),
         queryClient.invalidateQueries({ queryKey: ["today-summary"] }),
         queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
@@ -463,7 +487,7 @@ export function useAccounts() {
       disposed = true;
       unlisten?.();
     };
-  }, [areAccountQueriesEnabled, queryClient]);
+  }, [areAccountQueriesEnabled, queryClient, usageListQueryKey]);
 
   useEffect(() => {
     if (!areAccountQueriesEnabled) {
@@ -499,7 +523,7 @@ export function useAccounts() {
   const accounts = useMemo(() => {
     return attachUsagesToAccounts(
       visibleAccountList?.items || [],
-      usagesQuery.data || []
+      usagesQuery.data || [],
     );
   }, [visibleAccountList?.items, usagesQuery.data]);
 
@@ -565,7 +589,7 @@ export function useAccounts() {
    */
   const invalidateUsageData = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["usage"] }),
+      queryClient.invalidateQueries({ queryKey: usageListQueryKey }),
       queryClient.invalidateQueries({ queryKey: ["usage-aggregate"] }),
       queryClient.invalidateQueries({ queryKey: ["today-summary"] }),
       queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
@@ -576,7 +600,7 @@ export function useAccounts() {
 
   const invalidateAccountListData = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["accounts", "list"] }),
+      queryClient.invalidateQueries({ queryKey: accountListQueryKey }),
       queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
     ]);
   };
@@ -776,6 +800,7 @@ export function useAccounts() {
       note,
       tags,
       sort,
+      status,
       quotaCapacityPrimaryWindowTokens,
       quotaCapacitySecondaryWindowTokens,
     }: {
@@ -785,6 +810,7 @@ export function useAccounts() {
       note?: string | null;
       tags?: string[] | string | null;
       sort?: number | null;
+      status?: string | null;
       quotaCapacityPrimaryWindowTokens?: number | null;
       quotaCapacitySecondaryWindowTokens?: number | null;
     }) =>
@@ -794,6 +820,7 @@ export function useAccounts() {
         note,
         tags,
         sort,
+        status,
         quotaCapacityPrimaryWindowTokens,
         quotaCapacitySecondaryWindowTokens,
       }),
@@ -1248,6 +1275,7 @@ export function useAccounts() {
         note?: string | null;
         tags?: string[] | string | null;
         sort?: number | null;
+        status?: string | null;
         quotaCapacityPrimaryWindowTokens?: number | null;
         quotaCapacitySecondaryWindowTokens?: number | null;
       }

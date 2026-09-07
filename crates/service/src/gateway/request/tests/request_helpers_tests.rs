@@ -8,7 +8,7 @@ fn request_metadata_from_value_matches_byte_parser() {
     let value = serde_json::json!({
         "model": "gpt-5.4",
         "reasoning": { "effort": "high" },
-        "service_tier": "priority",
+        "service_tier": "ultrafast",
         "stream": true,
         "prompt_cache_key": "thread-1",
         "previous_response_id": "resp-1",

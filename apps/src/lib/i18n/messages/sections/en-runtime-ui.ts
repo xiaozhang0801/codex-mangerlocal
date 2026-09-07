@@ -22,6 +22,11 @@ export const EN_RUNTIME_UI_MESSAGES: MessageCatalog = {
   "会影响运行时配置；修改后请观察请求链路是否稳定。":
     "This affects runtime configuration. After changing it, monitor whether the request path remains stable.",
   删除条目: "Delete entry",
+  "全局 User-Agent": "Global User-Agent",
+  "留空时使用 Codex 默认 User-Agent：":
+    "When blank, use the default Codex User-Agent:",
+  "。所有网关上游请求默认使用此值；聚合 API 单独设置时优先。清空后失焦即可恢复默认值。":
+    ". This is the default for all gateway upstream requests; a per-Aggregate API value takes priority. Clear the field and leave it to restore the default.",
   "上游 Originator": "Upstream Originator",
   区域驻留要求: "Residency requirement",
   "后，局域网设备可通过当前机器 IP 访问；设置保存后需要重启相关进程才会生效，Web 监听地址会默认跟随这里的模式。":

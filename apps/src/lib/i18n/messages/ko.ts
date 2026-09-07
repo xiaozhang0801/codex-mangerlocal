@@ -1211,8 +1211,12 @@ export const KO_MESSAGES: MessageCatalog = {
   最近调用: "최근 호출",
   从未调用: "호출 없음",
   "走 Claude 语义，": "Claude 의미 사용,",
-  "Fast 会映射为上游 priority；未设置时跟随请求。":
-    "Fast는 업스트림 priority로 매핑되며, 미설정 시 요청을 따릅니다.",
+  "标准 (Standard)": "표준 (Standard)",
+  "快速 (Fast)": "빠름 (Fast)",
+  "超快 (Ultrafast)": "초고속 (Ultrafast)",
+  "弹性 (Flex)": "유연 (Flex)",
+  "Standard 会强制标准速度；Fast 会映射为上游 priority；Ultrafast 与 Flex 会按原值透传，是否可用取决于模型和上游；未设置时跟随请求。":
+    "Standard는 표준 속도를 강제하고, Fast는 업스트림 priority로 매핑합니다. Ultrafast와 Flex는 선택한 모델 및 업스트림에서 지원될 때 그대로 전달되며, 설정하지 않으면 요청 값을 따릅니다.",
   系统设置: "시스템 설정",
   "加载配置中...": "설정 불러오는 중...",
   额外额度: "추가 할당량",

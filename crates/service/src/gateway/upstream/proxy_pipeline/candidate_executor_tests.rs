@@ -1,12 +1,12 @@
 use super::{
-    execute_candidate_sequence, is_challenge_failover_error,
+    account_model_override_for_request, execute_candidate_sequence, is_challenge_failover_error,
     should_forward_thread_anchor_as_prompt_cache_key, CandidateExecutionResult,
     CandidateExecutorParams,
 };
 use crate::gateway::{IncomingHeaderSnapshot, ResponseAdapter, ToolNameRestoreMap};
 use axum::http::{HeaderMap, HeaderValue};
 use bytes::Bytes;
-use codexmanager_core::storage::{now_ts, Account, Storage, Token};
+use codexmanager_core::storage::{now_ts, Account, ManagedModelV2Upsert, Storage, Token};
 use serde_json::Value;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -17,6 +17,14 @@ struct CapturedCandidateRequest {
     path: String,
     session_headers: Vec<bool>,
     body: Value,
+}
+
+#[derive(Debug)]
+struct CandidateSequenceOutcome {
+    requests: Vec<CapturedCandidateRequest>,
+    logged_model: Option<String>,
+    logged_upstream_model: Option<String>,
+    binding_last_model: Option<String>,
 }
 
 fn build_account(id: &str, now: i64) -> Account {
@@ -96,10 +104,13 @@ fn json_contains_key(value: &Value, key: &str) -> bool {
     }
 }
 
-fn run_candidate_sequence_with_statuses(
+fn run_candidate_sequence_with_model_and_statuses(
     test_name: &str,
+    request_model: &str,
+    model_for_log: Option<&str>,
+    track_conversation_binding: bool,
     statuses: Vec<u16>,
-) -> Vec<CapturedCandidateRequest> {
+) -> CandidateSequenceOutcome {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let now = now_ts();
@@ -153,9 +164,26 @@ fn run_candidate_sequence_with_statuses(
     });
 
     let incoming_headers = codex_session_headers();
-    let body = Bytes::from_static(
-        br#"{"model":"gpt-5.5","input":[{"type":"reasoning","encrypted_content":"encrypted-current"}]}"#,
+    let body = Bytes::from(
+        serde_json::to_vec(&serde_json::json!({
+            "model": request_model,
+            "input": [{"type": "reasoning", "encrypted_content": "encrypted-current"}]
+        }))
+        .expect("serialize candidate request body"),
     );
+    let mut candidates = vec![(account, token)];
+    let platform_key_hash = format!("platform-key-{test_name}");
+    let conversation_id = format!("conversation-{test_name}");
+    let conversation_routing = track_conversation_binding
+        .then(|| {
+            crate::gateway::conversation_binding::prepare_conversation_routing(
+                platform_key_hash.as_str(),
+                Some(conversation_id.as_str()),
+                None,
+                &mut candidates,
+            )
+        })
+        .flatten();
     let setup = super::super::request_setup::UpstreamRequestSetup {
         upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         upstream_fallback_base: None,
@@ -167,7 +195,7 @@ fn run_candidate_sequence_with_statuses(
         has_sticky_fallback_session: false,
         has_sticky_fallback_conversation: false,
         has_body_encrypted_content: true,
-        conversation_routing: None,
+        conversation_routing,
         route_strategy_for_log: "ordered",
         route_source_for_log: "test",
     };
@@ -205,7 +233,7 @@ fn run_candidate_sequence_with_statuses(
 
     let result = execute_candidate_sequence(
         request,
-        vec![(account, token)],
+        candidates,
         CandidateExecutorParams {
             storage: &storage,
             method: &reqwest::Method::POST,
@@ -214,7 +242,7 @@ fn run_candidate_sequence_with_statuses(
             path: "/v1/responses",
             request_shape: Some("responses"),
             trace_id: test_name,
-            model_for_log: None,
+            model_for_log,
             response_adapter: ResponseAdapter::Passthrough,
             gemini_stream_output_mode: None,
             tool_name_restore_map: &tool_name_restore_map,
@@ -232,7 +260,35 @@ fn run_candidate_sequence_with_statuses(
     .expect("execute candidate sequence");
 
     assert!(matches!(result, CandidateExecutionResult::Handled));
-    join.join().expect("join upstream server")
+    let requests = join.join().expect("join upstream server");
+    let request_log = storage
+        .list_request_logs(None, 10)
+        .expect("read candidate request log")
+        .into_iter()
+        .find(|log| log.trace_id.as_deref() == Some(test_name));
+    let binding_last_model = track_conversation_binding
+        .then(|| {
+            storage
+                .get_conversation_binding(platform_key_hash.as_str(), conversation_id.as_str())
+                .expect("read candidate conversation binding")
+                .expect("candidate conversation binding")
+                .last_model
+        })
+        .flatten();
+    CandidateSequenceOutcome {
+        requests,
+        logged_model: request_log.as_ref().and_then(|log| log.model.clone()),
+        logged_upstream_model: request_log.and_then(|log| log.upstream_model),
+        binding_last_model,
+    }
+}
+
+fn run_candidate_sequence_with_statuses(
+    test_name: &str,
+    statuses: Vec<u16>,
+) -> Vec<CapturedCandidateRequest> {
+    run_candidate_sequence_with_model_and_statuses(test_name, "gpt-5.5", None, false, statuses)
+        .requests
 }
 
 fn assert_three_stage_candidate_shape(captured: &[CapturedCandidateRequest]) {
@@ -304,4 +360,60 @@ fn candidate_sequence_does_not_add_fourth_stateless_retry() {
     );
 
     assert_three_stage_candidate_shape(&captured);
+}
+
+#[test]
+fn candidate_sequence_preserves_reserve_alias_in_final_upstream_body() {
+    let captured = run_candidate_sequence_with_model_and_statuses(
+        "candidate-reserve-alias",
+        codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG,
+        Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG),
+        true,
+        vec![200],
+    );
+
+    assert_eq!(captured.requests.len(), 1);
+    assert_eq!(
+        captured.requests[0].body["model"],
+        codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG
+    );
+    assert_eq!(
+        captured.logged_model.as_deref(),
+        Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG)
+    );
+    assert_eq!(captured.logged_upstream_model, None);
+    assert_eq!(
+        captured.binding_last_model.as_deref(),
+        Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG)
+    );
+}
+
+#[test]
+fn reserve_alias_keeps_non_luna_account_route_override_authoritative() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let mut luna = storage
+        .get_managed_model_v2(codexmanager_core::usage::LUNA_MODEL_SLUG)
+        .expect("read Luna model")
+        .expect("Luna model");
+    luna.routes
+        .iter_mut()
+        .find(|route| route.source_kind == "account_pool" && route.source_id == "default")
+        .expect("default Luna account route")
+        .upstream_model = "gpt-5.4".to_string();
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(codexmanager_core::usage::LUNA_MODEL_SLUG.to_string()),
+            model: luna,
+        })
+        .expect("update Luna account route");
+
+    assert_eq!(
+        account_model_override_for_request(
+            &storage,
+            Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG),
+        )
+        .as_deref(),
+        Some("gpt-5.4")
+    );
 }

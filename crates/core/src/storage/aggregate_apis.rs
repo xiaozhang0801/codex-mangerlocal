@@ -35,6 +35,7 @@ impl Storage {
                 auth_params_json,
                 action,
                 model_override,
+                user_agent,
                 status,
                 created_at,
                 updated_at,
@@ -50,7 +51,7 @@ impl Storage {
                 last_balance_status,
                 last_balance_error,
                 last_balance_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             params![
                 &api.id,
                 &api.provider_type,
@@ -61,6 +62,7 @@ impl Storage {
                 &api.auth_params_json,
                 &api.action,
                 &api.model_override,
+                &api.user_agent,
                 &api.status,
                 api.created_at,
                 api.updated_at,
@@ -204,11 +206,12 @@ impl Storage {
         if let Some(row) = rows.next()? {
             Ok(Some(AggregateApiUpdateConfig {
                 auth_type: row.get(0)?,
-                balance_query_enabled: row.get(1)?,
-                balance_query_template: row.get(2)?,
-                balance_query_base_url: row.get(3)?,
-                balance_query_user_id: row.get(4)?,
-                balance_query_config_json: row.get(5)?,
+                user_agent: row.get(1)?,
+                balance_query_enabled: row.get(2)?,
+                balance_query_template: row.get(3)?,
+                balance_query_base_url: row.get(4)?,
+                balance_query_user_id: row.get(5)?,
+                balance_query_config_json: row.get(6)?,
             }))
         } else {
             Ok(None)
@@ -524,6 +527,18 @@ impl Storage {
         Ok(())
     }
 
+    pub fn update_aggregate_api_user_agent(
+        &self,
+        api_id: &str,
+        user_agent: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            update_aggregate_api_user_agent_sql(),
+            (user_agent, now_ts(), api_id),
+        )?;
+        Ok(())
+    }
+
     pub fn update_aggregate_api_balance_query(
         &self,
         api_id: &str,
@@ -753,6 +768,7 @@ impl Storage {
                 auth_params_json TEXT,
                 action TEXT,
                 model_override TEXT,
+                user_agent TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -787,6 +803,7 @@ impl Storage {
         self.ensure_column("aggregate_apis", "auth_params_json", "TEXT")?;
         self.ensure_column("aggregate_apis", "action", "TEXT")?;
         self.ensure_column("aggregate_apis", "model_override", "TEXT")?;
+        self.ensure_column("aggregate_apis", "user_agent", "TEXT")?;
         self.ensure_column(
             "aggregate_apis",
             "balance_query_enabled",
@@ -1023,29 +1040,30 @@ fn map_aggregate_api_row(row: &Row<'_>) -> Result<AggregateApi> {
         auth_params_json: row.get(6)?,
         action: row.get(7)?,
         model_override: row.get(8)?,
-        status: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
-        last_test_at: row.get(12)?,
-        last_test_status: row.get(13)?,
-        last_test_error: row.get(14)?,
-        balance_query_enabled: row.get(15)?,
-        balance_query_template: row.get(16)?,
-        balance_query_base_url: row.get(17)?,
-        balance_query_user_id: row.get(18)?,
-        balance_query_config_json: row.get(19)?,
-        last_balance_at: row.get(20)?,
-        last_balance_status: row.get(21)?,
-        last_balance_error: row.get(22)?,
-        last_balance_json: row.get(23)?,
+        user_agent: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        last_test_at: row.get(13)?,
+        last_test_status: row.get(14)?,
+        last_test_error: row.get(15)?,
+        balance_query_enabled: row.get(16)?,
+        balance_query_template: row.get(17)?,
+        balance_query_base_url: row.get(18)?,
+        balance_query_user_id: row.get(19)?,
+        balance_query_config_json: row.get(20)?,
+        last_balance_at: row.get(21)?,
+        last_balance_status: row.get(22)?,
+        last_balance_error: row.get(23)?,
+        last_balance_json: row.get(24)?,
     })
 }
 
 fn map_aggregate_api_with_secrets_row(row: &Row<'_>) -> Result<AggregateApiWithSecrets> {
     Ok(AggregateApiWithSecrets {
         api: map_aggregate_api_row(row)?,
-        secret_value: row.get(24)?,
-        balance_access_token: row.get(25)?,
+        secret_value: row.get(25)?,
+        balance_access_token: row.get(26)?,
     })
 }
 
@@ -1060,21 +1078,22 @@ fn map_aggregate_api_list_summary_row(row: &Row<'_>) -> Result<AggregateApiListS
         auth_params_json: row.get(6)?,
         action: row.get(7)?,
         model_override: row.get(8)?,
-        status: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
-        last_test_at: row.get(12)?,
-        last_test_status: row.get(13)?,
-        last_test_error: row.get(14)?,
-        balance_query_enabled: row.get(15)?,
-        balance_query_template: row.get(16)?,
-        balance_query_base_url: row.get(17)?,
-        balance_query_user_id: row.get(18)?,
-        balance_query_config_json: row.get(19)?,
-        last_balance_at: row.get(20)?,
-        last_balance_status: row.get(21)?,
-        last_balance_error: row.get(22)?,
-        last_balance_json: row.get(23)?,
+        user_agent: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        last_test_at: row.get(13)?,
+        last_test_status: row.get(14)?,
+        last_test_error: row.get(15)?,
+        balance_query_enabled: row.get(16)?,
+        balance_query_template: row.get(17)?,
+        balance_query_base_url: row.get(18)?,
+        balance_query_user_id: row.get(19)?,
+        balance_query_config_json: row.get(20)?,
+        last_balance_at: row.get(21)?,
+        last_balance_status: row.get(22)?,
+        last_balance_error: row.get(23)?,
+        last_balance_json: row.get(24)?,
     })
 }
 
@@ -1382,6 +1401,7 @@ mod supplier_model_tests {
             auth_params_json: None,
             action: None,
             model_override: None,
+            user_agent: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,
@@ -1512,6 +1532,7 @@ mod supplier_model_tests {
         first.sort = 1;
         first.updated_at = now + 10;
         first.auth_params_json = Some(r#"{"location":"header"}"#.to_string());
+        first.user_agent = Some("aggregate-summary-agent/1.0".to_string());
         first.balance_query_config_json = Some(r#"{"path":"/balance"}"#.to_string());
         first.last_balance_json = Some(r#"{"remaining":1.5}"#.to_string());
         storage
@@ -1544,6 +1565,10 @@ mod supplier_model_tests {
         assert_eq!(
             first_summary.auth_params_json.as_deref(),
             Some(r#"{"location":"header"}"#)
+        );
+        assert_eq!(
+            first_summary.user_agent.as_deref(),
+            Some("aggregate-summary-agent/1.0")
         );
         assert_eq!(
             first_summary.balance_query_config_json.as_deref(),
@@ -1876,6 +1901,7 @@ mod supplier_model_tests {
 
         let mut api = sample_aggregate_api("api-with-joined-secrets", now);
         api.provider_type = "claude".to_string();
+        api.user_agent = Some("aggregate-secret-agent/1.0".to_string());
         api.balance_query_enabled = true;
         api.balance_query_template = Some("newapi".to_string());
         storage
@@ -1895,6 +1921,10 @@ mod supplier_model_tests {
 
         assert_eq!(joined.api.id, "api-with-joined-secrets");
         assert_eq!(joined.api.provider_type, "claude");
+        assert_eq!(
+            joined.api.user_agent.as_deref(),
+            Some("aggregate-secret-agent/1.0")
+        );
         assert_eq!(joined.api.balance_query_template.as_deref(), Some("newapi"));
         assert_eq!(joined.secret_value.as_deref(), Some("provider-secret"));
         assert_eq!(
@@ -1977,6 +2007,7 @@ mod supplier_model_tests {
 
         let mut api = sample_aggregate_api("api-update-config", now);
         api.auth_type = "userpass".to_string();
+        api.user_agent = Some("aggregate-update-agent/1.0".to_string());
         api.auth_params_json = Some(r#"{"ignored":"secret"}"#.to_string());
         api.balance_query_enabled = true;
         api.balance_query_template = Some("custom".to_string());
@@ -1993,6 +2024,10 @@ mod supplier_model_tests {
             .expect("update config present");
 
         assert_eq!(config.auth_type, "userpass");
+        assert_eq!(
+            config.user_agent.as_deref(),
+            Some("aggregate-update-agent/1.0")
+        );
         assert!(config.balance_query_enabled);
         assert_eq!(config.balance_query_template.as_deref(), Some("custom"));
         assert_eq!(
@@ -2008,6 +2043,40 @@ mod supplier_model_tests {
             .find_aggregate_api_update_config_by_id("api-update-missing")
             .expect("find missing update config")
             .is_none());
+    }
+
+    #[test]
+    fn update_aggregate_api_user_agent_sets_and_clears_value() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+
+        let api = sample_aggregate_api("api-user-agent-update", now);
+        storage.insert_aggregate_api(&api).expect("insert api");
+
+        storage
+            .update_aggregate_api_user_agent(
+                "api-user-agent-update",
+                Some("aggregate-custom-agent/2.0"),
+            )
+            .expect("set aggregate API user agent");
+        let updated = storage
+            .find_aggregate_api_by_id("api-user-agent-update")
+            .expect("find updated API")
+            .expect("updated API exists");
+        assert_eq!(
+            updated.user_agent.as_deref(),
+            Some("aggregate-custom-agent/2.0")
+        );
+
+        storage
+            .update_aggregate_api_user_agent("api-user-agent-update", None)
+            .expect("clear aggregate API user agent");
+        let cleared = storage
+            .find_aggregate_api_by_id("api-user-agent-update")
+            .expect("find cleared API")
+            .expect("cleared API exists");
+        assert_eq!(cleared.user_agent, None);
     }
 
     #[test]
@@ -2721,6 +2790,16 @@ mod supplier_model_tests {
             update_aggregate_api_model_override_sql(),
             vec![
                 Value::Text("gpt-5".to_string()),
+                Value::Integer(1),
+                Value::Text("api-a".to_string()),
+            ],
+        );
+        assert_aggregate_api_pk(
+            &storage,
+            "user agent update",
+            update_aggregate_api_user_agent_sql(),
+            vec![
+                Value::Text("aggregate-agent/1.0".to_string()),
                 Value::Integer(1),
                 Value::Text("api-a".to_string()),
             ],

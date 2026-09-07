@@ -4,8 +4,8 @@ use super::{
     resolve_codex_installation_id,
 };
 use crate::gateway::{
-    set_codex_user_agent_version, set_originator, CodexCompactUpstreamHeaderInput,
-    CodexUpstreamHeaderInput,
+    set_codex_user_agent_version, set_gateway_user_agent, set_originator,
+    CodexCompactUpstreamHeaderInput, CodexUpstreamHeaderInput,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -493,10 +493,11 @@ fn build_codex_upstream_headers_rebuilds_mismatched_window_id_from_session() {
 }
 
 #[test]
-fn build_codex_upstream_headers_prefers_incoming_codex_identity() {
+fn build_codex_upstream_headers_prefers_global_user_agent_over_incoming_codex_identity() {
     let _guard = crate::test_env_guard();
     let _ = set_originator("codex_cli_rs_tests").expect("set originator");
     let _ = set_codex_user_agent_version("0.999.4").expect("set ua version");
+    let _ = set_gateway_user_agent(Some("global-gateway/1.0")).expect("set gateway user agent");
 
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-ident",
@@ -526,15 +527,17 @@ fn build_codex_upstream_headers_prefers_incoming_codex_identity() {
     assert_eq!(header_value(&headers, "originator"), Some("codex_sdk_ts"));
     assert_eq!(
         header_value(&headers, "User-Agent"),
-        Some("codex_sdk_ts/1.2.3 (Windows 11; x86_64) node")
+        Some("global-gateway/1.0")
     );
+    let _ = set_gateway_user_agent(None).expect("clear gateway user agent");
 }
 
 #[test]
-fn build_codex_upstream_headers_preserves_non_codex_identity_for_compat_routes() {
+fn build_codex_upstream_headers_uses_codex_default_instead_of_incoming_compat_identity() {
     let _guard = crate::test_env_guard();
     let _ = set_originator("codex_cli_rs_tests").expect("set originator");
     let _ = set_codex_user_agent_version("0.999.5").expect("set ua version");
+    let _ = set_gateway_user_agent(None).expect("clear gateway user agent");
 
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-compat",
@@ -562,8 +565,9 @@ fn build_codex_upstream_headers_preserves_non_codex_identity_for_compat_routes()
     });
 
     assert_eq!(
-        header_value(&headers, "User-Agent"),
-        Some("gemini-cli/0.1.14 (Windows 11; x86_64)")
+        header_value(&headers, "User-Agent")
+            .map(|value| value.starts_with("codex_cli_rs_tests/0.999.5")),
+        Some(true)
     );
     assert_eq!(header_value(&headers, "originator"), Some("gemini_cli"));
 }

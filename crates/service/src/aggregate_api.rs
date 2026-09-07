@@ -33,6 +33,7 @@ const CUSTOM_BALANCE_AUTH_BALANCE_BEARER: &str = "balance_bearer";
 const CUSTOM_BALANCE_AUTH_NONE: &str = "none";
 const MAX_FETCHED_MODELS: usize = 500;
 const MAX_MODELS_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_AGGREGATE_API_USER_AGENT_BYTES: usize = 512;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -413,6 +414,52 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn normalize_aggregate_api_user_agent(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    if value.len() > MAX_AGGREGATE_API_USER_AGENT_BYTES {
+        return Err(format!(
+            "aggregate api user agent must not exceed {MAX_AGGREGATE_API_USER_AGENT_BYTES} bytes"
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err("aggregate api user agent contains control characters".to_string());
+    }
+    if !value.is_ascii() {
+        return Err("aggregate api user agent is not a valid HTTP header value".to_string());
+    }
+    HeaderValue::from_str(value)
+        .map_err(|_| "aggregate api user agent is not a valid HTTP header value".to_string())?;
+    Ok(Some(value.to_string()))
+}
+
+pub(crate) fn resolved_aggregate_api_user_agent(api: &AggregateApi) -> Result<String, String> {
+    Ok(normalize_aggregate_api_user_agent(api.user_agent.clone())?
+        .unwrap_or_else(gateway::current_gateway_user_agent))
+}
+
+fn send_aggregate_api_request(
+    client: &reqwest::blocking::Client,
+    builder: reqwest::blocking::RequestBuilder,
+    api: &AggregateApi,
+) -> Result<reqwest::blocking::Response, String> {
+    let user_agent = resolved_aggregate_api_user_agent(api)?;
+    let mut request = builder
+        .build()
+        .map_err(|err| format!("build aggregate api request failed: {err}"))?;
+    request.headers_mut().insert(
+        reqwest::header::USER_AGENT,
+        HeaderValue::from_str(user_agent.as_str())
+            .map_err(|_| "aggregate api user agent is not a valid HTTP header value".to_string())?,
+    );
+    client.execute(request).map_err(|err| err.to_string())
 }
 
 fn normalize_auth_params_json(
@@ -1111,12 +1158,10 @@ fn query_generic_balance_path(
     path: &str,
 ) -> Result<AggregateApiBalanceSnapshot, String> {
     let url = join_api_path(base_url, path);
-    let response = apply_balance_auth(client, url, api, secret)?
+    let builder = apply_balance_auth(client, url, api, secret)?
         .header("accept", "application/json")
-        .header("accept-encoding", "identity")
-        .header("user-agent", "codex-manager/aggregate-api-balance")
-        .send()
-        .map_err(|err| err.to_string())?;
+        .header("accept-encoding", "identity");
+    let response = send_aggregate_api_request(client, builder, api)?;
     let value = read_json_response(response)?;
     extract_generic_balance(&value)
 }
@@ -1171,8 +1216,7 @@ fn query_custom_balance(
         client.get(url.as_str())
     }
     .header("accept", "application/json")
-    .header("accept-encoding", "identity")
-    .header("user-agent", "codex-manager/aggregate-api-balance");
+    .header("accept-encoding", "identity");
     match config
         .auth
         .as_deref()
@@ -1198,7 +1242,7 @@ fn query_custom_balance(
             builder = builder.bearer_auth(access_token);
         }
     }
-    let response = builder.send().map_err(|err| err.to_string())?;
+    let response = send_aggregate_api_request(client, builder, api)?;
     let value = read_json_response(response)?;
     extract_custom_balance(&value, &config)
 }
@@ -1224,7 +1268,6 @@ fn query_new_api_balance(
         .header("content-type", "application/json")
         .header("accept", "application/json")
         .header("accept-encoding", "identity")
-        .header("user-agent", "codex-manager/aggregate-api-balance")
         .bearer_auth(access_token);
     if let Some(user_id) = api
         .balance_query_user_id
@@ -1234,7 +1277,7 @@ fn query_new_api_balance(
     {
         builder = builder.header("New-Api-User", user_id);
     }
-    let response = builder.send().map_err(|err| err.to_string())?;
+    let response = send_aggregate_api_request(client, builder, api)?;
     let value = read_json_response(response)?;
     extract_new_api_balance(&value)
 }
@@ -1350,23 +1393,13 @@ fn build_gemini_probe_body() -> serde_json::Value {
 fn add_codex_probe_headers(
     mut builder: reqwest::blocking::RequestBuilder,
 ) -> Result<reqwest::blocking::RequestBuilder, String> {
-    let mode = crate::app_settings::current_aggregate_api_probe_user_agent_mode();
-    if mode == crate::app_settings::AGGREGATE_API_PROBE_USER_AGENT_MODE_CODEX {
-        let request_id = gateway::next_trace_id();
-        builder = builder
-            .header("user-agent", gateway::current_codex_user_agent())
-            .header("originator", gateway::current_wire_originator())
-            .header("session-id", request_id.as_str())
-            .header("thread-id", request_id.as_str())
-            .header("x-client-request-id", request_id.as_str())
-            .header("x-codex-window-id", format!("{request_id}:0"));
-    } else {
-        let user_agent = crate::app_settings::current_aggregate_api_probe_user_agent();
-        if user_agent.is_empty() {
-            return Err("aggregate api probe custom user agent is required".to_string());
-        }
-        builder = builder.header("user-agent", user_agent);
-    }
+    let request_id = gateway::next_trace_id();
+    builder = builder
+        .header("originator", gateway::current_wire_originator())
+        .header("session-id", request_id.as_str())
+        .header("thread-id", request_id.as_str())
+        .header("x-client-request-id", request_id.as_str())
+        .header("x-codex-window-id", format!("{request_id}:0"));
     Ok(builder
         .header("accept", "application/json")
         .header("accept-encoding", "identity"))
@@ -1428,12 +1461,11 @@ fn probe_codex_responses_endpoint(
     } else {
         build_codex_probe_body(model)
     };
-    let response = add_codex_probe_headers(builder)?
+    let builder = add_codex_probe_headers(builder)?
         .header("content-type", "application/json")
         .header("accept", "text/event-stream")
-        .json(&request_body)
-        .send()
-        .map_err(|err| err.to_string())?;
+        .json(&request_body);
+    let response = send_aggregate_api_request(client, builder, api)?;
 
     let status_code = response.status().as_u16() as i64;
     if !response.status().is_success() {
@@ -1495,7 +1527,7 @@ fn probe_claude_endpoint(
     } else {
         builder
     };
-    let response = builder
+    let builder = builder
         .header("anthropic-version", "2023-06-01")
         .header(
             "anthropic-beta",
@@ -1504,11 +1536,9 @@ fn probe_claude_endpoint(
         .header("content-type", "application/json")
         .header("accept", "application/json")
         .header("accept-encoding", "identity")
-        .header("user-agent", "claude-cli/2.1.2 (external, cli)")
         .header("x-app", "cli")
-        .json(&build_claude_probe_body(model))
-        .send()
-        .map_err(|err| err.to_string())?;
+        .json(&build_claude_probe_body(model));
+    let response = send_aggregate_api_request(client, builder, api)?;
     let status_code = response.status().as_u16() as i64;
     if !response.status().is_success() {
         return Err(probe_http_error("claude", status_code as u16, response));
@@ -1535,13 +1565,12 @@ fn probe_gemini_endpoint(
     } else {
         builder
     };
-    let response = builder
+    let builder = builder
         .header("content-type", "application/json")
         .header("accept", "application/json")
         .header("accept-encoding", "identity")
-        .json(&build_gemini_probe_body())
-        .send()
-        .map_err(|err| err.to_string())?;
+        .json(&build_gemini_probe_body());
+    let response = send_aggregate_api_request(client, builder, api)?;
 
     let status_code = response.status().as_u16() as i64;
     if !response.status().is_success() {
@@ -1601,6 +1630,7 @@ pub(crate) fn list_aggregate_apis() -> Result<Vec<AggregateApiSummary>, String> 
                 .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
             action: item.action,
             model_override: item.model_override,
+            user_agent: item.user_agent,
             status: item.status,
             created_at: item.created_at,
             updated_at: item.updated_at,
@@ -1643,6 +1673,7 @@ pub(crate) fn create_aggregate_api(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
+    user_agent: Option<String>,
     username: Option<String>,
     password: Option<String>,
     balance_query_enabled: Option<bool>,
@@ -1667,6 +1698,7 @@ pub(crate) fn create_aggregate_api(
     let normalized_action =
         normalize_action_override(action_custom_enabled, action)?.unwrap_or(None);
     let normalized_model_override = normalize_model_override(model_override)?;
+    let normalized_user_agent = normalize_aggregate_api_user_agent(user_agent)?;
     let normalized_balance_query_enabled = balance_query_enabled.unwrap_or(false);
     let normalized_balance_query_template = if normalized_balance_query_enabled {
         Some(default_balance_query_template(
@@ -1712,6 +1744,7 @@ pub(crate) fn create_aggregate_api(
             .unwrap_or(None),
         action: normalized_action,
         model_override: normalized_model_override,
+        user_agent: normalized_user_agent,
         status: "active".to_string(),
         created_at,
         updated_at: created_at,
@@ -1778,6 +1811,7 @@ pub(crate) fn update_aggregate_api(
     action_custom_enabled: Option<bool>,
     action: Option<String>,
     model_override: Option<String>,
+    user_agent: Option<String>,
     username: Option<String>,
     password: Option<String>,
     balance_query_enabled: Option<bool>,
@@ -1795,6 +1829,8 @@ pub(crate) fn update_aggregate_api(
         .find_aggregate_api_update_config_by_id(api_id)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "aggregate api not found".to_string())?;
+    let user_agent_provided = user_agent.is_some();
+    let normalized_user_agent = normalize_aggregate_api_user_agent(user_agent)?;
     let existing_auth_type = normalize_auth_type(Some(existing.auth_type.clone()))
         .unwrap_or_else(|_| AGGREGATE_API_AUTH_APIKEY.to_string());
     let normalized_auth_type = match auth_type {
@@ -1872,6 +1908,11 @@ pub(crate) fn update_aggregate_api(
         let normalized = normalize_model_override(model_override)?;
         storage
             .update_aggregate_api_model_override(api_id, normalized.as_deref())
+            .map_err(|err| err.to_string())?;
+    }
+    if user_agent_provided {
+        storage
+            .update_aggregate_api_user_agent(api_id, normalized_user_agent.as_deref())
             .map_err(|err| err.to_string())?;
     }
 
@@ -2183,11 +2224,11 @@ pub(crate) fn fetch_aggregate_api_models(
     let builder = client.get(url.as_str());
     let (builder, updated_url) = apply_probe_auth(builder, url.clone(), &api, secret.as_str())?;
     let response = if updated_url == url {
-        builder.send()
+        send_aggregate_api_request(&client, builder.header("accept", "application/json"), &api)
     } else {
         let rebuilt = client.get(updated_url.as_str());
         let (rebuilt, _) = apply_probe_auth(rebuilt, updated_url, &api, secret.as_str())?;
-        rebuilt.send()
+        send_aggregate_api_request(&client, rebuilt.header("accept", "application/json"), &api)
     }
     .map_err(|err| format!("models request failed: {err}"))?;
     let body = read_models_response(response)?;

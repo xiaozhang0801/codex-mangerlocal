@@ -57,13 +57,10 @@ fn resolve_originator_header(
 }
 
 fn resolve_user_agent_header(
-    incoming_user_agent: Option<&str>,
-    preserve_client_identity: bool,
+    _incoming_user_agent: Option<&str>,
+    _preserve_client_identity: bool,
 ) -> String {
-    normalize_non_empty(incoming_user_agent)
-        .filter(|value| preserve_client_identity || looks_like_codex_identity(value))
-        .map(str::to_string)
-        .unwrap_or_else(crate::gateway::current_codex_user_agent)
+    crate::gateway::current_gateway_user_agent()
 }
 
 pub(crate) struct CodexUpstreamHeaderInput<'a> {

@@ -53,6 +53,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             let action_custom_enabled = super::bool_param(req, "actionCustomEnabled");
             let action = super::string_param(req, "action");
             let model_override = super::string_param(req, "modelOverride");
+            let user_agent = super::string_param(req, "userAgent");
             let username = super::string_param(req, "username");
             let password = super::string_param(req, "password");
             let balance_query_enabled = super::bool_param(req, "balanceQueryEnabled");
@@ -73,6 +74,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 action_custom_enabled,
                 action,
                 model_override,
+                user_agent,
                 username,
                 password,
                 balance_query_enabled,
@@ -101,6 +103,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             let action_custom_enabled = super::bool_param(req, "actionCustomEnabled");
             let action = super::string_param(req, "action");
             let model_override = super::string_param(req, "modelOverride");
+            let user_agent = super::string_param(req, "userAgent");
             let username = super::string_param(req, "username");
             let password = super::string_param(req, "password");
             let balance_query_enabled = super::bool_param(req, "balanceQueryEnabled");
@@ -123,6 +126,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 action_custom_enabled,
                 action,
                 model_override,
+                user_agent,
                 username,
                 password,
                 balance_query_enabled,

@@ -3,7 +3,7 @@ use super::{
     encode_request_body, is_session_scoped_header, resolve_request_compression,
     resolve_request_compression_with_flag, send_async_stream_request,
     should_retry_transport_without_compression, should_wrap_upstream_as_stream_response,
-    strip_compact_service_tier_for_transport, RequestCompression, CPA_GEMINI_CODEX_USER_AGENT,
+    strip_compact_service_tier_for_transport, RequestCompression,
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -436,6 +436,9 @@ fn gemini_codex_compat_does_not_preserve_client_identity_like_cpa() {
 
 #[test]
 fn gemini_codex_compat_header_profile_matches_cpa_executor_shape() {
+    let _guard = crate::test_env_guard();
+    crate::gateway::set_gateway_user_agent(Some("global-gateway/1.0"))
+        .expect("set global gateway user agent");
     let mut headers = vec![
         (
             "User-Agent".to_string(),
@@ -457,7 +460,7 @@ fn gemini_codex_compat_header_profile_matches_cpa_executor_shape() {
 
     assert_eq!(
         header_value(&headers, "User-Agent"),
-        Some(CPA_GEMINI_CODEX_USER_AGENT)
+        Some("global-gateway/1.0")
     );
     assert_eq!(header_value(&headers, "originator"), Some("codex-tui"));
     assert_eq!(header_value(&headers, "Connection"), Some("Keep-Alive"));
@@ -468,6 +471,7 @@ fn gemini_codex_compat_header_profile_matches_cpa_executor_shape() {
     assert_eq!(header_value(&headers, "session-id"), None);
     assert_eq!(header_value(&headers, "thread-id"), None);
     assert_eq!(header_value(&headers, "session_id").map(str::len), Some(36));
+    crate::gateway::set_gateway_user_agent(None).expect("clear global gateway user agent");
 }
 
 /// 函数 `encode_request_body_adds_zstd_content_encoding`

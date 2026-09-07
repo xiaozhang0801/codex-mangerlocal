@@ -87,8 +87,6 @@ fn reset_runtime_defaults() {
         "freeAccountMaxModel": "gpt-5.2",
         "modelForwardRules": "",
         "compactModelForwardRules": "",
-        "aggregateApiProbeUserAgentMode": "codex",
-        "aggregateApiProbeUserAgent": "",
         "quotaGuard": {
             "enabled": true,
             "primaryMinRemainingPercent": 5,
@@ -96,6 +94,7 @@ fn reset_runtime_defaults() {
             "allowAllLowQuotaFallback": true
         },
         "gatewayOriginator": "codex_cli_rs",
+        "gatewayUserAgent": "",
         "gatewayUserAgentVersion": codexmanager_service::default_gateway_user_agent_version(),
         "gatewayResidencyRequirement": "",
         "appearancePreset": "classic",
@@ -366,30 +365,34 @@ fn app_settings_roundtrip_account_manager_mode_and_bootstrap() {
 }
 
 #[test]
-fn app_settings_roundtrip_aggregate_api_probe_user_agent() {
+fn app_settings_roundtrip_gateway_user_agent_and_validates_header_value() {
     with_temp_db(|_| {
         let defaults = codexmanager_service::app_settings_get().expect("read default settings");
-        assert_eq!(defaults["aggregateApiProbeUserAgentMode"], "codex");
-        assert_eq!(defaults["aggregateApiProbeUserAgent"], "");
+        assert_eq!(defaults["gatewayUserAgent"], "");
+        assert!(defaults["gatewayUserAgentDefault"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("codex_cli_rs/")));
 
         let updated = codexmanager_service::app_settings_set(Some(&json!({
-            "aggregateApiProbeUserAgentMode": "custom",
-            "aggregateApiProbeUserAgent": "Custom-Probe/3.0"
+            "gatewayUserAgent": "Custom-Gateway/3.0"
         })))
-        .expect("save aggregate API probe settings");
-        assert_eq!(updated["aggregateApiProbeUserAgentMode"], "custom");
-        assert_eq!(updated["aggregateApiProbeUserAgent"], "Custom-Probe/3.0");
+        .expect("save gateway user agent");
+        assert_eq!(updated["gatewayUserAgent"], "Custom-Gateway/3.0");
 
         let persisted = codexmanager_service::app_settings_get().expect("read persisted settings");
-        assert_eq!(persisted["aggregateApiProbeUserAgentMode"], "custom");
-        assert_eq!(persisted["aggregateApiProbeUserAgent"], "Custom-Probe/3.0");
+        assert_eq!(persisted["gatewayUserAgent"], "Custom-Gateway/3.0");
 
         let err = codexmanager_service::app_settings_set(Some(&json!({
-            "aggregateApiProbeUserAgentMode": "custom",
-            "aggregateApiProbeUserAgent": ""
+            "gatewayUserAgent": "bad\r\nvalue"
         })))
-        .expect_err("custom probe user agent should be required");
-        assert!(err.contains("custom user agent is required"));
+        .expect_err("unsafe gateway user agent should fail");
+        assert!(err.contains("control characters"));
+
+        let cleared = codexmanager_service::app_settings_set(Some(&json!({
+            "gatewayUserAgent": ""
+        })))
+        .expect("clear gateway user agent");
+        assert_eq!(cleared["gatewayUserAgent"], "");
     });
 }
 

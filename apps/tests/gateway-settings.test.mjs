@@ -21,6 +21,31 @@ const transportSettingsSourcePath = path.join(
   "gateway",
   "transport-settings.ts"
 );
+const codexConstantsSourcePath = path.join(
+  appsRoot,
+  "src",
+  "lib",
+  "constants",
+  "codex.ts"
+);
+const serviceRuntimeConfigSourcePath = path.resolve(
+  appsRoot,
+  "..",
+  "crates",
+  "service",
+  "src",
+  "gateway",
+  "core",
+  "runtime_config.rs"
+);
+const modelCatalogSeedPath = path.resolve(
+  appsRoot,
+  "..",
+  "crates",
+  "core",
+  "seeds",
+  "model_catalog_v2_2026_07_10.json"
+);
 
 async function compileModule(sourcePath) {
   const source = await fs.readFile(sourcePath, "utf8");
@@ -65,6 +90,49 @@ async function loadGatewaySettingsModule() {
 
 const { gatewaySettings, transportSettings } =
   await loadGatewaySettingsModule();
+
+function parseNumericVersion(value) {
+  return value.split(".").map((part) => Number.parseInt(part, 10) || 0);
+}
+
+function compareNumericVersions(left, right) {
+  const leftParts = parseNumericVersion(left);
+  const rightParts = parseNumericVersion(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+test("Codex 默认 client_version 前后端一致且覆盖内置模型最低版本", async () => {
+  const [frontendSource, backendSource, seedSource] = await Promise.all([
+    fs.readFile(codexConstantsSourcePath, "utf8"),
+    fs.readFile(serviceRuntimeConfigSourcePath, "utf8"),
+    fs.readFile(modelCatalogSeedPath, "utf8"),
+  ]);
+  const frontendVersion = frontendSource.match(
+    /DEFAULT_CODEX_USER_AGENT_VERSION\s*=\s*"([^"]+)"/,
+  )?.[1];
+  const backendVersion = backendSource.match(
+    /DEFAULT_CODEX_USER_AGENT_VERSION:\s*&str\s*=\s*"([^"]+)"/,
+  )?.[1];
+  assert.ok(frontendVersion, "frontend Codex default version missing");
+  assert.ok(backendVersion, "backend Codex default version missing");
+  assert.equal(frontendVersion, backendVersion);
+
+  const seed = JSON.parse(seedSource);
+  const minimumVersions = seed.models
+    .map((model) => model.capabilities?.minimal_client_version)
+    .filter((version) => typeof version === "string" && version.length > 0);
+  assert.ok(minimumVersions.length > 0, "builtin model minimum versions missing");
+  const newestMinimum = minimumVersions.sort(compareNumericVersions).at(-1);
+  assert.ok(
+    compareNumericVersions(frontendVersion, newestMinimum) >= 0,
+    `default client_version ${frontendVersion} is older than builtin model minimum ${newestMinimum}`,
+  );
+});
 
 test("gateway transport values share defaults and normalization", () => {
   assert.deepEqual(transportSettings.DEFAULT_GATEWAY_TRANSPORT_VALUES, {

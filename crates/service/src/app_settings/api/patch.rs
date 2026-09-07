@@ -2,7 +2,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use super::super::aggregate_api::set_aggregate_api_probe_user_agent_settings;
 use super::author_links::{
     normalize_author_link_items, serialize_author_link_items, AuthorLinkItem,
 };
@@ -15,7 +14,7 @@ use super::{
     set_gateway_sse_keepalive_enabled, set_gateway_sse_keepalive_interval_ms,
     set_gateway_thread_aware_account_distribution_enabled, set_gateway_upstream_proxy_bypass_hosts,
     set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
-    set_gateway_upstream_total_timeout_ms, set_gateway_user_agent_version,
+    set_gateway_upstream_total_timeout_ms, set_gateway_user_agent, set_gateway_user_agent_version,
     set_keep_window_ui_mounted_setting, set_lightweight_mode_on_close_to_tray_setting,
     set_saved_service_addr, set_service_bind_mode, set_show_main_window_on_startup_setting,
     set_ui_appearance_preset, set_ui_locale, set_ui_low_transparency_enabled, set_ui_theme,
@@ -47,9 +46,8 @@ pub(super) struct AppSettingsPatch {
     compact_model_forward_rules: Option<String>,
     account_max_inflight: Option<usize>,
     thread_aware_account_distribution_enabled: Option<bool>,
-    aggregate_api_probe_user_agent_mode: Option<String>,
-    aggregate_api_probe_user_agent: Option<String>,
     gateway_originator: Option<String>,
+    gateway_user_agent: Option<String>,
     gateway_user_agent_version: Option<String>,
     gateway_residency_requirement: Option<String>,
     plugin_market_mode: Option<String>,
@@ -161,16 +159,11 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     if let Some(enabled) = patch.thread_aware_account_distribution_enabled {
         let _ = set_gateway_thread_aware_account_distribution_enabled(enabled)?;
     }
-    if patch.aggregate_api_probe_user_agent_mode.is_some()
-        || patch.aggregate_api_probe_user_agent.is_some()
-    {
-        let _ = set_aggregate_api_probe_user_agent_settings(
-            patch.aggregate_api_probe_user_agent_mode.as_deref(),
-            patch.aggregate_api_probe_user_agent.as_deref(),
-        )?;
-    }
     if let Some(originator) = patch.gateway_originator {
         let _ = set_gateway_originator(&originator)?;
+    }
+    if let Some(user_agent) = patch.gateway_user_agent {
+        let _ = set_gateway_user_agent(&user_agent)?;
     }
     if let Some(version) = patch.gateway_user_agent_version {
         let _ = set_gateway_user_agent_version(&version)?;

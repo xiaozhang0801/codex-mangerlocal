@@ -5,6 +5,38 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-05
+
+### Fixed
+
+- 修复订阅查询新增 User-Agent 后触发网页防护、导致额度刷新失败并进一步显示 Token 授权错误的回归；订阅查询恢复不设置 User-Agent。
+- 额度查询和 Token 刷新恢复标准 Codex User-Agent，不再继承自定义网关 User-Agent，覆盖默认代理和账号独立代理路径。
+
+### Changed
+
+- 发布版本提升到 `0.6.0`，同步 workspace、前端、Tauri 桌面端和锁文件；沿用已有账号与设置存储。
+- `release-all` 将五个平台的服务端构建与桌面构建并行，保留原有桌面、Service、Web 和 Docker 产物；按 Cargo 工作区隔离构建缓存，推荐从主分支发起固定提交的发布以复用跨版本缓存。
+
+## [0.5.7] - 2026-09-05
+
+### Added
+
+- 账号编辑器新增“额度耗尽后仍使用账号”开关，持久化为 `force_enabled`，默认关闭；开启后该账号仍可参与网关候选，适合需要人工接管额度判定的场景。
+- 模型目录默认新增 `gpt-6-astra`；fresh DB 和升级数据库都会通过 revision 8 数据迁移获得其官方 API 限制与含缓存写入的价格、Codex 运行元数据及默认账号池路由，同时保留同名 custom 模型和用户已编辑的 builtin。
+- 账号页新增会记住选择的表格/卡片视图切换；管理员可针对明确选中的 ChatGPT 账号，使用该账号的凭据、账号标识与代理拉取上游模型，并选择性关联到模型目录 V2 的账号池路由，不会在账号池中轮转请求。
+- API Key 服务等级新增 Standard 与 Ultrafast，并贯通 Responses HTTP、WebSocket 和请求日志：Standard 使用上游默认速度并记为 `standard`，Fast 映射为 `priority`，Ultrafast 原值透传；继续接受 Flex 以保持兼容，实际可用等级仍由模型与上游决定。
+- 新增可配置的网关出站 `User-Agent`：`gateway.user_agent` 全局生效，单个聚合 API 的 `aggregate_apis.user_agent` 在真实 route 转发、模型拉取、连通性测试和余额查询中优先；两者均未设置时动态生成 Codex-compatible 默认值（#459）。
+
+### Changed
+
+- 发布版本提升到 `0.5.7`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
+
+### Fixed
+
+- 修复 Responses WebSocket 的工具输出续接：同一工具调用的重复输出会在上游发送前去重，连接前导事件不再错误消耗终止恢复机会，并可在跨任务续接时有界补回缺失的工具调用上下文（#458）。
+- 修复 Luna Reserve 用量在后续刷新或暂态空列表后从账号页消失的问题，并统一兼容附加额度的 snake_case/camelCase 返回结构。
+- 修复 Luna Reserve 路由边界：仅显式请求 `gpt-reserve` 时，仍有 Reserve 额度的账号才进入 Reserve 候选池；普通 `gpt-5.6-luna` 仍走常规账号池，不会因 Reserve 可用而绕过已耗尽的标准 5h/7d 窗口；硬性授权或停用状态仍按原规则处理。
+
 ## [0.5.6] - 2026-09-02
 
 ### Added

@@ -627,7 +627,7 @@ pub(crate) fn build_warmup_headers(
     );
     headers.insert(
         reqwest::header::USER_AGENT,
-        header_value(&crate::gateway::current_codex_user_agent())?,
+        header_value(&crate::gateway::current_gateway_user_agent())?,
     );
     headers.insert(
         HeaderName::from_static("originator"),

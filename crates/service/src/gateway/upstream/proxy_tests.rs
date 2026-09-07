@@ -38,6 +38,7 @@ fn insert_test_aggregate_api_with_provider(storage: &Storage, id: &str, provider
             auth_params_json: None,
             action: None,
             model_override: None,
+            user_agent: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,
@@ -70,6 +71,7 @@ fn insert_test_aggregate_api_with_model_override(storage: &Storage, id: &str, mo
             auth_params_json: None,
             action: None,
             model_override: Some(model.to_string()),
+            user_agent: None,
             status: "active".to_string(),
             created_at: now,
             updated_at: now,
@@ -181,6 +183,24 @@ fn aggregate_route_model_validation_accepts_model_override_candidate() {
         execution_plan(GatewayUpstreamRouteKind::AggregateApi),
     )
     .expect("aggregate override should make the route usable for client models");
+}
+
+#[test]
+fn reserve_alias_model_validation_uses_luna_catalog_route() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+
+    let model = validate_model_route(
+        &storage,
+        "key-route",
+        Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG),
+        execution_plan(GatewayUpstreamRouteKind::AccountRotation),
+    )
+    .expect("reserve alias should borrow the Luna catalog route")
+    .expect("configured model");
+
+    assert_eq!(model.slug, codexmanager_core::usage::LUNA_MODEL_SLUG);
+    assert!(has_enabled_default_account_pool_route(&model));
 }
 
 #[test]
@@ -537,6 +557,61 @@ fn aggregate_route_model_filter_uses_v2_routes() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].id, "agg-with-model");
     assert_eq!(candidates[0].model_override.as_deref(), Some("vendor-top"));
+}
+
+#[test]
+fn reserve_alias_aggregate_filter_uses_luna_catalog_routes() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    insert_test_aggregate_api(&storage, "agg-luna-reserve");
+    add_model_route_v2(
+        &storage,
+        codexmanager_core::usage::LUNA_MODEL_SLUG,
+        "aggregate_api",
+        "agg-luna-reserve",
+        codexmanager_core::usage::LUNA_MODEL_SLUG,
+    );
+
+    let candidates = resolve_aggregate_candidates_for_route(
+        &storage,
+        "openai_responses",
+        None,
+        Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG),
+    )
+    .expect("resolve reserve alias aggregate candidates");
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, "agg-luna-reserve");
+    assert_eq!(candidates[0].model_override, None);
+}
+
+#[test]
+fn reserve_alias_aggregate_filter_keeps_explicit_non_luna_override() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    insert_test_aggregate_api(&storage, "agg-reserve-override");
+    add_model_route_v2(
+        &storage,
+        codexmanager_core::usage::LUNA_MODEL_SLUG,
+        "aggregate_api",
+        "agg-reserve-override",
+        "vendor-reserve-model",
+    );
+
+    let candidates = resolve_aggregate_candidates_for_route(
+        &storage,
+        "openai_responses",
+        None,
+        Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG),
+    )
+    .expect("resolve explicitly overridden reserve aggregate candidate");
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, "agg-reserve-override");
+    assert_eq!(
+        candidates[0].model_override.as_deref(),
+        Some("vendor-reserve-model")
+    );
 }
 
 #[test]

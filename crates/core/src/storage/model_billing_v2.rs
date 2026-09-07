@@ -36,6 +36,9 @@ pub struct ChargeComputationV2 {
 pub struct ChargeSnapshotInputV2 {
     pub request_log_id: i64,
     pub model_slug: String,
+    /// Optional catalog slug used for price lookup while preserving `model_slug` in the snapshot.
+    #[serde(default)]
+    pub pricing_model_slug: Option<String>,
     pub usage_source: String,
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
@@ -308,11 +311,17 @@ impl Storage {
             tx.commit()?;
             return Ok(existing);
         }
+        let pricing_model_slug = input
+            .pricing_model_slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty())
+            .unwrap_or_else(|| input.model_slug.trim());
         let price_status: Option<String> = tx
             .query_row(
                 "SELECT p.price_status FROM models m JOIN model_prices p ON p.model_id=m.id
                  WHERE m.slug=?1 COLLATE NOCASE",
-                [input.model_slug.trim()],
+                [pricing_model_slug],
                 |row| row.get(0),
             )
             .optional()?;
@@ -331,7 +340,7 @@ impl Storage {
                     t.output_microusd_per_1m
              FROM models m JOIN model_price_tiers t ON t.model_id=m.id AND t.min_input_tokens<=?2
              WHERE m.slug=?1 COLLATE NOCASE ORDER BY t.min_input_tokens DESC LIMIT 1",
-            params![input.model_slug.trim(), input.input_tokens],
+            params![pricing_model_slug, input.input_tokens],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -524,6 +533,29 @@ mod tests {
         assert_eq!(snapshot.cache_write_tokens, 20);
         assert_eq!(snapshot.cache_write_microusd_per_1m, 6_250_000);
         assert_eq!(snapshot.base_cost_microusd, 645);
+    }
+
+    #[test]
+    fn snapshot_can_preserve_request_alias_while_using_catalog_pricing() {
+        let storage = Storage::open_in_memory().unwrap();
+        storage.init().unwrap();
+        storage.conn.execute("INSERT INTO request_logs(request_path,method,model,created_at) VALUES('/v1/responses','POST','gpt-reserve',1)",[]).unwrap();
+
+        let snapshot = storage
+            .record_charge_snapshot_v2(&ChargeSnapshotInputV2 {
+                request_log_id: storage.conn.last_insert_rowid(),
+                model_slug: "gpt-reserve".into(),
+                pricing_model_slug: Some("gpt-5.6-luna".into()),
+                usage_source: "actual".into(),
+                input_tokens: 1_000,
+                output_tokens: 1_000,
+                rate_multiplier_millis: 1_000,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(snapshot.model_slug, "gpt-reserve");
+        assert_eq!(snapshot.base_cost_microusd, 1_400);
     }
 
     #[test]

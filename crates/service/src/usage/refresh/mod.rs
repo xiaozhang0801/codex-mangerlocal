@@ -1,5 +1,9 @@
 use codexmanager_core::auth::{extract_token_exp, DEFAULT_CLIENT_ID, DEFAULT_ISSUER};
-use codexmanager_core::storage::{now_ts, Account, AccountTokenRefreshIssuer, Storage, Token};
+use codexmanager_core::storage::{
+    now_ts, Account, AccountTokenRefreshIssuer, Storage, Token, UsageSnapshotRecord,
+};
+use codexmanager_core::usage::has_usable_luna_reserve;
+#[cfg(test)]
 use codexmanager_core::usage::parse_usage_snapshot;
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TrySendError};
 use serde::Serialize;
@@ -111,6 +115,7 @@ const BACKGROUND_TASK_RESTART_REQUIRED_KEYS: [&str; 5] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UsageAvailabilityStatus {
     Available,
+    AvailableLunaReserve,
     PrimaryWindowAvailableOnly,
     Unavailable,
     Unknown,
@@ -131,6 +136,7 @@ impl UsageAvailabilityStatus {
     fn as_code(self) -> &'static str {
         match self {
             Self::Available => "available",
+            Self::AvailableLunaReserve => "available_luna_reserve",
             Self::PrimaryWindowAvailableOnly => "primary_window_available_only",
             Self::Unavailable => "unavailable",
             Self::Unknown => "unknown",
@@ -810,33 +816,51 @@ fn refresh_account_snapshot(
             .map_err(|err| format!("store account subscription failed: {err}"))?;
     }
 
+    // The usage endpoint expects the ChatGPT account UUID in
+    // `ChatGPT-Account-ID`.  `workspace_id` is still used for the
+    // subscription lookup above, but it must not replace the account UUID
+    // when a token-derived account identity is available.
+    let usage_account_id = resolve_usage_account_id(subscription_account_id, workspace_id);
     log_account_data_route("usage", account_id, &proxy_mode, "usage", true);
     let value = match &proxy_mode {
         crate::account_proxy::AccountProxyMode::Disabled if is_fedramp => {
-            fetch_usage_snapshot_with_auth_context(base_url, bearer, workspace_id, is_fedramp)?
+            fetch_usage_snapshot_with_auth_context(base_url, bearer, usage_account_id, is_fedramp)?
         }
         crate::account_proxy::AccountProxyMode::Disabled => {
-            fetch_usage_snapshot(base_url, bearer, workspace_id)?
+            fetch_usage_snapshot(base_url, bearer, usage_account_id)?
         }
         crate::account_proxy::AccountProxyMode::Explicit { proxy_url, .. } if is_fedramp => {
             fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
                 base_url,
                 bearer,
-                workspace_id,
+                usage_account_id,
                 is_fedramp,
                 proxy_url,
             )?
         }
         crate::account_proxy::AccountProxyMode::Explicit { proxy_url, .. } => {
-            fetch_usage_snapshot_with_explicit_proxy(base_url, bearer, workspace_id, proxy_url)?
+            fetch_usage_snapshot_with_explicit_proxy(base_url, bearer, usage_account_id, proxy_url)?
         }
         crate::account_proxy::AccountProxyMode::Invalid { error, .. } => {
             return Err(error.clone());
         }
     };
-    let status = classify_usage_status_from_snapshot_value(&value);
-    store_usage_snapshot(storage, account_id, value)?;
-    Ok(status)
+    let stored = store_usage_snapshot(storage, account_id, value)?;
+    Ok(classify_usage_status_from_snapshot_record(&stored))
+}
+
+fn resolve_usage_account_id<'a>(
+    chatgpt_account_id: Option<&'a str>,
+    workspace_id: Option<&'a str>,
+) -> Option<&'a str> {
+    chatgpt_account_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            workspace_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
 }
 
 #[cfg(test)]
@@ -858,20 +882,53 @@ mod tests;
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 fn classify_usage_status_from_snapshot_value(value: &serde_json::Value) -> UsageAvailabilityStatus {
     let parsed = parse_usage_snapshot(value);
 
-    let primary_present = parsed.used_percent.is_some() && parsed.window_minutes.is_some();
+    classify_usage_status(
+        parsed.used_percent,
+        parsed.window_minutes,
+        parsed.secondary_used_percent,
+        parsed.secondary_window_minutes,
+        parsed.credits_json.as_deref(),
+    )
+}
+
+fn classify_usage_status_from_snapshot_record(
+    snapshot: &UsageSnapshotRecord,
+) -> UsageAvailabilityStatus {
+    classify_usage_status(
+        snapshot.used_percent,
+        snapshot.window_minutes,
+        snapshot.secondary_used_percent,
+        snapshot.secondary_window_minutes,
+        snapshot.credits_json.as_deref(),
+    )
+}
+
+fn classify_usage_status(
+    used_percent: Option<f64>,
+    window_minutes: Option<i64>,
+    secondary_used_percent: Option<f64>,
+    secondary_window_minutes: Option<i64>,
+    credits_json: Option<&str>,
+) -> UsageAvailabilityStatus {
+    let primary_present = used_percent.is_some() && window_minutes.is_some();
     if !primary_present {
         return UsageAvailabilityStatus::Unknown;
     }
 
-    if parsed.used_percent.map(|v| v >= 100.0).unwrap_or(false) {
-        return UsageAvailabilityStatus::Unavailable;
+    if used_percent.map(|v| v >= 100.0).unwrap_or(false) {
+        return if has_usable_luna_reserve(credits_json) {
+            UsageAvailabilityStatus::AvailableLunaReserve
+        } else {
+            UsageAvailabilityStatus::Unavailable
+        };
     }
 
-    let secondary_used = parsed.secondary_used_percent;
-    let secondary_window = parsed.secondary_window_minutes;
+    let secondary_used = secondary_used_percent;
+    let secondary_window = secondary_window_minutes;
     let secondary_present = secondary_used.is_some() || secondary_window.is_some();
     let secondary_complete = secondary_used.is_some() && secondary_window.is_some();
 
@@ -884,7 +941,11 @@ fn classify_usage_status_from_snapshot_value(value: &serde_json::Value) -> Usage
         return UsageAvailabilityStatus::PrimaryWindowAvailableOnly;
     }
     if secondary_used.map(|v| v >= 100.0).unwrap_or(false) {
-        return UsageAvailabilityStatus::Unavailable;
+        return if has_usable_luna_reserve(credits_json) {
+            UsageAvailabilityStatus::AvailableLunaReserve
+        } else {
+            UsageAvailabilityStatus::Unavailable
+        };
     }
     UsageAvailabilityStatus::Available
 }

@@ -408,11 +408,12 @@ fn normalize_service_tier(path: &str, obj: &mut Map<String, Value>) -> bool {
     let Some(raw_value) = service_tier.as_str() else {
         return false;
     };
-    if raw_value.eq_ignore_ascii_case("auto")
-        || raw_value.eq_ignore_ascii_case("fast")
-        || raw_value.eq_ignore_ascii_case("priority")
-    {
+    if raw_value.eq_ignore_ascii_case("fast") || raw_value.eq_ignore_ascii_case("priority") {
         *service_tier = Value::String("priority".to_string());
+    } else if raw_value.eq_ignore_ascii_case("flex") {
+        *service_tier = Value::String("flex".to_string());
+    } else if raw_value.eq_ignore_ascii_case("ultrafast") {
+        *service_tier = Value::String("ultrafast".to_string());
     } else {
         obj.remove("service_tier");
     }

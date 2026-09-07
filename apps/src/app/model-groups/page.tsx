@@ -66,6 +66,12 @@ import {
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { managedModelsV2Client } from "@/lib/api/managed-models-v2";
+import {
+  buildManagedModelListQueryKey,
+  buildModelGroupListQueryKey,
+  buildModelGroupUsersQueryKey,
+  normalizeQueryServiceAddress,
+} from "@/lib/api/account-query-keys";
 import { appClient } from "@/lib/api/app-client";
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { useI18n } from "@/lib/i18n/provider";
@@ -80,12 +86,6 @@ type ModelDraft = {
   enabled: boolean;
   rateMultiplier: string;
   note: string;
-};
-
-const QUERY_KEYS = {
-  groups: ["model-groups"] as const,
-  models: ["managed-models-v2", "groups"] as const,
-  users: ["model-groups", "users"] as const,
 };
 
 function multiplierToText(value?: number | null): string {
@@ -146,11 +146,15 @@ export default function ModelGroupsPage() {
   const queryClient = useQueryClient();
   const { isDesktopRuntime } = useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
-  const serviceConnected = useAppStore((state) => state.serviceStatus.connected);
+  const serviceStatus = useAppStore((state) => state.serviceStatus);
+  const serviceAddr = normalizeQueryServiceAddress(serviceStatus.addr);
+  const groupListQueryKey = buildModelGroupListQueryKey(serviceAddr);
+  const modelListQueryKey = buildManagedModelListQueryKey(serviceAddr, false);
+  const groupUsersQueryKey = buildModelGroupUsersQueryKey(serviceAddr);
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
   const isAdminMode = isAdminRole(role);
   const isPageActive = useDesktopPageActive("/model-groups/");
-  const shouldQuery = isAdminMode && serviceConnected && isPageActive;
+  const shouldQuery = isAdminMode && serviceStatus.connected && isPageActive;
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [manageTab, setManageTab] = useState<ManageTab>("base");
   const [editingGroup, setEditingGroup] = useState<ModelGroup | null>(null);
@@ -159,18 +163,18 @@ export default function ModelGroupsPage() {
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
 
   const groupsQuery = useQuery({
-    queryKey: QUERY_KEYS.groups,
-    queryFn: () => appClient.listModelGroups(),
+    queryKey: groupListQueryKey,
+    queryFn: () => appClient.listModelGroups(serviceAddr),
     enabled: shouldQuery,
   });
   const modelsQuery = useQuery({
-    queryKey: QUERY_KEYS.models,
-    queryFn: () => managedModelsV2Client.list(false),
+    queryKey: modelListQueryKey,
+    queryFn: () => managedModelsV2Client.list(false, serviceAddr),
     enabled: shouldQuery,
   });
   const usersQuery = useQuery({
-    queryKey: QUERY_KEYS.users,
-    queryFn: () => appClient.listAppUsers(),
+    queryKey: groupUsersQueryKey,
+    queryFn: () => appClient.listAppUsers(serviceAddr),
     enabled: shouldQuery,
   });
 
@@ -199,6 +203,21 @@ export default function ModelGroupsPage() {
   const activeGroup = refreshedEditingGroup ?? editingGroup;
   const activeGroupId = activeGroup?.id ?? "";
   const activeGroupIsDefault = activeGroup?.isDefault === true;
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setGroupDialogOpen(false);
+      setEditingGroup(null);
+      setManageTab("base");
+      setModelDrafts({});
+      setSelectedUserIds([]);
+    });
+    return () => {
+      active = false;
+    };
+  }, [serviceAddr]);
 
   useEffect(() => {
     if (!groupDialogOpen || !activeGroupId) return;
@@ -240,23 +259,26 @@ export default function ModelGroupsPage() {
 
   const refreshAll = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.groups }),
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.models }),
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.users }),
+      queryClient.invalidateQueries({ queryKey: groupListQueryKey }),
+      queryClient.invalidateQueries({ queryKey: modelListQueryKey }),
+      queryClient.invalidateQueries({ queryKey: groupUsersQueryKey }),
     ]);
   };
 
   const saveGroup = useMutation({
     mutationFn: async () =>
-      appClient.saveModelGroup({
-        id: editingGroup?.id ?? null,
-        name: groupDraft.name.trim(),
-        description: groupDraft.description.trim() || null,
-        status: groupDraft.status,
-        sort: Number.parseInt(groupDraft.sort, 10) || 0,
-        isDefault: groupDraft.isDefault,
-        rateMultiplierMillis: parseMultiplier(groupDraft.rateMultiplier) ?? 1000,
-      }),
+      appClient.saveModelGroup(
+        {
+          id: editingGroup?.id ?? null,
+          name: groupDraft.name.trim(),
+          description: groupDraft.description.trim() || null,
+          status: groupDraft.status,
+          sort: Number.parseInt(groupDraft.sort, 10) || 0,
+          isDefault: groupDraft.isDefault,
+          rateMultiplierMillis: parseMultiplier(groupDraft.rateMultiplier) ?? 1000,
+        },
+        serviceAddr,
+      ),
     onSuccess: async (group) => {
       const wasCreating = !editingGroup;
       setEditingGroup(group);
@@ -270,7 +292,7 @@ export default function ModelGroupsPage() {
   });
 
   const deleteGroup = useMutation({
-    mutationFn: (id: string) => appClient.deleteModelGroup(id),
+    mutationFn: (id: string) => appClient.deleteModelGroup(id, serviceAddr),
     onSuccess: async () => {
       setGroupDialogOpen(false);
       setEditingGroup(null);
@@ -283,26 +305,29 @@ export default function ModelGroupsPage() {
   const saveModels = useMutation({
     mutationFn: async () => {
       if (!activeGroup) throw new Error(t("请选择模型组"));
-      return appClient.setModelGroupModels({
-        groupId: activeGroup.id,
-        models: catalogModels
-          .map((model) => {
-            const draft = modelDrafts[model.slug] ?? modelDraftFromEntry();
-            if (!draft.enabled) return null;
-            return {
-              platformModelSlug: model.slug,
-              enabled: true,
-              rateMultiplierMillis: parseMultiplier(draft.rateMultiplier),
-              note: draft.note.trim() || null,
-            };
-          })
-          .filter(Boolean) as Array<{
-          platformModelSlug: string;
-          enabled: boolean;
-          rateMultiplierMillis: number | null;
-          note: string | null;
-        }>,
-      });
+      return appClient.setModelGroupModels(
+        {
+          groupId: activeGroup.id,
+          models: catalogModels
+            .map((model) => {
+              const draft = modelDrafts[model.slug] ?? modelDraftFromEntry();
+              if (!draft.enabled) return null;
+              return {
+                platformModelSlug: model.slug,
+                enabled: true,
+                rateMultiplierMillis: parseMultiplier(draft.rateMultiplier),
+                note: draft.note.trim() || null,
+              };
+            })
+            .filter(Boolean) as Array<{
+            platformModelSlug: string;
+            enabled: boolean;
+            rateMultiplierMillis: number | null;
+            note: string | null;
+          }>,
+        },
+        serviceAddr,
+      );
     },
     onSuccess: async () => {
       await refreshAll();
@@ -318,10 +343,13 @@ export default function ModelGroupsPage() {
   const saveUsers = useMutation({
     mutationFn: async () => {
       if (!activeGroup) throw new Error(t("请选择模型组"));
-      return appClient.setModelGroupUsers({
-        groupId: activeGroup.id,
-        userIds: selectedUserIds,
-      });
+      return appClient.setModelGroupUsers(
+        {
+          groupId: activeGroup.id,
+          userIds: selectedUserIds,
+        },
+        serviceAddr,
+      );
     },
     onSuccess: async () => {
       await refreshAll();

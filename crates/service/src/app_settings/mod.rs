@@ -1,4 +1,3 @@
-mod aggregate_api;
 mod api;
 mod codex_latest_sync;
 mod env_overrides;
@@ -9,12 +8,6 @@ mod shared;
 mod store;
 mod ui;
 
-#[cfg(test)]
-pub(crate) use aggregate_api::set_aggregate_api_probe_user_agent_settings;
-pub(crate) use aggregate_api::{
-    current_aggregate_api_probe_user_agent, current_aggregate_api_probe_user_agent_mode,
-    AGGREGATE_API_PROBE_USER_AGENT_MODE_CODEX,
-};
 pub use api::{
     app_settings_get, app_settings_get_with_overrides, app_settings_set, author_content_get,
 };
@@ -34,9 +27,10 @@ pub use gateway::{
     current_gateway_sse_keepalive_interval_ms,
     current_gateway_thread_aware_account_distribution_enabled,
     current_gateway_upstream_proxy_bypass_hosts, current_gateway_upstream_stream_timeout_ms,
-    current_gateway_upstream_total_timeout_ms, current_gateway_user_agent_version,
-    default_gateway_originator, default_gateway_user_agent_version, fetch_codex_latest_version,
-    residency_requirement_options, set_gateway_account_max_inflight, set_gateway_background_tasks,
+    current_gateway_upstream_total_timeout_ms, current_gateway_user_agent,
+    current_gateway_user_agent_version, default_gateway_originator, default_gateway_user_agent,
+    default_gateway_user_agent_version, fetch_codex_latest_version, residency_requirement_options,
+    set_gateway_account_max_inflight, set_gateway_background_tasks,
     set_gateway_compact_model_forward_rules, set_gateway_free_account_max_model,
     set_gateway_model_forward_rules, set_gateway_originator,
     set_gateway_request_compression_enabled, set_gateway_residency_requirement,
@@ -44,7 +38,7 @@ pub use gateway::{
     set_gateway_sse_keepalive_interval_ms, set_gateway_thread_aware_account_distribution_enabled,
     set_gateway_upstream_proxy_bypass_hosts, set_gateway_upstream_proxy_url,
     set_gateway_upstream_stream_timeout_ms, set_gateway_upstream_total_timeout_ms,
-    set_gateway_user_agent_version, BackgroundTasksInput,
+    set_gateway_user_agent, set_gateway_user_agent_version, BackgroundTasksInput,
 };
 pub use runtime_sync::sync_runtime_settings_from_storage;
 pub use service::{
@@ -56,8 +50,6 @@ pub use service::{
 };
 pub(crate) use shared::{normalize_optional_text, parse_bool_with_default};
 pub use shared::{
-    APP_SETTING_AGGREGATE_API_PROBE_USER_AGENT_KEY,
-    APP_SETTING_AGGREGATE_API_PROBE_USER_AGENT_MODE_KEY,
     APP_SETTING_AUTHOR_SERVER_RECOMMENDATIONS_KEY, APP_SETTING_AUTHOR_SPONSORS_KEY,
     APP_SETTING_AUTO_START_ENABLED_KEY, APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY,
     APP_SETTING_DISTRIBUTION_ENABLED_KEY, APP_SETTING_ENV_OVERRIDES_KEY,
@@ -72,15 +64,15 @@ pub use shared::{
     APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
-    APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
-    APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY, APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY,
-    APP_SETTING_PLUGIN_MARKET_MODE_KEY, APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY,
-    APP_SETTING_SERVICE_ADDR_KEY, APP_SETTING_SHOW_MAIN_WINDOW_ON_STARTUP_KEY,
-    APP_SETTING_UI_APPEARANCE_PRESET_KEY, APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY,
-    APP_SETTING_UI_LOCALE_KEY, APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY,
-    APP_SETTING_UI_ZOOM_FACTOR_KEY, APP_SETTING_UPDATE_AUTO_CHECK_KEY,
-    APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY, APP_SETTING_WEB_AUTH_MODE_KEY,
-    WEB_ACCESS_SESSION_COOKIE_NAME,
+    APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_KEY,
+    APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY, APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY,
+    APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_PLUGIN_MARKET_MODE_KEY,
+    APP_SETTING_PLUGIN_MARKET_SOURCE_URL_KEY, APP_SETTING_SERVICE_ADDR_KEY,
+    APP_SETTING_SHOW_MAIN_WINDOW_ON_STARTUP_KEY, APP_SETTING_UI_APPEARANCE_PRESET_KEY,
+    APP_SETTING_UI_CODEX_CLI_GUIDE_DISMISSED_KEY, APP_SETTING_UI_LOCALE_KEY,
+    APP_SETTING_UI_LOW_TRANSPARENCY_KEY, APP_SETTING_UI_THEME_KEY, APP_SETTING_UI_ZOOM_FACTOR_KEY,
+    APP_SETTING_UPDATE_AUTO_CHECK_KEY, APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY,
+    APP_SETTING_WEB_AUTH_MODE_KEY, WEB_ACCESS_SESSION_COOKIE_NAME,
 };
 pub(crate) use store::{
     get_persisted_app_setting, list_app_settings_map, save_persisted_app_setting,

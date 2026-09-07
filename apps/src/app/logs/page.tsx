@@ -7,6 +7,10 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { accountClient } from "@/lib/api/account-client";
 import {
+  buildAccountLookupQueryKey,
+  buildApiKeyLookupQueryKey,
+} from "@/lib/api/account-query-keys";
+import {
   buildStartupSnapshotQueryKey,
   STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
 } from "@/lib/api/startup-snapshot";
@@ -57,6 +61,7 @@ function LogsPageContent() {
   const localDayRange = useLocalDayRange();
   const searchParams = useSearchParams();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
+  const serviceAddr = serviceStatus.addr || null;
   const { isDesktopRuntime } = useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
@@ -89,7 +94,7 @@ function LogsPageContent() {
     Boolean(search.trim()) || filter !== "all" || hasActiveTimeRange;
   const startupSnapshot = queryClient.getQueryData<StartupSnapshot>(
     buildStartupSnapshotQueryKey(
-      serviceStatus.addr,
+      serviceAddr,
       STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
       localDayRange.dayStartTs,
       localDayRange.dayEndTs,
@@ -109,43 +114,52 @@ function LogsPageContent() {
     canUseStartupLogsPlaceholder && startupRequestLogs.length > 0;
 
   const { data: accountsResult } = useQuery({
-    queryKey: ["accounts", "lookup"],
-    queryFn: () => accountClient.list(),
+    queryKey: buildAccountLookupQueryKey(serviceAddr),
+    queryFn: () => accountClient.list(serviceAddr),
     enabled: areLogQueriesEnabled && isPageActive && isAdminMode,
     staleTime: 60_000,
     retry: 1,
-    placeholderData: (previousData): AccountListResult | undefined =>
-      previousData ||
-      (startupAccounts.length > 0
+    placeholderData: (): AccountListResult | undefined =>
+      startupAccounts.length > 0
         ? {
             items: startupAccounts,
             total: startupAccounts.length,
             page: 1,
             pageSize: startupAccounts.length,
           }
-        : undefined),
+        : undefined,
   });
 
   const { data: apiKeysResult } = useQuery({
-    queryKey: ["apikeys", "lookup"],
-    queryFn: () => accountClient.listApiKeys(),
+    queryKey: buildApiKeyLookupQueryKey(serviceAddr),
+    queryFn: () => accountClient.listApiKeys(serviceAddr),
     enabled: areLogQueriesEnabled && isPageActive,
     staleTime: 60_000,
     retry: 1,
-    placeholderData: (previousData): ApiKey[] | undefined =>
-      previousData || (startupApiKeys.length > 0 ? startupApiKeys : undefined),
+    placeholderData: (): ApiKey[] | undefined =>
+      startupApiKeys.length > 0 ? startupApiKeys : undefined,
   });
 
   const { data: aggregateApisResult } = useQuery({
-    queryKey: ["aggregate-apis"],
-    queryFn: () => accountClient.listAggregateApis(),
+    queryKey: ["aggregate-apis", "lookup", serviceAddr],
+    queryFn: () => accountClient.listAggregateApis(serviceAddr),
     enabled: areLogQueriesEnabled && isPageActive && isAdminMode,
     staleTime: 60_000,
     retry: 1,
   });
 
   const { data: logsResult, isLoading, isError: isLogsError } = useQuery({
-    queryKey: ["logs", "list-with-summary", search, filter, startTs, endTs, page, pageSizeNumber],
+    queryKey: [
+      "logs",
+      "list-with-summary",
+      serviceAddr,
+      search,
+      filter,
+      startTs,
+      endTs,
+      page,
+      pageSizeNumber,
+    ],
     queryFn: ({ signal }) =>
       serviceClient.listRequestLogsWithSummary(
         {
@@ -157,6 +171,7 @@ function LogsPageContent() {
           pageSize: pageSizeNumber,
         },
         { signal },
+        serviceAddr,
       ),
     enabled: areLogQueriesEnabled && isPageActive,
     refetchInterval: (query) => {
@@ -173,9 +188,14 @@ function LogsPageContent() {
     },
     refetchIntervalInBackground: false,
     retry: 1,
-    placeholderData: (previousData): RequestLogListWithSummaryResult | undefined =>
-      previousData ||
-      (hasStartupLogsSnapshot
+    placeholderData: (
+      previousData,
+      previousQuery,
+    ): RequestLogListWithSummaryResult | undefined => {
+      if (previousQuery?.queryKey[2] === serviceAddr && previousData) {
+        return previousData;
+      }
+      return hasStartupLogsSnapshot
         ? {
             items: startupRequestLogs,
             total: startupRequestLogs.length,
@@ -183,14 +203,15 @@ function LogsPageContent() {
             pageSize: pageSizeNumber,
             summary: buildSummaryPlaceholder(startupRequestLogs),
           }
-        : undefined),
+        : undefined;
+    },
   });
 
   const clearMutation = useMutation({
-    mutationFn: () => serviceClient.clearRequestLogs(),
+    mutationFn: () => serviceClient.clearRequestLogs(serviceAddr),
     onSuccess: async () => {
       queryClient.setQueriesData<RequestLogListWithSummaryResult>(
-        { queryKey: ["logs", "list-with-summary"] },
+        { queryKey: ["logs", "list-with-summary", serviceAddr] },
         (previousData) =>
           previousData
             ? {
@@ -211,7 +232,9 @@ function LogsPageContent() {
             : previousData,
       );
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["logs"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["logs", "list-with-summary", serviceAddr],
+        }),
         queryClient.invalidateQueries({ queryKey: ["today-summary"] }),
         queryClient.invalidateQueries({ queryKey: DASHBOARD_ADMIN_USAGE_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: MEMBER_DASHBOARD_SUMMARY_QUERY_KEY }),
@@ -422,7 +445,9 @@ function LogsPageContent() {
           setPage(1);
         }}
         onRefresh={() => {
-          void queryClient.invalidateQueries({ queryKey: ["logs"] });
+          void queryClient.invalidateQueries({
+            queryKey: ["logs", "list-with-summary", serviceAddr],
+          });
         }}
         onOpenClearConfirm={() => setClearConfirmOpen(true)}
         onApplyTimePreset={applyTimePreset}

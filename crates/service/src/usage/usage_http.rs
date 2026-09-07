@@ -4,6 +4,7 @@ use codexmanager_core::usage::{
     reset_credits_endpoint, usage_endpoint, ResetCreditsSnapshot,
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CACHE_CONTROL, PRAGMA};
 use reqwest::{Client, Proxy, Url};
 use std::collections::HashMap;
 use std::future::Future;
@@ -41,6 +42,7 @@ const OAI_REQUEST_ID_HEADER: &str = "x-oai-request-id";
 const CF_RAY_HEADER: &str = "cf-ray";
 const AUTH_ERROR_HEADER: &str = "x-openai-authorization-error";
 const X_OPENAI_FEDRAMP_HEADER_NAME: &str = "x-openai-fedramp";
+const X_OPENAI_CODEX_LUNA_RESERVE_HEADER_NAME: &str = "x-openai-codex-luna-reserve";
 
 #[derive(Debug, Clone)]
 pub(crate) struct UsageActionHttpError {
@@ -580,6 +582,8 @@ fn format_refresh_token_status_error_with_headers(
 /// # 返回
 /// 返回函数执行结果
 fn build_usage_http_client() -> Client {
+    // Account maintenance uses the standard Codex identity, independently of
+    // the custom User-Agent configured for gateway forwarding.
     let default_headers = build_usage_http_default_headers();
     let builder = Client::builder()
         // 中文注释：轮询链路复用连接池可降低握手开销；不复用会在多账号刷新时放大短连接抖动。
@@ -597,6 +601,8 @@ fn build_usage_http_client() -> Client {
     builder.build().unwrap_or_else(|_| Client::new())
 }
 fn build_subscription_http_client() -> Client {
+    // Keep accounts/check on its browser endpoint header profile. A Codex
+    // User-Agent can trigger a Cloudflare challenge and an unnecessary token refresh.
     let builder = Client::builder()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
@@ -640,17 +646,17 @@ fn build_usage_http_default_headers() -> HeaderMap {
 /// 时间: 2026-04-02
 ///
 /// # 参数
-/// - workspace_id: 参数 workspace_id
+/// - chatgpt_account_id: 用于上游 `ChatGPT-Account-ID` 请求头的账号身份
 ///
 /// # 返回
 /// 返回函数执行结果
-fn build_usage_request_headers(workspace_id: Option<&str>, is_fedramp: bool) -> HeaderMap {
+fn build_usage_request_headers(chatgpt_account_id: Option<&str>, is_fedramp: bool) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    if let Some(workspace_id) = workspace_id
+    if let Some(chatgpt_account_id) = chatgpt_account_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        if let Ok(value) = HeaderValue::from_str(workspace_id) {
+        if let Ok(value) = HeaderValue::from_str(chatgpt_account_id) {
             if let Ok(name) = HeaderName::from_bytes(CHATGPT_ACCOUNT_ID_HEADER_NAME.as_bytes()) {
                 headers.insert(name, value);
             }
@@ -661,7 +667,19 @@ fn build_usage_request_headers(workspace_id: Option<&str>, is_fedramp: bool) -> 
             HeaderName::from_static(X_OPENAI_FEDRAMP_HEADER_NAME),
             HeaderValue::from_static("true"),
         );
+    } else {
+        // Match the official Codex usage request so eligible ChatGPT plans
+        // receive the optional Luna Reserve bucket.
+        headers.insert(
+            HeaderName::from_static(X_OPENAI_CODEX_LUNA_RESERVE_HEADER_NAME),
+            HeaderValue::from_static("1"),
+        );
     }
+    // The usage endpoint is a GET and may be served through an intermediary;
+    // an explicit refresh must observe the current reserve bucket rather than
+    // a previously cached response.
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
     headers
 }
 
@@ -1048,21 +1066,21 @@ fn current_upstream_proxy_url() -> Option<String> {
 pub(crate) fn fetch_usage_snapshot(
     base_url: &str,
     bearer: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    fetch_usage_snapshot_with_auth_context(base_url, bearer, workspace_id, false)
+    fetch_usage_snapshot_with_auth_context(base_url, bearer, chatgpt_account_id, false)
 }
 
 pub(crate) fn fetch_usage_snapshot_with_auth_context(
     base_url: &str,
     auth_token: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     is_fedramp: bool,
 ) -> Result<serde_json::Value, String> {
     run_usage_future(fetch_usage_snapshot_async(
         base_url,
         auth_token,
-        workspace_id,
+        chatgpt_account_id,
         is_fedramp,
         None,
     ))
@@ -1071,13 +1089,13 @@ pub(crate) fn fetch_usage_snapshot_with_auth_context(
 pub(crate) fn fetch_usage_snapshot_with_explicit_proxy(
     base_url: &str,
     bearer: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     proxy_url: &str,
 ) -> Result<serde_json::Value, String> {
     fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
         base_url,
         bearer,
-        workspace_id,
+        chatgpt_account_id,
         false,
         proxy_url,
     )
@@ -1086,7 +1104,7 @@ pub(crate) fn fetch_usage_snapshot_with_explicit_proxy(
 pub(crate) fn fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
     base_url: &str,
     auth_token: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     is_fedramp: bool,
     proxy_url: &str,
 ) -> Result<serde_json::Value, String> {
@@ -1094,7 +1112,7 @@ pub(crate) fn fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
     run_usage_future(fetch_usage_snapshot_async(
         base_url,
         auth_token,
-        workspace_id,
+        chatgpt_account_id,
         is_fedramp,
         Some(proxy_url.as_str()),
     ))
@@ -1103,12 +1121,12 @@ pub(crate) fn fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
 pub(crate) fn fetch_reset_credits_snapshot(
     base_url: &str,
     bearer: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
 ) -> Result<ResetCreditsSnapshot, UsageActionHttpError> {
     run_usage_future(fetch_reset_credits_snapshot_async(
         base_url,
         bearer,
-        workspace_id,
+        chatgpt_account_id,
         None,
     ))
 }
@@ -1116,7 +1134,7 @@ pub(crate) fn fetch_reset_credits_snapshot(
 pub(crate) fn fetch_reset_credits_snapshot_with_explicit_proxy(
     base_url: &str,
     bearer: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     proxy_url: &str,
 ) -> Result<ResetCreditsSnapshot, UsageActionHttpError> {
     let proxy_url =
@@ -1127,7 +1145,7 @@ pub(crate) fn fetch_reset_credits_snapshot_with_explicit_proxy(
     run_usage_future(fetch_reset_credits_snapshot_async(
         base_url,
         bearer,
-        workspace_id,
+        chatgpt_account_id,
         Some(proxy_url.as_str()),
     ))
 }
@@ -1135,13 +1153,13 @@ pub(crate) fn fetch_reset_credits_snapshot_with_explicit_proxy(
 pub(crate) fn consume_reset_credit_request(
     base_url: &str,
     bearer: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     redeem_request_id: &str,
 ) -> Result<(), UsageActionHttpError> {
     run_usage_future(consume_reset_credit_request_async(
         base_url,
         bearer,
-        workspace_id,
+        chatgpt_account_id,
         redeem_request_id,
         None,
     ))
@@ -1150,7 +1168,7 @@ pub(crate) fn consume_reset_credit_request(
 pub(crate) fn consume_reset_credit_request_with_explicit_proxy(
     base_url: &str,
     bearer: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     redeem_request_id: &str,
     proxy_url: &str,
 ) -> Result<(), UsageActionHttpError> {
@@ -1162,7 +1180,7 @@ pub(crate) fn consume_reset_credit_request_with_explicit_proxy(
     run_usage_future(consume_reset_credit_request_async(
         base_url,
         bearer,
-        workspace_id,
+        chatgpt_account_id,
         redeem_request_id,
         Some(proxy_url.as_str()),
     ))
@@ -1170,7 +1188,7 @@ pub(crate) fn consume_reset_credit_request_with_explicit_proxy(
 
 fn reset_credit_request_headers(
     base_url: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
 ) -> Result<HeaderMap, UsageActionHttpError> {
     let endpoint = reset_credits_endpoint(base_url);
     let url = Url::parse(&endpoint).map_err(|error| UsageActionHttpError {
@@ -1185,7 +1203,7 @@ fn reset_credit_request_headers(
     }
     let origin = url.origin().ascii_serialization();
     let referer = format!("{origin}/");
-    let mut headers = build_usage_request_headers(workspace_id, false);
+    let mut headers = build_usage_request_headers(chatgpt_account_id, false);
     headers.insert(
         reqwest::header::ACCEPT,
         HeaderValue::from_static("application/json"),
@@ -1214,11 +1232,11 @@ fn reset_credit_request_headers(
 async fn fetch_reset_credits_snapshot_async(
     base_url: &str,
     bearer: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     explicit_proxy_url: Option<&str>,
 ) -> Result<ResetCreditsSnapshot, UsageActionHttpError> {
     let url = reset_credits_endpoint(base_url);
-    let request_headers = reset_credit_request_headers(base_url, workspace_id)?;
+    let request_headers = reset_credit_request_headers(base_url, chatgpt_account_id)?;
     let build_request = |client: Client| {
         client
             .get(&url)
@@ -1276,12 +1294,12 @@ async fn fetch_reset_credits_snapshot_async(
 async fn consume_reset_credit_request_async(
     base_url: &str,
     bearer: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     redeem_request_id: &str,
     explicit_proxy_url: Option<&str>,
 ) -> Result<(), UsageActionHttpError> {
     let url = reset_credits_consume_endpoint(base_url);
-    let request_headers = reset_credit_request_headers(base_url, workspace_id)?;
+    let request_headers = reset_credit_request_headers(base_url, chatgpt_account_id)?;
     let build_request = |client: Client| {
         client
             .post(&url)
@@ -1400,13 +1418,13 @@ pub(crate) fn fetch_account_subscription_with_explicit_proxy(
 async fn fetch_usage_snapshot_async(
     base_url: &str,
     auth_token: &str,
-    workspace_id: Option<&str>,
+    chatgpt_account_id: Option<&str>,
     is_fedramp: bool,
     explicit_proxy_url: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     // 调用上游用量接口
     let url = usage_endpoint(base_url);
-    let request_headers = build_usage_request_headers(workspace_id, is_fedramp);
+    let request_headers = build_usage_request_headers(chatgpt_account_id, is_fedramp);
     let authorization = crate::agent_identity::format_upstream_authorization(auth_token);
     let build_request = |client: Client| {
         let mut req = client.get(&url).header("Authorization", &authorization);
@@ -1791,6 +1809,8 @@ fn build_usage_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client
 }
 
 fn build_subscription_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client, String> {
+    // Match the subscription client above; gateway User-Agent overrides must
+    // not reach accounts/check through an account proxy either.
     let builder = Client::builder()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)

@@ -6,6 +6,11 @@ import { toast } from "sonner";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
+import {
+  buildManagedModelListQueryKey,
+  buildModelGroupListQueryKey,
+  normalizeQueryServiceAddress,
+} from "@/lib/api/account-query-keys";
 import { managedModelsV2Client } from "@/lib/api/managed-models-v2";
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { useI18n } from "@/lib/i18n/provider";
@@ -70,6 +75,10 @@ export function useManagedModels() {
   const queryClient = useQueryClient();
   const { t } = useI18n();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
+  const serviceAddr = normalizeQueryServiceAddress(serviceStatus.addr);
+  const managedModelsQueryKey = buildManagedModelListQueryKey(serviceAddr, true);
+  const modelGroupListQueryKey = buildModelGroupListQueryKey(serviceAddr);
+  const startupSnapshotQueryKey = ["startup-snapshot", serviceAddr] as const;
   const { canAccessManagementRpc } = useRuntimeCapabilities();
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
   const isPageActive = useDesktopPageActive("/models/");
@@ -84,16 +93,16 @@ export function useManagedModels() {
   };
 
   const query = useQuery({
-    queryKey: MANAGED_MODELS_V2_QUERY_KEY,
-    queryFn: () => managedModelsV2Client.list(true),
+    queryKey: managedModelsQueryKey,
+    queryFn: () => managedModelsV2Client.list(true, serviceAddr),
     enabled: isQueryEnabled,
     retry: 1,
   });
 
   const invalidateConsumers = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["model-groups"] }),
-      queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+      queryClient.invalidateQueries({ queryKey: modelGroupListQueryKey }),
+      queryClient.invalidateQueries({ queryKey: startupSnapshotQueryKey }),
     ]);
   };
 
@@ -120,7 +129,7 @@ export function useManagedModels() {
     const hidden = new Set(hiddenSlugs);
     const deleted = new Set(deletedSlugs);
     queryClient.setQueryData<ManagedModelListV2Result>(
-      MANAGED_MODELS_V2_QUERY_KEY,
+      managedModelsQueryKey,
       (current) => {
         if (!current) return current;
         const items = current.items
@@ -148,7 +157,7 @@ export function useManagedModels() {
       savedModels.map((model) => [model.slug, model] as const),
     );
     queryClient.setQueryData<ManagedModelListV2Result>(
-      MANAGED_MODELS_V2_QUERY_KEY,
+      managedModelsQueryKey,
       (current) => {
         if (!current) return current;
         const items = current.items.map((model) =>
@@ -161,7 +170,7 @@ export function useManagedModels() {
 
   const saveMutation = useMutation({
     mutationFn: (input: ManagedModelV2Upsert) =>
-      managedModelsV2Client.upsert(input),
+      managedModelsV2Client.upsert(input, serviceAddr),
     onSuccess: async () => {
       await reloadCatalog();
       await invalidateConsumers();
@@ -178,11 +187,14 @@ export function useManagedModels() {
       enabled,
       visibility,
     }: UpdateManagedModelStateInput) =>
-      managedModelsV2Client.updateState({
-        slug: model.slug,
-        enabled,
-        visibility,
-      }),
+      managedModelsV2Client.updateState(
+        {
+          slug: model.slug,
+          enabled,
+          visibility,
+        },
+        serviceAddr,
+      ),
     onSuccess: (savedModel, input) => {
       applyCommittedModelsToCache([savedModel]);
       if (input.visibility === "hide") {
@@ -223,11 +235,14 @@ export function useManagedModels() {
         new Set(slugs.map((slug) => slug.trim()).filter(Boolean)),
       );
       if (normalizedSlugs.length === 0) return [];
-      return managedModelsV2Client.updateStates({
-        slugs: normalizedSlugs,
-        enabled,
-        visibility,
-      });
+      return managedModelsV2Client.updateStates(
+        {
+          slugs: normalizedSlugs,
+          enabled,
+          visibility,
+        },
+        serviceAddr,
+      );
     },
     onSuccess: (updated) => {
       if (updated.length > 0) {
@@ -255,12 +270,12 @@ export function useManagedModels() {
     mutationFn: async (slug: string) => {
       const catalog =
         queryClient.getQueryData<ManagedModelListV2Result>(
-          MANAGED_MODELS_V2_QUERY_KEY,
+          managedModelsQueryKey,
         ) ?? query.data;
       const isBuiltin =
         catalog?.items.find((model) => model.slug === slug)?.origin ===
         "builtin";
-      await managedModelsV2Client.delete(slug);
+      await managedModelsV2Client.delete(slug, serviceAddr);
       return { isBuiltin, slug };
     },
     onSuccess: ({ isBuiltin, slug }) => {
@@ -287,14 +302,14 @@ export function useManagedModels() {
       );
       const catalog =
         queryClient.getQueryData<ManagedModelListV2Result>(
-          MANAGED_MODELS_V2_QUERY_KEY,
+          managedModelsQueryKey,
         ) ?? query.data;
       const hidden: string[] = [];
       const deleted: string[] = [];
       const failed: Array<{ slug: string; reason: string }> = [];
       for (const slug of normalizedSlugs) {
         try {
-          await managedModelsV2Client.delete(slug);
+          await managedModelsV2Client.delete(slug, serviceAddr);
           if (
             catalog?.items.find((model) => model.slug === slug)?.origin ===
             "builtin"
@@ -363,7 +378,7 @@ export function useManagedModels() {
     ): Promise<ManagedModelBatchRouteResultV2> => {
       const catalog =
         queryClient.getQueryData<ManagedModelListV2Result>(
-          MANAGED_MODELS_V2_QUERY_KEY,
+          managedModelsQueryKey,
         ) ?? query.data;
       const normalizedSlugs = Array.from(
         new Set(input.slugs.map((slug) => slug.trim()).filter(Boolean)),
@@ -424,10 +439,13 @@ export function useManagedModels() {
               ];
 
         try {
-          await managedModelsV2Client.upsert({
-            previousSlug: model.slug,
-            model: { ...model, routes },
-          });
+          await managedModelsV2Client.upsert(
+            {
+              previousSlug: model.slug,
+              model: { ...model, routes },
+            },
+            serviceAddr,
+          );
           updated.push(slug);
         } catch (error) {
           failed.push({ slug, reason: getAppErrorMessage(error) });
@@ -462,7 +480,7 @@ export function useManagedModels() {
 
   const previewImportMutation = useMutation({
     mutationFn: (input: ManagedModelImportV2Params) =>
-      managedModelsV2Client.previewImport(input),
+      managedModelsV2Client.previewImport(input, serviceAddr),
     onError: (error: unknown) => {
       toast.error(`${t("导入预览失败")}: ${getAppErrorMessage(error)}`);
     },
@@ -470,7 +488,7 @@ export function useManagedModels() {
 
   const commitImportMutation = useMutation({
     mutationFn: (input: ManagedModelImportV2Params) =>
-      managedModelsV2Client.commitImport(input),
+      managedModelsV2Client.commitImport(input, serviceAddr),
     onSuccess: async (result) => {
       await reloadCatalog();
       await invalidateConsumers();

@@ -356,6 +356,9 @@ function normalizeDisplayServiceTier(value: string | null | undefined): string {
   if (normalized === "priority") {
     return "fast";
   }
+  if (normalized === "default") {
+    return "standard";
+  }
   return normalized;
 }
 
@@ -385,10 +388,18 @@ export function RequestTypeBadge({ requestType }: { requestType: string }) {
 
 export function ServiceTierBadge({ serviceTier }: { serviceTier: string }) {
   const normalized = resolveDisplayServiceTier(serviceTier);
-  const toneClass =
-    normalized === "fast"
-      ? "border-amber-500/20 bg-amber-500/10 text-amber-500"
-      : "border-slate-500/20 bg-slate-500/10 text-slate-500";
+  const toneClass = (() => {
+    switch (normalized) {
+      case "ultrafast":
+        return "border-violet-500/20 bg-violet-500/10 text-violet-500";
+      case "fast":
+        return "border-amber-500/20 bg-amber-500/10 text-amber-500";
+      case "flex":
+        return "border-cyan-500/20 bg-cyan-500/10 text-cyan-500";
+      default:
+        return "border-slate-500/20 bg-slate-500/10 text-slate-500";
+    }
+  })();
   return (
     <Badge className={cn("h-5 rounded-full px-1.5 text-[10px] font-medium", toneClass)}>
       {normalized}

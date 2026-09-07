@@ -90,6 +90,7 @@ interface AggregateApiModalProps {
   onOpenChange: (open: boolean) => void;
   aggregateApi?: AggregateApi | null;
   defaultSort?: number;
+  serviceAddr: string | null;
 }
 
 /**
@@ -110,6 +111,7 @@ export function AggregateApiModal({
   onOpenChange,
   aggregateApi,
   defaultSort = 0,
+  serviceAddr,
 }: AggregateApiModalProps) {
   const { t } = useI18n();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
@@ -118,6 +120,7 @@ export function AggregateApiModal({
   const [supplierName, setSupplierName] = useState("");
   const [sortDraft, setSortDraft] = useState("0");
   const [url, setUrl] = useState("");
+  const [userAgent, setUserAgent] = useState("");
   const [authType, setAuthType] = useState<"apikey" | "userpass">("apikey");
   const [authCustomEnabled, setAuthCustomEnabled] = useState(false);
   const [apiKeyLocation, setApiKeyLocation] = useState<"header" | "query">(
@@ -182,6 +185,7 @@ export function AggregateApiModal({
     setSupplierName(aggregateApi?.supplierName || "");
     setSortDraft(String(aggregateApi?.sort ?? defaultSort));
     setUrl(aggregateApi?.url || "");
+    setUserAgent(aggregateApi?.userAgent || "");
     const nextAuthType =
       aggregateApi?.authType === "userpass" ? "userpass" : "apikey";
     setAuthType(nextAuthType);
@@ -418,6 +422,7 @@ export function AggregateApiModal({
           supplierName,
           sort: parsedSort,
           url,
+          userAgent: userAgent.trim(),
           key: authType === "apikey" ? key || null : null,
           authType,
           authCustomEnabled,
@@ -433,10 +438,12 @@ export function AggregateApiModal({
           balanceQueryAccessToken: balanceQueryAccessToken.trim() || null,
           balanceQueryUserId: balanceQueryUserId.trim(),
           balanceQueryConfigJson,
-        });
+        }, serviceAddr);
         toast.success(t("聚合 API 已更新"));
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+          queryClient.invalidateQueries({
+            queryKey: ["aggregate-apis", "list", serviceAddr],
+          }),
           queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
           queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
           queryClient.invalidateQueries({ queryKey: ["quota"] }),
@@ -450,6 +457,7 @@ export function AggregateApiModal({
         supplierName,
         sort: parsedSort,
         url,
+        userAgent: userAgent.trim(),
         key: authType === "apikey" ? key : null,
         authType,
         authCustomEnabled,
@@ -464,11 +472,13 @@ export function AggregateApiModal({
         balanceQueryAccessToken: balanceQueryAccessToken.trim() || null,
         balanceQueryUserId: balanceQueryUserId.trim(),
         balanceQueryConfigJson,
-      });
+      }, serviceAddr);
       setGeneratedKey(result.key);
       toast.success(t("聚合 API 已创建"));
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["aggregate-apis", "list", serviceAddr],
+        }),
         queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
         queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
         queryClient.invalidateQueries({ queryKey: ["quota"] }),
@@ -664,6 +674,24 @@ export function AggregateApiModal({
                   disabled={!isServiceReady}
                   onChange={(event) => setUrl(event.target.value)}
                 />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="aggregate-api-user-agent">
+                  {t("单独 User-Agent")}
+                </Label>
+                <Input
+                  id="aggregate-api-user-agent"
+                  className="font-mono"
+                  value={userAgent}
+                  maxLength={512}
+                  disabled={!isServiceReady}
+                  placeholder={t("留空继承网关全局 User-Agent")}
+                  onChange={(event) => setUserAgent(event.target.value)}
+                />
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {t("仅用于当前聚合 API；留空时继承网关全局设置。优先级：当前聚合 API > 网关全局 > Codex 默认值。")}
+                </p>
               </div>
 
               {authType === "apikey" ? (

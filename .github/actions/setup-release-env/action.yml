@@ -34,6 +34,14 @@ inputs:
     description: Restore Cargo registry/git and target caches.
     required: false
     default: "true"
+  cargo-cache-key:
+    description: Separate cache families for desktop and service dependency graphs.
+    required: false
+    default: release
+  cargo-workspaces:
+    description: Cargo workspaces and their relative target directories.
+    required: false
+    default: . -> target-shared
 runs:
   using: composite
   steps:
@@ -118,7 +126,6 @@ runs:
       if: ${{ inputs.enable-rust == 'true' && inputs.enable-cargo-cache == 'true' && env.CARGO_TARGET_DIR != '' }}
       uses: Swatinem/rust-cache@v2
       with:
-        shared-key: release-${{ runner.os }}-${{ runner.arch }}-${{ inputs.rust-target || 'host' }}
-        workspaces: |
-          . -> target-shared
+        shared-key: ${{ inputs.cargo-cache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.rust-target || 'host' }}
+        workspaces: ${{ inputs.cargo-workspaces }}
         cache-bin: "false"

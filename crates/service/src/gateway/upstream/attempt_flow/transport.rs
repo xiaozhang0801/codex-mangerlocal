@@ -301,8 +301,6 @@ fn is_anthropic_codex_compat(protocol_type: &str, request_path: &str, target_url
         && super::super::config::is_chatgpt_backend_base(target_url)
 }
 
-const CPA_GEMINI_CODEX_USER_AGENT: &str =
-    "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)";
 const CPA_GEMINI_CODEX_ORIGINATOR: &str = "codex-tui";
 
 fn normalize_header_value(value: Option<&str>) -> Option<&str> {
@@ -341,7 +339,7 @@ fn apply_gemini_codex_compat_header_profile(
     set_or_replace_header(
         headers,
         "User-Agent",
-        CPA_GEMINI_CODEX_USER_AGENT.to_string(),
+        crate::gateway::current_gateway_user_agent(),
     );
     set_or_replace_header(
         headers,

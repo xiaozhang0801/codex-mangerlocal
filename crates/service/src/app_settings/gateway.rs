@@ -37,7 +37,8 @@ use super::{
     APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
-    APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
+    APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_KEY,
+    APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
 };
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -365,6 +366,20 @@ pub fn current_gateway_originator() -> String {
 /// 返回 Codex 默认 originator
 pub fn default_gateway_originator() -> &'static str {
     gateway::default_originator()
+}
+
+pub fn set_gateway_user_agent(user_agent: &str) -> Result<String, String> {
+    let applied = gateway::set_gateway_user_agent(Some(user_agent))?;
+    save_persisted_app_setting(APP_SETTING_GATEWAY_USER_AGENT_KEY, applied.as_deref())?;
+    Ok(applied.unwrap_or_default())
+}
+
+pub fn current_gateway_user_agent() -> String {
+    gateway::current_gateway_user_agent_override().unwrap_or_default()
+}
+
+pub fn default_gateway_user_agent() -> String {
+    gateway::current_codex_user_agent()
 }
 
 /// 函数 `set_gateway_user_agent_version`

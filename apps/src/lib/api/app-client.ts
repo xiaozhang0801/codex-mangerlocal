@@ -1,4 +1,4 @@
-import { invoke, invokeFirst } from "./transport";
+import { invoke, invokeFirst, withAddr } from "./transport";
 import {
   AccountManagerStatus,
   ApiKeyOwner,
@@ -209,12 +209,20 @@ export const appClient = {
     const result = await invoke<unknown>("service_gateway_concurrency_recommend_get");
     return readGatewayConcurrencyRecommendation(result);
   },
-  async getAccountManagerStatus(): Promise<AccountManagerStatus> {
-    const result = await invoke<unknown>("service_account_manager_status");
+  async getAccountManagerStatus(
+    addr?: string | null,
+  ): Promise<AccountManagerStatus> {
+    const result = await invoke<unknown>(
+      "service_account_manager_status",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return readAccountManagerStatus(result);
   },
-  async getCurrentSession(): Promise<AppSessionResult> {
-    const result = await invoke<unknown>("service_account_manager_session_current");
+  async getCurrentSession(addr?: string | null): Promise<AppSessionResult> {
+    const result = await invoke<unknown>(
+      "service_account_manager_session_current",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return readAppSession(result);
   },
   async updateProfile(payload: {
@@ -229,8 +237,11 @@ export const appClient = {
   }): Promise<void> {
     await invoke<unknown>("service_account_manager_password_change", payload);
   },
-  async listAppUsers(): Promise<AppUser[]> {
-    const result = await invoke<unknown>("service_account_manager_users_list");
+  async listAppUsers(addr?: string | null): Promise<AppUser[]> {
+    const result = await invoke<unknown>(
+      "service_account_manager_users_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return Array.isArray(result) ? result.map(readAppUser) : [];
   },
   async createAppUser(payload: {
@@ -281,59 +292,107 @@ export const appClient = {
     );
     return readWallet(result);
   },
-  async listApiKeyOwners(): Promise<ApiKeyOwner[]> {
-    const result = await invoke<unknown>("service_account_manager_api_key_owners_list");
+  async listApiKeyOwners(addr?: string | null): Promise<ApiKeyOwner[]> {
+    const result = await invoke<unknown>(
+      "service_account_manager_api_key_owners_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return Array.isArray(result) ? result.map(readApiKeyOwner) : [];
   },
-  async setApiKeyOwner(payload: {
-    keyId: string;
-    ownerKind: string;
-    ownerUserId?: string | null;
-    projectId?: string | null;
-  }): Promise<ApiKeyOwner> {
+  async setApiKeyOwner(
+    payload: {
+      keyId: string;
+      ownerKind: string;
+      ownerUserId?: string | null;
+      projectId?: string | null;
+    },
+    addr?: string | null,
+  ): Promise<ApiKeyOwner> {
     const result = await invoke<unknown>(
       "service_account_manager_api_key_owner_set",
-      payload
+      withAddr({
+        ...payload,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
     return readApiKeyOwner(result);
   },
-  async listModelGroups(): Promise<ModelGroupListResult> {
-    const result = await invoke<unknown>("service_model_groups_list");
+  async listModelGroups(addr?: string | null): Promise<ModelGroupListResult> {
+    const result = await invoke<unknown>(
+      "service_model_groups_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return readModelGroupList(result);
   },
-  async saveModelGroup(payload: {
-    id?: string | null;
-    name: string;
-    description?: string | null;
-    status?: string | null;
-    sort?: number | null;
-    isDefault?: boolean | null;
-    rateMultiplierMillis?: number | null;
-  }): Promise<ModelGroup> {
-    const result = await invoke<unknown>("service_model_group_save", payload);
+  async saveModelGroup(
+    payload: {
+      id?: string | null;
+      name: string;
+      description?: string | null;
+      status?: string | null;
+      sort?: number | null;
+      isDefault?: boolean | null;
+      rateMultiplierMillis?: number | null;
+    },
+    addr?: string | null,
+  ): Promise<ModelGroup> {
+    const result = await invoke<unknown>(
+      "service_model_group_save",
+      withAddr({
+        ...payload,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
+    );
     return readModelGroup(result);
   },
-  async deleteModelGroup(id: string): Promise<ModelGroupListResult> {
-    const result = await invoke<unknown>("service_model_group_delete", { id });
+  async deleteModelGroup(
+    id: string,
+    addr?: string | null,
+  ): Promise<ModelGroupListResult> {
+    const result = await invoke<unknown>(
+      "service_model_group_delete",
+      withAddr({
+        id,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
+    );
     return readModelGroupList(result);
   },
-  async setModelGroupModels(payload: {
-    groupId: string;
-    models: Array<{
-      platformModelSlug: string;
-      enabled?: boolean | null;
-      rateMultiplierMillis?: number | null;
-      note?: string | null;
-    }>;
-  }): Promise<ModelGroupListResult> {
-    const result = await invoke<unknown>("service_model_group_models_set", payload);
+  async setModelGroupModels(
+    payload: {
+      groupId: string;
+      models: Array<{
+        platformModelSlug: string;
+        enabled?: boolean | null;
+        rateMultiplierMillis?: number | null;
+        note?: string | null;
+      }>;
+    },
+    addr?: string | null,
+  ): Promise<ModelGroupListResult> {
+    const result = await invoke<unknown>(
+      "service_model_group_models_set",
+      withAddr({
+        ...payload,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
+    );
     return readModelGroupList(result);
   },
-  async setModelGroupUsers(payload: {
-    groupId: string;
-    userIds: string[];
-  }): Promise<ModelGroupListResult> {
-    const result = await invoke<unknown>("service_model_group_users_set", payload);
+  async setModelGroupUsers(
+    payload: {
+      groupId: string;
+      userIds: string[];
+    },
+    addr?: string | null,
+  ): Promise<ModelGroupListResult> {
+    const result = await invoke<unknown>(
+      "service_model_group_users_set",
+      withAddr({
+        ...payload,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
+    );
     return readModelGroupList(result);
   },
   getCodexLatestVersion: () =>

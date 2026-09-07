@@ -24,6 +24,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { accountClient } from "@/lib/api/account-client";
+import {
+  buildAccountListQueryKey,
+  buildAccountLookupQueryKey,
+  buildAccountUsageListQueryKey,
+} from "@/lib/api/account-query-keys";
 import { appClient } from "@/lib/api/app-client";
 import { CODEX_PROFILE_CANDIDATES_QUERY_KEY } from "@/lib/api/codex-profile-client";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
@@ -339,8 +344,15 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
    */
   const invalidateLoginQueries = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["accounts"] }),
-      queryClient.invalidateQueries({ queryKey: ["usage"] }),
+      queryClient.invalidateQueries({
+        queryKey: buildAccountListQueryKey(serviceStatus.addr),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: buildAccountLookupQueryKey(serviceStatus.addr),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: buildAccountUsageListQueryKey(serviceStatus.addr),
+      }),
       queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
       queryClient.invalidateQueries({
         queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY,
@@ -412,9 +424,12 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       try {
         const [currentAccountResult, latestAccounts] = await Promise.all([
           accountClient.readCurrentAccessTokenAccount(false),
-          accountClient.list(),
+          accountClient.list(serviceStatus.addr),
         ]);
-        queryClient.setQueryData(["accounts", "list"], latestAccounts);
+        queryClient.setQueryData(
+          buildAccountListQueryKey(serviceStatus.addr),
+          latestAccounts,
+        );
         const currentAccountId = currentAccountResult.account?.accountId || "";
         if (
           currentAccountId &&
@@ -793,8 +808,15 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
         `${t("导入完成")}：${t("共")}${total}，${t("新增")}${created}，${t("更新")}${updated}，${t("失败")}${failed}`,
       );
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["accounts"] }),
-        queryClient.invalidateQueries({ queryKey: ["usage"] }),
+        queryClient.invalidateQueries({
+          queryKey: buildAccountListQueryKey(serviceStatus.addr),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: buildAccountLookupQueryKey(serviceStatus.addr),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: buildAccountUsageListQueryKey(serviceStatus.addr),
+        }),
         queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
         queryClient.invalidateQueries({
           queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY,

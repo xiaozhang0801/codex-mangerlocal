@@ -1,10 +1,11 @@
 use super::{
     apply_model_fast_policy_with_storage, build_socks5_connect_request,
     build_upstream_websocket_request, infer_ws_terminal_status, inspect_ws_terminal_event,
-    is_previous_response_not_found_terminal, merge_client_metadata,
+    is_previous_response_not_found_terminal, load_ws_tool_call_registry, merge_client_metadata,
     missing_ws_tool_call_from_terminal, parse_websocket_target, parse_ws_usage,
     prepare_missing_ws_tool_call_retry, proxy_basic_auth_header,
-    rebase_ws_request_for_account_change, rewrite_client_frame, should_buffer_ws_upstream_preamble,
+    rebase_ws_request_for_account_change, remember_ws_tool_calls_from_upstream_event,
+    rewrite_client_frame, should_attempt_ws_terminal_retry, should_buffer_ws_upstream_preamble,
     strip_previous_response_id_from_ws_text, ws_request_has_tool_call_output,
     ws_route_binding_for_frame, CompletedWsResponseCache, CompletedWsToolCallCache,
     WsRequestContext, WsToolCallKind, WsUpstreamAuthorization,
@@ -60,6 +61,12 @@ fn websocket_frame_applies_model_fast_policy() {
             Some("fast"),
             Some("priority"),
             Some("client_request"),
+        ),
+        (
+            ModelFastPolicyV2::Passthrough,
+            Some("ultrafast"),
+            None,
+            Some("model_policy"),
         ),
         (
             ModelFastPolicyV2::Filter,
@@ -124,19 +131,96 @@ fn websocket_frame_applies_model_fast_policy() {
             model,
         })
         .expect("update block policy");
-    let prepared = rewrite_client_frame(
-        r#"{"type":"response.create","model":"gpt-5.4","input":"hello","service_tier":"fast"}"#,
-        &context,
-    )
-    .expect("rewrite blocked frame");
-    let err = match apply_model_fast_policy_with_storage(prepared, &storage) {
-        Ok(_) => panic!("block policy must reject explicit fast request"),
-        Err(err) => err,
-    };
-    assert_eq!(err.status, 400);
+    for tier in ["fast", "priority", "ultrafast"] {
+        let frame = json!({
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "input": "hello",
+            "service_tier": tier
+        });
+        let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+            .expect("rewrite blocked frame");
+        assert_eq!(
+            prepared.service_tier_source.as_deref(),
+            Some("client_request"),
+            "tier {tier} must retain its client source before policy evaluation"
+        );
+        let err = match apply_model_fast_policy_with_storage(prepared, &storage) {
+            Ok(_) => panic!("block policy must reject explicit accelerated tier {tier}"),
+            Err(err) => err,
+        };
+        assert_eq!(err.status, 400);
+        assert_eq!(
+            err.code,
+            crate::models_v2::fast_policy::FAST_REQUEST_BLOCKED
+        );
+    }
+
+    for (tier, expected_upstream_tier, expected_log_tier) in
+        [("auto", None, None), ("default", None, Some("standard"))]
+    {
+        let frame = json!({
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "input": "hello",
+            "service_tier": tier
+        });
+        let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+            .expect("rewrite non-Fast frame");
+        let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+            .expect("block policy must allow non-Fast tier");
+        let value: Value = serde_json::from_str(&prepared.text).expect("parse allowed frame");
+        assert_eq!(
+            value.get("service_tier").and_then(Value::as_str),
+            expected_upstream_tier,
+            "unexpected upstream tier for {tier}"
+        );
+        assert_eq!(
+            prepared.effective_service_tier.as_deref(),
+            expected_log_tier
+        );
+        assert_eq!(
+            prepared.service_tier_source.as_deref(),
+            Some("client_request")
+        );
+    }
+
+    let frame = json!({
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "input": "hello",
+        "service_tier": "flex"
+    });
+    let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+        .expect("rewrite unsupported Flex frame");
+    let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+        .expect("unsupported Flex tier must be omitted rather than rejected");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse filtered frame");
+    assert!(value.get("service_tier").is_none());
+    assert_eq!(prepared.effective_service_tier, None);
     assert_eq!(
-        err.code,
-        crate::models_v2::fast_policy::FAST_REQUEST_BLOCKED
+        prepared.service_tier_source.as_deref(),
+        Some("model_policy")
+    );
+
+    let frame = json!({
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "input": "hello",
+        "service_tier": "ultrafast"
+    });
+    let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+        .expect("rewrite Sol Ultrafast frame");
+    let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+        .expect("Sol must accept its advertised Ultrafast tier");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse Sol frame");
+    assert_eq!(
+        value.get("service_tier").and_then(Value::as_str),
+        Some("ultrafast")
+    );
+    assert_eq!(
+        prepared.service_tier_source.as_deref(),
+        Some("client_request")
     );
 
     let mut api_key_fast_context = context.clone();
@@ -152,6 +236,39 @@ fn websocket_frame_applies_model_fast_policy() {
     assert_eq!(
         value.get("service_tier").and_then(Value::as_str),
         Some("priority")
+    );
+
+    let mut api_key_ultrafast_context = context.clone();
+    api_key_ultrafast_context.api_key.service_tier = Some("ultrafast".to_string());
+    let prepared = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-5.4","input":"hello"}"#,
+        &api_key_ultrafast_context,
+    )
+    .expect("rewrite API key ultrafast frame");
+    let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+        .expect("unsupported API key Ultrafast tier must be omitted");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse API key ultrafast frame");
+    assert!(value.get("service_tier").is_none());
+    assert_eq!(prepared.effective_service_tier, None);
+    assert_eq!(
+        prepared.service_tier_source.as_deref(),
+        Some("model_policy")
+    );
+
+    let mut api_key_standard_context = context.clone();
+    api_key_standard_context.api_key.service_tier = Some("default".to_string());
+    let prepared = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-5.6-sol","input":"hello","service_tier":"ultrafast"}"#,
+        &api_key_standard_context,
+    )
+    .expect("rewrite API key standard frame");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse API key standard frame");
+    assert!(value.get("service_tier").is_none());
+    assert_eq!(prepared.service_tier.as_deref(), Some("ultrafast"));
+    assert_eq!(prepared.effective_service_tier.as_deref(), Some("standard"));
+    assert_eq!(
+        prepared.service_tier_source.as_deref(),
+        Some("gateway_override")
     );
 
     let mut overridden_model = storage
@@ -177,6 +294,200 @@ fn websocket_frame_applies_model_fast_policy() {
     let value: Value = serde_json::from_str(&prepared.text).expect("parse overridden model frame");
     assert_eq!(prepared.model.as_deref(), Some("gpt-5.4-mini"));
     assert!(value.get("service_tier").is_none());
+}
+
+#[test]
+fn websocket_frame_preserves_reserve_alias_and_borrows_luna_policy() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let mut luna = storage
+        .get_managed_model_v2(codexmanager_core::usage::LUNA_MODEL_SLUG)
+        .expect("read Luna model")
+        .expect("Luna model");
+    luna.fast_policy = ModelFastPolicyV2::Filter;
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(codexmanager_core::usage::LUNA_MODEL_SLUG.to_string()),
+            model: luna,
+        })
+        .expect("update Luna policy");
+
+    let mut context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: sample_incoming_headers(None, None),
+        prompt_cache_key: None,
+        cache_affinity_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    context.api_key.model_slug = Some(codexmanager_core::usage::LUNA_MODEL_SLUG.to_string());
+    let prepared = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-reserve","input":"hello","service_tier":"fast"}"#,
+        &context,
+    )
+    .expect("rewrite Reserve websocket frame");
+    let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+        .expect("apply borrowed Luna policy");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse rewritten frame");
+
+    assert_eq!(prepared.model.as_deref(), Some("gpt-reserve"));
+    assert_eq!(value["model"], "gpt-reserve");
+    assert!(value.get("service_tier").is_none());
+}
+
+#[test]
+fn websocket_frame_drops_duplicate_tool_outputs_but_keeps_distinct_calls() {
+    let _guard = crate::test_env_guard();
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: sample_incoming_headers(None, None),
+        prompt_cache_key: None,
+        cache_affinity_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let frame = json!({
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_duplicate",
+                "name": "exec",
+                "input": "{}"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_duplicate",
+                "output": [{ "type": "input_text", "text": "command result" }]
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_duplicate",
+                "output": "progress notification"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_function",
+                "output": "function result"
+            }
+        ]
+    });
+
+    let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+        .expect("rewrite websocket frame");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse prepared frame");
+    let input = value["input"].as_array().expect("input array");
+
+    assert_eq!(input.len(), 3);
+    assert_eq!(input[0]["type"], "custom_tool_call");
+    assert_eq!(input[1]["type"], "custom_tool_call_output");
+    assert_eq!(input[1]["output"][0]["text"], "command result");
+    assert_eq!(input[2]["type"], "function_call_output");
+    assert_eq!(prepared.input, value["input"]);
+}
+
+#[test]
+fn websocket_terminal_retry_ignores_preamble_but_stops_after_real_output() {
+    assert!(
+        should_attempt_ws_terminal_retry(400, false),
+        "a response preamble has no non-preamble event and must not consume the retry opportunity"
+    );
+    assert!(!should_attempt_ws_terminal_retry(400, true));
+    assert!(!should_attempt_ws_terminal_retry(200, false));
+}
+
+#[test]
+fn websocket_stale_tool_output_after_task_boundary_recovers_from_call_registry() {
+    let _guard = crate::test_env_guard();
+    let session_id = format!("stale-tool-output-{}-{}", std::process::id(), now_ts());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "session_id",
+        HeaderValue::from_str(session_id.as_str()).expect("session header"),
+    );
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
+        prompt_cache_key: None,
+        cache_affinity_key: Some(session_id),
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let seed = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-5.4","prompt_cache_key":"per-task-cache-key","input":"run cleanup"}"#,
+        &context,
+    )
+    .expect("rewrite seed response.create");
+    remember_ws_tool_calls_from_upstream_event(
+        &context,
+        &seed,
+        &json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "custom_tool_call",
+                "id": "ctc_stale_task",
+                "call_id": "call_stale_task",
+                "name": "exec",
+                "input": "{}"
+            }
+        })
+        .to_string(),
+    );
+
+    // This is the exact failure shape: a new task sends the completed tool output,
+    // but no matching custom_tool_call exists in that task's input context.
+    let stale_request = rewrite_client_frame(
+        &json!({
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "input": [{
+                "type": "custom_tool_call_output",
+                "call_id": "call_stale_task",
+                "output": [
+                    {"type": "input_text", "text": "Script completed\nWall time: 0.2 seconds\nOutput:\n"},
+                    {"type": "input_text", "text": "MANIFESTS_REFRESHED=PASS"}
+                ]
+            }]
+        })
+        .to_string()
+        .as_str(),
+        &context,
+    )
+    .expect("rewrite stale task response.create");
+    assert!(stale_request.previous_response_id.is_none());
+    assert!(ws_request_has_tool_call_output(stale_request.text.as_str()));
+
+    let cached = load_ws_tool_call_registry(&context, &stale_request)
+        .expect("tool-call registry must survive the frontend task boundary");
+    let terminal = inspect_ws_terminal_event(
+        r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","code":null,"message":"No tool call found for custom tool call output with call_id call_stale_task.","param":"input"}}"#,
+    )
+    .expect("exact upstream missing-tool terminal");
+    let mut already_retried = false;
+    let recovered = prepare_missing_ws_tool_call_retry(
+        stale_request.text.as_str(),
+        &cached,
+        &terminal,
+        &mut already_retried,
+    )
+    .expect("prepare stale-task recovery")
+    .expect("cached call must make the stale output self-contained");
+    let value: Value = serde_json::from_str(recovered.as_str()).expect("parse recovered request");
+    let input = value["input"].as_array().expect("recovered input array");
+    assert!(already_retried);
+    assert_eq!(input.len(), 2);
+    assert_eq!(input[0]["type"], "custom_tool_call");
+    assert_eq!(input[0]["call_id"], "call_stale_task");
+    assert_eq!(input[1]["type"], "custom_tool_call_output");
+    assert_eq!(input[1]["call_id"], "call_stale_task");
+    assert_eq!(input[1]["output"][1]["text"], "MANIFESTS_REFRESHED=PASS");
 }
 
 fn sample_account() -> Account {

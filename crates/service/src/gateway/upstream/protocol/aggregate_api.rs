@@ -505,6 +505,7 @@ fn should_skip_forward_header(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
             | "host"
+            | "user-agent"
     )
 }
 
@@ -837,9 +838,10 @@ fn build_aggregate_api_request(
     secret: &str,
     auth_config: &AggregateApiAuthConfig,
     injected_headers: &HashSet<String>,
+    user_agent: &str,
     request_deadline: Option<Instant>,
     is_stream: bool,
-) -> Result<reqwest::blocking::RequestBuilder, String> {
+) -> Result<reqwest::blocking::Request, String> {
     let mut builder = client.request(method.clone(), url);
     if let Some(timeout) =
         super::super::support::deadline::send_timeout(request_deadline, is_stream)
@@ -929,7 +931,15 @@ fn build_aggregate_api_request(
     if !body.is_empty() {
         builder = builder.body(body.clone());
     }
-    Ok(builder)
+    let mut request = builder
+        .build()
+        .map_err(|err| format!("build aggregate api request failed: {err}"))?;
+    request.headers_mut().insert(
+        HeaderName::from_static("user-agent"),
+        HeaderValue::from_str(user_agent)
+            .map_err(|_| "invalid aggregate api user agent".to_string())?,
+    );
+    Ok(request)
 }
 
 fn build_anthropic_bridge_aggregate_api_request(
@@ -941,10 +951,11 @@ fn build_anthropic_bridge_aggregate_api_request(
     secret: &str,
     auth_config: &AggregateApiAuthConfig,
     injected_headers: &HashSet<String>,
+    user_agent: &str,
     request_deadline: Option<Instant>,
     is_stream: bool,
-) -> Result<reqwest::blocking::RequestBuilder, String> {
-    let mut builder = build_aggregate_api_request(
+) -> Result<reqwest::blocking::Request, String> {
+    let mut request = build_aggregate_api_request(
         client,
         request,
         method,
@@ -953,21 +964,22 @@ fn build_anthropic_bridge_aggregate_api_request(
         secret,
         auth_config,
         injected_headers,
+        user_agent,
         request_deadline,
         is_stream,
     )?;
-    builder = builder.header(
+    request.headers_mut().insert(
         HeaderName::from_static("anthropic-version"),
         HeaderValue::from_static("2023-06-01"),
     );
     if matches!(auth_config, AggregateApiAuthConfig::ApiKeyDefaultBearer) {
-        builder = builder.header(
+        request.headers_mut().insert(
             HeaderName::from_static("x-api-key"),
             HeaderValue::from_str(secret.trim())
                 .map_err(|_| "invalid aggregate api secret".to_string())?,
         );
     }
-    Ok(builder)
+    Ok(request)
 }
 
 /// 函数 `resolve_aggregate_api_rotation_candidates`
@@ -1201,6 +1213,17 @@ pub(in super::super) fn proxy_aggregate_request(
                 continue;
             }
         };
+        let candidate_user_agent =
+            match crate::aggregate_api::resolved_aggregate_api_user_agent(&candidate) {
+                Ok(value) => value,
+                Err(err) => {
+                    last_attempt_url = Some(candidate_url.clone());
+                    last_attempt_supplier_name = candidate_supplier_name.clone();
+                    last_attempt_error = Some(err);
+                    last_failure_status = 502;
+                    continue;
+                }
+            };
 
         let base_upstream_url =
             match build_upstream_url(candidate_url.as_str(), effective_path.as_str()) {
@@ -1331,7 +1354,7 @@ pub(in super::super) fn proxy_aggregate_request(
             let request_ref = request.as_ref().ok_or_else(|| {
                 "aggregate api request already consumed before upstream attempt".to_string()
             })?;
-            let builder = if bridge_responses_to_anthropic {
+            let upstream_request = if bridge_responses_to_anthropic {
                 build_anthropic_bridge_aggregate_api_request(
                     &client,
                     request_ref,
@@ -1341,6 +1364,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     secret.as_str(),
                     &auth_config,
                     &injected_headers,
+                    candidate_user_agent.as_str(),
                     request_deadline,
                     is_stream,
                 )?
@@ -1354,13 +1378,14 @@ pub(in super::super) fn proxy_aggregate_request(
                     secret.as_str(),
                     &auth_config,
                     &injected_headers,
+                    candidate_user_agent.as_str(),
                     request_deadline,
                     is_stream,
                 )?
             };
 
             let attempt_started_at = Instant::now();
-            let upstream = match builder.send() {
+            let upstream = match client.execute(upstream_request) {
                 Ok(resp) => {
                     let duration_ms =
                         super::super::super::duration_to_millis(attempt_started_at.elapsed());
@@ -1674,6 +1699,7 @@ mod bridge_tests {
             auth_params_json: None,
             action: None,
             model_override: None,
+            user_agent: None,
             status: "active".to_string(),
             created_at: sort,
             updated_at: sort,

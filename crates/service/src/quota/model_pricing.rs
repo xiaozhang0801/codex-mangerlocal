@@ -99,9 +99,10 @@ pub(crate) fn resolve_model_price_from_catalog(
     if normalized.is_empty() || normalized.eq_ignore_ascii_case("unknown") {
         return None;
     }
+    let catalog_slug = crate::models_v2::policy_catalog_slug(normalized);
     let price = prices
         .iter()
-        .find(|price| price.model_slug.eq_ignore_ascii_case(normalized))?;
+        .find(|price| price.model_slug.eq_ignore_ascii_case(catalog_slug))?;
     if price.price_status == "missing" {
         return None;
     }

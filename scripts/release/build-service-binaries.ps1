@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$argsList = @("build", "--release")
+$argsList = @("build", "--release", "--locked")
 if ($Target.Trim().Length -gt 0) {
   $argsList += @("--target", $Target)
 }

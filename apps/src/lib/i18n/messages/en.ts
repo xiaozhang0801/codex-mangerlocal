@@ -785,8 +785,12 @@ export const EN_MESSAGES: MessageCatalog = {
     "Overrides the reasoning effort inside the request.",
   "会覆盖请求里的 reasoning effort。Ultra 由 Codex 客户端负责编排，网关覆盖最多设置为 max。":
     "Overrides the request reasoning effort. Ultra is orchestrated by the Codex client; gateway overrides are limited to max.",
-  "Fast 会映射为上游 priority；未设置时跟随请求。":
-    "Fast maps to upstream priority; otherwise it follows the request.",
+  "标准 (Standard)": "Standard",
+  "快速 (Fast)": "Fast",
+  "超快 (Ultrafast)": "Ultrafast",
+  "弹性 (Flex)": "Flex",
+  "Standard 会强制标准速度；Fast 会映射为上游 priority；Ultrafast 与 Flex 会按原值透传，是否可用取决于模型和上游；未设置时跟随请求。":
+    "Standard forces standard speed; Fast maps to upstream priority; Ultrafast and Flex pass through unchanged when the selected model and upstream support them; otherwise the request setting is used.",
   平台密钥已生成: "API key generated",
   完成: "Done",
   "配置一个最小转发上游，保存 URL 和密钥后即可用于平台密钥轮转。":

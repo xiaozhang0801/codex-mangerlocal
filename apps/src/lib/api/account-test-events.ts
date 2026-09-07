@@ -93,13 +93,14 @@ export async function listenAccountTestEvent(
       await new Promise<void>((resolve, reject) => {
         let settled = false;
         const source = eventSource;
-        let timeoutId: number | undefined;
+        const timeoutId = window.setTimeout(
+          () => finish(new Error("Timed out connecting to account test events")),
+          ACCOUNT_TEST_EVENT_OPEN_TIMEOUT_MS,
+        );
         const finish = (error?: Error) => {
           if (settled) return;
           settled = true;
-          if (timeoutId !== undefined) {
-            window.clearTimeout(timeoutId);
-          }
+          window.clearTimeout(timeoutId);
           source?.removeEventListener("open", handleOpen);
           source?.removeEventListener("error", handleInitialError);
           if (error) reject(error);
@@ -110,10 +111,6 @@ export async function listenAccountTestEvent(
           finish(new Error("Failed to connect to account test events"));
         source?.addEventListener("open", handleOpen);
         source?.addEventListener("error", handleInitialError);
-        timeoutId = window.setTimeout(
-          () => finish(new Error("Timed out connecting to account test events")),
-          ACCOUNT_TEST_EVENT_OPEN_TIMEOUT_MS,
-        );
         // The connection may have opened between construction and listener registration.
         // Re-check after listeners are attached so the RPC never starts before the SSE channel.
         if (source?.readyState === 1) {

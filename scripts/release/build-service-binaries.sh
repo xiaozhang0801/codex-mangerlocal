@@ -3,7 +3,7 @@ set -euo pipefail
 
 target="${1:-}"
 
-args=(build --release)
+args=(build --release --locked)
 if [ -n "$target" ]; then
   args+=(--target "$target")
 fi

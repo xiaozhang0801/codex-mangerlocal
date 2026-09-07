@@ -15,6 +15,7 @@ use tiny_http::{Header, Response, Server, StatusCode as TinyStatusCode};
 struct RecordedSubscriptionRequest {
     path: String,
     authorization: Option<String>,
+    user_agent: Option<String>,
     chatgpt_account_id: Option<String>,
     originator: Option<String>,
     residency: Option<String>,
@@ -352,6 +353,7 @@ fn usage_header_runtime_scope() -> (MutexGuard<'static, ()>, UsageHeaderRuntimeR
 struct UsageHeaderRuntimeRestore {
     originator: String,
     residency_requirement: Option<String>,
+    gateway_user_agent: Option<String>,
 }
 
 impl UsageHeaderRuntimeRestore {
@@ -370,6 +372,7 @@ impl UsageHeaderRuntimeRestore {
         Self {
             originator: crate::gateway::current_originator(),
             residency_requirement: crate::gateway::current_residency_requirement(),
+            gateway_user_agent: crate::gateway::current_gateway_user_agent_override(),
         }
     }
 }
@@ -389,6 +392,7 @@ impl Drop for UsageHeaderRuntimeRestore {
     fn drop(&mut self) {
         let _ = crate::gateway::set_originator(&self.originator);
         let _ = crate::gateway::set_residency_requirement(self.residency_requirement.as_deref());
+        let _ = crate::gateway::set_gateway_user_agent(self.gateway_user_agent.as_deref());
     }
 }
 
@@ -796,15 +800,31 @@ fn usage_http_default_headers_follow_gateway_runtime_profile() {
 /// 无
 #[test]
 fn usage_request_headers_use_official_chatgpt_account_header_name() {
-    let headers = build_usage_request_headers(Some("workspace_123"), false);
+    let headers = build_usage_request_headers(Some("account_123"), false);
 
     assert_eq!(
         headers
             .get(CHATGPT_ACCOUNT_ID_HEADER_NAME)
             .and_then(|value| value.to_str().ok()),
-        Some("workspace_123")
+        Some("account_123")
     );
-    assert_eq!(headers.len(), 1);
+    assert_eq!(
+        headers
+            .get("x-openai-codex-luna-reserve")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        headers
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache")
+    );
+    assert_eq!(
+        headers.get("pragma").and_then(|value| value.to_str().ok()),
+        Some("no-cache")
+    );
+    assert_eq!(headers.len(), 4);
 }
 
 #[test]
@@ -817,7 +837,14 @@ fn usage_request_headers_include_fedramp_context_when_enabled() {
             .and_then(|value| value.to_str().ok()),
         Some("true")
     );
-    assert_eq!(headers.len(), 2);
+    assert!(headers.get("x-openai-codex-luna-reserve").is_none());
+    assert_eq!(
+        headers
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache")
+    );
+    assert_eq!(headers.len(), 4);
 }
 
 #[test]
@@ -883,9 +910,15 @@ fn reset_credit_headers_reject_unsupported_scheme() {
 #[test]
 fn subscription_request_uses_only_authorization_without_custom_usage_headers() {
     let (_guard, _restore) = usage_header_runtime_scope();
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    let _no_proxy = EnvVarRestore::set("NO_PROXY", "127.0.0.1,localhost");
+    let _no_proxy_lowercase = EnvVarRestore::set("no_proxy", "127.0.0.1,localhost");
     crate::gateway::set_originator("codex_cli_rs_usage").expect("set gateway originator");
     crate::gateway::set_residency_requirement(Some("us"))
         .expect("set gateway residency requirement");
+    crate::gateway::set_gateway_user_agent(Some("Subscription-Must-Not-Use-This/1.0"))
+        .expect("set custom gateway user agent");
+    super::reload_usage_http_client_from_env();
 
     let server = Server::http("127.0.0.1:0").expect("start mock subscription server");
     let addr = format!("http://{}", server.server_addr());
@@ -900,6 +933,11 @@ fn subscription_request_uses_only_authorization_without_custom_usage_headers() {
             .headers()
             .iter()
             .find(|header| header.field.equiv("Authorization"))
+            .map(|header| header.value.as_str().to_string());
+        let user_agent = request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("User-Agent"))
             .map(|header| header.value.as_str().to_string());
         let chatgpt_account_id = request
             .headers()
@@ -934,6 +972,7 @@ fn subscription_request_uses_only_authorization_without_custom_usage_headers() {
         tx.send(RecordedSubscriptionRequest {
             path: path.clone(),
             authorization,
+            user_agent,
             chatgpt_account_id,
             originator,
             residency,
@@ -979,6 +1018,7 @@ fn subscription_request_uses_only_authorization_without_custom_usage_headers() {
     assert_eq!(snapshot.renews_at, Some(1_776_655_889));
     assert_eq!(recorded.path, "/accounts/check/v4-2023-04-27");
     assert_eq!(recorded.authorization.as_deref(), Some("Bearer token_123"));
+    assert_eq!(recorded.user_agent, None);
     assert_eq!(recorded.chatgpt_account_id, None);
     assert_eq!(recorded.originator, None);
     assert_eq!(recorded.residency, None);
@@ -1106,7 +1146,10 @@ fn refresh_access_token_mock_region_blocked_response_surfaces_marker() {
 
 #[test]
 fn fetch_usage_snapshot_with_explicit_proxy_uses_explicit_proxy_before_global_proxy() {
-    let _guard = crate::test_env_guard();
+    let (_guard, _restore) = usage_header_runtime_scope();
+    crate::gateway::set_gateway_user_agent(Some("Gateway-Only/1.0"))
+        .expect("set custom gateway user agent");
+    let expected_user_agent = crate::gateway::current_codex_user_agent().to_ascii_lowercase();
     let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "http://127.0.0.1:1");
     super::reload_usage_http_client_from_env();
     let (proxy_url, request_rx, proxy_handle) = spawn_recording_http_proxy(
@@ -1130,7 +1173,93 @@ fn fetch_usage_snapshot_with_explicit_proxy_uses_explicit_proxy_before_global_pr
     assert!(request.starts_with("get http://chatgpt.test/"));
     assert!(request.contains("authorization: bearer token_123"));
     assert!(request.contains("chatgpt-account-id: workspace_123"));
+    assert!(request.contains(format!("user-agent: {expected_user_agent}").as_str()));
+    assert!(!request.contains("gateway-only/1.0"));
+    assert!(request.contains("x-openai-codex-luna-reserve: 1"));
+    assert!(request.contains("cache-control: no-cache"));
+    assert!(request.contains("pragma: no-cache"));
     assert_eq!(snapshot["gpt4"]["usedPercent"], 12.5);
+}
+
+#[test]
+fn changing_gateway_user_agent_preserves_standard_usage_user_agent() {
+    let (_guard, _restore) = usage_header_runtime_scope();
+    let expected_user_agent = crate::gateway::current_codex_user_agent().to_ascii_lowercase();
+    let (first_proxy_url, first_request_rx, first_proxy_handle) = spawn_recording_http_proxy(
+        r#"{"gpt4":{"usedPercent":1.0,"windowMinutes":180}}"#,
+        "application/json",
+    );
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", &first_proxy_url);
+    crate::gateway::set_gateway_user_agent(Some("Cached-Client/1.0"))
+        .expect("set initial gateway user agent");
+
+    super::fetch_usage_snapshot("http://chatgpt.test", "token_123", None)
+        .expect("fetch with initial cached client");
+    let first_request = first_request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture initial usage request")
+        .to_ascii_lowercase();
+    first_proxy_handle.join().expect("join initial usage proxy");
+    assert!(first_request.contains(format!("user-agent: {expected_user_agent}").as_str()));
+    assert!(!first_request.contains("cached-client/1.0"));
+
+    let (second_proxy_url, second_request_rx, second_proxy_handle) = spawn_recording_http_proxy(
+        r#"{"gpt4":{"usedPercent":2.0,"windowMinutes":180}}"#,
+        "application/json",
+    );
+    std::env::set_var("CODEXMANAGER_UPSTREAM_PROXY_URL", &second_proxy_url);
+    crate::gateway::set_gateway_user_agent(Some("Cached-Client/2.0"))
+        .expect("update gateway user agent");
+
+    super::fetch_usage_snapshot("http://chatgpt.test", "token_123", None)
+        .expect("fetch with rebuilt cached client");
+    let second_request = second_request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture rebuilt usage request")
+        .to_ascii_lowercase();
+    second_proxy_handle
+        .join()
+        .expect("join rebuilt usage proxy");
+    assert!(second_request.contains(format!("user-agent: {expected_user_agent}").as_str()));
+    assert!(!second_request.contains("cached-client/2.0"));
+
+    drop(_global_proxy);
+}
+
+#[test]
+fn token_refresh_routes_ignore_custom_gateway_user_agent() {
+    let (_guard, _restore) = usage_header_runtime_scope();
+    let _endpoint = EnvVarRestore::remove("CODEX_REFRESH_TOKEN_URL_OVERRIDE");
+    crate::gateway::set_gateway_user_agent(Some("Gateway-Only/1.0"))
+        .expect("set custom gateway user agent");
+    let expected_user_agent = crate::gateway::current_codex_user_agent().to_ascii_lowercase();
+    for explicit in [false, true] {
+        let (proxy_url, request_rx, proxy_handle) = spawn_recording_http_proxy(
+            r#"{"access_token":"refreshed-access","refresh_token":"refreshed-token"}"#,
+            "application/json",
+        );
+        let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", &proxy_url);
+        super::reload_usage_http_client_from_env();
+        let refreshed = if explicit {
+            super::refresh_access_token_with_explicit_proxy(
+                "http://auth.test",
+                "client-id",
+                "refresh-old",
+                &proxy_url,
+            )
+        } else {
+            super::refresh_access_token("http://auth.test", "client-id", "refresh-old")
+        }
+        .expect("refresh access token");
+        let request = request_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("capture refresh request")
+            .to_ascii_lowercase();
+        proxy_handle.join().expect("join refresh proxy");
+        assert_eq!(refreshed.access_token, "refreshed-access");
+        assert!(request.contains(format!("user-agent: {expected_user_agent}").as_str()));
+        assert!(!request.contains("gateway-only/1.0"));
+    }
 }
 
 #[test]
@@ -1282,7 +1411,9 @@ fn success_body_read_failure_does_not_reclassify_redeem_as_failed() {
 
 #[test]
 fn fetch_account_subscription_with_explicit_proxy_uses_explicit_proxy_before_global_proxy() {
-    let _guard = crate::test_env_guard();
+    let (_guard, _restore) = usage_header_runtime_scope();
+    crate::gateway::set_gateway_user_agent(Some("Subscription-Must-Not-Use-This/1.0"))
+        .expect("set custom gateway user agent");
     let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "http://127.0.0.1:1");
     super::reload_usage_http_client_from_env();
     let (proxy_url, request_rx, proxy_handle) = spawn_recording_http_proxy(
@@ -1435,7 +1566,11 @@ fn legacy_usage_request_ignores_proxy_pool_when_account_proxy_is_disabled() {
             .recv_timeout(Duration::from_secs(5))
             .expect("usage server timeout")
             .expect("receive legacy usage request");
-        tx.send(request.url().to_string())
+        let has_luna_reserve_header = request
+            .headers()
+            .iter()
+            .any(|header| header.field.equiv("x-openai-codex-luna-reserve"));
+        tx.send((request.url().to_string(), has_luna_reserve_header))
             .expect("send legacy usage path");
         let response =
             Response::from_string(r#"{"gpt4":{"usedPercent":99.0,"windowMinutes":180}}"#)
@@ -1451,11 +1586,11 @@ fn legacy_usage_request_ignores_proxy_pool_when_account_proxy_is_disabled() {
         .expect("fetch legacy usage");
 
     assert_eq!(snapshot["gpt4"]["usedPercent"], 99.0);
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(5))
-            .expect("receive legacy usage path"),
-        "/api/codex/usage"
-    );
+    let (path, has_luna_reserve_header) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive legacy usage path");
+    assert_eq!(path, "/api/codex/usage");
+    assert!(has_luna_reserve_header);
     assert!(proxy_rx.recv_timeout(Duration::from_millis(300)).is_err());
     handle.join().expect("join legacy usage server");
     proxy_handle.join().expect("join unused proxy");

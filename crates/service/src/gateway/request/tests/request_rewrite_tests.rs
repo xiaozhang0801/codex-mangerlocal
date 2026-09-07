@@ -412,6 +412,47 @@ fn responses_overrides_model_and_reasoning_effort() {
 }
 
 #[test]
+fn responses_preserves_explicit_reserve_alias_against_platform_model_override() {
+    let body = json!({
+        "model": "gpt-reserve",
+        "reasoning": { "effort": "low" },
+        "input": "hello"
+    });
+    let out = apply_request_overrides_with_service_tier(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        Some("gpt-5.6-luna"),
+        Some("high"),
+        Some("flex"),
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["model"], "gpt-reserve");
+    assert_eq!(value["reasoning"]["effort"], "high");
+    assert_eq!(value["service_tier"], "flex");
+}
+
+#[test]
+fn responses_bound_non_luna_model_still_overrides_reserve_alias() {
+    let body = json!({
+        "model": "gpt-reserve",
+        "input": "hello"
+    });
+    let out = apply_request_overrides_with_service_tier(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        Some("gpt-5.4"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["model"], "gpt-5.4");
+}
+
+#[test]
 fn responses_maps_client_ultra_to_upstream_max_without_an_api_key_override() {
     let body = json!({
         "model": "gpt-5.6-sol",
@@ -1843,6 +1884,74 @@ fn responses_applies_fast_service_tier_override_as_priority_for_codex_backend() 
 }
 
 #[test]
+fn responses_preserves_ultrafast_service_tier_for_codex_backend() {
+    let _guard = crate::test_env_guard();
+    let body = json!({
+        "model": "gpt-5.6-sol",
+        "input": "hello",
+        "service_tier": "UltraFast"
+    });
+    let out = apply_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    assert_eq!(
+        value
+            .get("service_tier")
+            .and_then(serde_json::Value::as_str),
+        Some("ultrafast")
+    );
+}
+
+#[test]
+fn responses_applies_ultrafast_service_tier_override_without_mapping_to_priority() {
+    let _guard = crate::test_env_guard();
+    let body = json!({
+        "model": "gpt-5.6-sol",
+        "input": "hello"
+    });
+    let out = apply_request_overrides_with_service_tier(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("ultrafast"),
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    assert_eq!(
+        value
+            .get("service_tier")
+            .and_then(serde_json::Value::as_str),
+        Some("ultrafast")
+    );
+}
+
+#[test]
+fn responses_explicit_standard_override_omits_service_tier_for_codex_backend() {
+    let _guard = crate::test_env_guard();
+    let body = json!({
+        "model": "gpt-5.6-sol",
+        "input": "hello",
+        "service_tier": "ultrafast"
+    });
+    let out = apply_request_overrides_with_service_tier(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("default"),
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    assert!(value.get("service_tier").is_none());
+}
+
+#[test]
 fn responses_default_path_still_maps_fast_service_tier_to_priority_for_codex_backend() {
     let _guard = crate::test_env_guard();
     let body = json!({
@@ -1867,7 +1976,7 @@ fn responses_default_path_still_maps_fast_service_tier_to_priority_for_codex_bac
 }
 
 #[test]
-fn responses_default_path_maps_auto_service_tier_to_priority_for_codex_backend() {
+fn responses_default_path_omits_auto_service_tier_for_codex_backend() {
     let _guard = crate::test_env_guard();
     let body = json!({
         "model": "gpt-5.4",
@@ -1882,15 +1991,10 @@ fn responses_default_path_maps_auto_service_tier_to_priority_for_codex_backend()
         Some("https://chatgpt.com/backend-api/codex"),
     );
     let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
-    assert_eq!(
-        value
-            .get("service_tier")
-            .and_then(serde_json::Value::as_str),
-        Some("priority")
-    );
+    assert!(value.get("service_tier").is_none());
 }
 
-/// 函数 `responses_ignores_unsupported_flex_service_tier_override_for_codex_backend`
+/// 函数 `responses_preserves_flex_service_tier_override_for_codex_backend`
 ///
 /// 作者: gaohongshun
 ///
@@ -1902,7 +2006,7 @@ fn responses_default_path_maps_auto_service_tier_to_priority_for_codex_backend()
 /// # 返回
 /// 无
 #[test]
-fn responses_ignores_unsupported_flex_service_tier_override_for_codex_backend() {
+fn responses_preserves_flex_service_tier_override_for_codex_backend() {
     let _guard = crate::test_env_guard();
     let body = json!({
         "model": "gpt-5.3-codex",
@@ -1917,7 +2021,12 @@ fn responses_ignores_unsupported_flex_service_tier_override_for_codex_backend() 
         Some("https://chatgpt.com/backend-api/codex"),
     );
     let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
-    assert!(value.get("service_tier").is_none());
+    assert_eq!(
+        value
+            .get("service_tier")
+            .and_then(serde_json::Value::as_str),
+        Some("flex")
+    );
 }
 
 /// 函数 `responses_compact_uses_codex_compat_rewrite`

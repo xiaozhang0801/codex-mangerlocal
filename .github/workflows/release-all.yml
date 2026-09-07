@@ -117,6 +117,8 @@ jobs:
         uses: ./.github/actions/setup-release-env
         with:
           enable-pnpm-cache: "false"
+          cargo-cache-key: release-desktop
+          cargo-workspaces: apps/src-tauri -> ../../target-shared
 
       - name: Prepare frontend dist
         uses: ./.github/actions/prepare-frontend-dist
@@ -133,33 +135,11 @@ jobs:
         shell: pwsh
         run: ./scripts/release/stage-windows-desktop-assets.ps1 -ReleaseDir "${{ env.CARGO_TARGET_DIR }}/release" -RunnerArch "${{ runner.arch }}"
 
-      - name: Build service binaries
-        shell: pwsh
-        run: ./scripts/release/build-service-binaries.ps1
-
-      - name: Stage service package
-        uses: ./.github/actions/stage-service-package
-        with:
-          platform: windows
-          arch: ${{ runner.arch == 'X64' && 'x86_64' || runner.arch == 'ARM64' && 'arm64' || runner.arch }}
-          stage-root: stage
-          release-dir: ${{ env.CARGO_TARGET_DIR }}/release
-          binary-extension: .exe
-          shell-type: pwsh
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
           name: codexmanager-windows
           path: ${{ env.CARGO_TARGET_DIR }}/release/release-assets/*.exe
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload service artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: codexmanager-service-windows
-          path: stage/*.zip
           if-no-files-found: error
           compression-level: 0
 
@@ -187,6 +167,8 @@ jobs:
         with:
           rust-target: ${{ matrix.rust_target }}
           enable-pnpm-cache: "false"
+          cargo-cache-key: release-desktop
+          cargo-workspaces: apps/src-tauri -> ../../target-shared
 
       - name: Prepare frontend dist
         uses: ./.github/actions/prepare-frontend-dist
@@ -209,18 +191,6 @@ jobs:
         shell: bash
         run: bash scripts/release/stage-macos-portable.sh "${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release"
 
-      - name: Build service binaries
-        run: bash scripts/release/build-service-binaries.sh "${{ matrix.rust_target }}"
-
-      - name: Stage service package
-        uses: ./.github/actions/stage-service-package
-        with:
-          platform: macos
-          arch: ${{ matrix.arch }}
-          stage-root: stage
-          release-dir: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release
-          shell-type: bash
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -228,14 +198,6 @@ jobs:
           path: |
             ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release/bundle/dmg/*.dmg
             ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release/portable/*.zip
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload service artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: codexmanager-service-macos-${{ matrix.arch }}
-          path: stage/*.zip
           if-no-files-found: error
           compression-level: 0
 
@@ -249,11 +211,9 @@ jobs:
           - arch: x86_64
             rust_target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
-            build_docker: true
           - arch: arm64
             rust_target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
-            build_docker: false
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -267,6 +227,8 @@ jobs:
         with:
           rust-target: ${{ matrix.rust_target }}
           enable-pnpm-cache: "false"
+          cargo-cache-key: release-desktop
+          cargo-workspaces: apps/src-tauri -> ../../target-shared
 
       - name: Install Linux dependencies
         run: |
@@ -289,38 +251,6 @@ jobs:
         shell: bash
         run: bash scripts/release/stage-linux-portable.sh "${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release" "${{ matrix.arch }}"
 
-      - name: Build service binaries
-        run: bash scripts/release/build-service-binaries.sh "${{ matrix.rust_target }}"
-
-      - name: Stage docker release package
-        if: ${{ matrix.build_docker }}
-        shell: bash
-        run: bash scripts/release/stage-linux-docker.sh "${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release"
-
-      - name: Upload docker artifacts
-        if: ${{ matrix.build_docker }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: codexmanager-docker
-          path: |
-            ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release/release-assets/codexmanager-docker-images.tar.gz
-            ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release/release-assets/docker-compose.release.yml
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Stage service package
-        uses: ./.github/actions/stage-service-package
-        with:
-          platform: linux
-          arch: ${{ matrix.arch }}
-          stage-root: stage
-          release-dir: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release
-          shell-type: bash
-
-      - name: Stage web package
-        shell: bash
-        run: bash scripts/release/stage-linux-web.sh "${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release" "${{ matrix.arch }}"
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
@@ -332,25 +262,134 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  # Service binaries use a separate Cargo workspace and feature graph. Build
+  # them on independent runners instead of adding a second compile after Tauri.
+  build_service:
+    needs: build_frontend_dist
+    if: ${{ github.event_name != 'workflow_dispatch' || (github.event.inputs.mode || 'build-and-publish') != 'publish-artifacts' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            arch: x86_64
+            runner: windows-latest
+            rust_target: ""
+            release_subdir: release
+            shell_type: pwsh
+            extension: .exe
+            artifact: codexmanager-service-windows
+          - platform: macos
+            arch: arm64
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+            release_subdir: aarch64-apple-darwin/release
+            shell_type: bash
+            extension: ""
+            artifact: codexmanager-service-macos-arm64
+          - platform: macos
+            arch: x64
+            runner: macos-14
+            rust_target: x86_64-apple-darwin
+            release_subdir: x86_64-apple-darwin/release
+            shell_type: bash
+            extension: ""
+            artifact: codexmanager-service-macos-x64
+          - platform: linux
+            arch: x86_64
+            runner: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            release_subdir: x86_64-unknown-linux-gnu/release
+            shell_type: bash
+            extension: ""
+            artifact: codexmanager-service-linux-x86_64
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-22.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            release_subdir: aarch64-unknown-linux-gnu/release
+            shell_type: bash
+            extension: ""
+            artifact: codexmanager-service-linux-arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+        with:
+          rust-target: ${{ matrix.rust_target }}
+          enable-pnpm-cache: "false"
+          cargo-cache-key: release-service
+
+      - name: Prepare frontend dist
+        uses: ./.github/actions/prepare-frontend-dist
+
+      - name: Build service binaries (Windows)
+        if: ${{ matrix.platform == 'windows' }}
+        shell: pwsh
+        run: ./scripts/release/build-service-binaries.ps1
+
+      - name: Build service binaries (Unix)
+        if: ${{ matrix.platform != 'windows' }}
+        shell: bash
+        run: bash scripts/release/build-service-binaries.sh "${{ matrix.rust_target }}"
+
+      - name: Stage service package
+        uses: ./.github/actions/stage-service-package
+        with:
+          platform: ${{ matrix.platform }}
+          arch: ${{ matrix.arch }}
+          stage-root: stage
+          release-dir: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.release_subdir }}
+          binary-extension: ${{ matrix.extension }}
+          shell-type: ${{ matrix.shell_type }}
+
       - name: Upload service artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: codexmanager-service-linux-${{ matrix.arch }}
+          name: ${{ matrix.artifact }}
           path: stage/*.zip
           if-no-files-found: error
           compression-level: 0
 
+      - name: Stage web package
+        if: ${{ matrix.platform == 'linux' }}
+        shell: bash
+        run: bash scripts/release/stage-linux-web.sh "${{ env.CARGO_TARGET_DIR }}/${{ matrix.release_subdir }}" "${{ matrix.arch }}"
+
       - name: Upload web artifacts
+        if: ${{ matrix.platform == 'linux' }}
         uses: actions/upload-artifact@v6
         with:
           name: codexmanager-web-linux-${{ matrix.arch }}
-          path: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.rust_target }}/release/release-assets/CodexManager-web-linux-${{ matrix.arch }}.zip
+          path: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.release_subdir }}/release-assets/CodexManager-web-linux-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Stage docker release package
+        if: ${{ matrix.platform == 'linux' && matrix.arch == 'x86_64' }}
+        shell: bash
+        run: bash scripts/release/stage-linux-docker.sh "${{ env.CARGO_TARGET_DIR }}/${{ matrix.release_subdir }}"
+
+      - name: Upload docker artifacts
+        if: ${{ matrix.platform == 'linux' && matrix.arch == 'x86_64' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanager-docker
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}/${{ matrix.release_subdir }}/release-assets/codexmanager-docker-images.tar.gz
+            ${{ env.CARGO_TARGET_DIR }}/${{ matrix.release_subdir }}/release-assets/docker-compose.release.yml
           if-no-files-found: error
           compression-level: 0
 
   release:
-    needs: [build_windows, build_macos_beta, build_linux]
-    if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode || 'build-and-publish') != 'build-artifacts') && ((github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'publish-artifacts') || (needs.build_windows.result == 'success' && needs.build_macos_beta.result == 'success' && needs.build_linux.result == 'success')) }}
+    needs: [build_windows, build_macos_beta, build_linux, build_service]
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.event.inputs.mode || 'build-and-publish') != 'build-artifacts') && ((github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'publish-artifacts') || (needs.build_windows.result == 'success' && needs.build_macos_beta.result == 'success' && needs.build_linux.result == 'success' && needs.build_service.result == 'success')) }}
     runs-on: ubuntu-22.04
 
     steps:

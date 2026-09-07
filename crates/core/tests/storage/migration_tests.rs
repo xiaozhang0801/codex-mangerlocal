@@ -689,6 +689,18 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
         .has_column("aggregate_apis", "last_balance_json")
         .expect("check aggregate_apis.last_balance_json"));
     assert!(storage
+        .has_column("aggregate_apis", "user_agent")
+        .expect("check aggregate_apis.user_agent"));
+    let applied_133: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(1) FROM schema_migrations WHERE version = '133_aggregate_api_user_agent'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count 133 migration");
+    assert_eq!(applied_133, 1);
+    assert!(storage
         .has_table("aggregate_api_balance_secrets")
         .expect("check aggregate_api_balance_secrets table"));
     assert!(!storage
@@ -961,6 +973,9 @@ fn init_repairs_legacy_aggregate_api_balance_columns_before_indexes() {
     assert!(storage
         .has_column("aggregate_apis", "last_balance_json")
         .expect("check balance result column"));
+    assert!(storage
+        .has_column("aggregate_apis", "user_agent")
+        .expect("check aggregate API user agent column"));
     assert!(storage
         .has_table("aggregate_api_balance_secrets")
         .expect("check balance secrets table"));

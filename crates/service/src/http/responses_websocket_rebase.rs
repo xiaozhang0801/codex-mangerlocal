@@ -41,7 +41,7 @@ struct WsToolCallKey {
     call_id: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct CompletedWsToolCallCache {
     calls: HashMap<WsToolCallKey, Value>,
     insertion_order: VecDeque<WsToolCallKey>,
@@ -90,7 +90,7 @@ impl CompletedWsToolCallCache {
             .trim()
             .to_ascii_lowercase();
         match event_type.as_str() {
-            "response.output_item.done" => {
+            "response.output_item.added" | "response.output_item.done" => {
                 if let Some(item) = value.get("item") {
                     self.insert(item);
                 }
@@ -108,6 +108,30 @@ impl CompletedWsToolCallCache {
             }
             _ => {}
         }
+    }
+
+    pub(super) fn observe_input(&mut self, input: &Value) {
+        match input {
+            Value::Array(items) => {
+                for item in items {
+                    self.insert(item);
+                }
+            }
+            Value::Null => {}
+            item => self.insert(item),
+        }
+    }
+
+    pub(super) fn merge_from(&mut self, other: &Self) {
+        for key in &other.insertion_order {
+            if let Some(item) = other.calls.get(key) {
+                self.insert(item);
+            }
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.calls.is_empty()
     }
 
     fn insert(&mut self, item: &Value) {
@@ -128,6 +152,16 @@ impl CompletedWsToolCallCache {
 
     fn get(&self, key: &WsToolCallKey) -> Option<&Value> {
         self.calls.get(key)
+    }
+
+    pub(super) fn estimated_bytes(&self) -> usize {
+        self.calls.iter().fold(0usize, |total, (key, value)| {
+            total.saturating_add(key.call_id.len()).saturating_add(
+                serde_json::to_vec(value)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or_default(),
+            )
+        })
     }
 }
 
@@ -283,6 +317,35 @@ fn normalize_ws_response_input(input: &Value) -> Vec<Value> {
         })],
         item => vec![item.clone()],
     }
+}
+
+/// Drops repeated tool outputs for the same `(kind, call_id)` pair.
+///
+/// The Codex tool runner can emit a second `custom_tool_call_output` when a
+/// host-side progress notification is attached to the same custom tool call.
+/// Responses accepts one output item per tool call, so preserve the first
+/// output and remove later duplicates before forwarding the request upstream.
+pub(super) fn normalize_ws_tool_call_outputs(input: &mut Value) -> usize {
+    let Some(items) = input.as_array_mut() else {
+        return 0;
+    };
+
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::with_capacity(items.len());
+    let mut removed = 0;
+    for item in items.drain(..) {
+        let Some(key) = ws_tool_output_key(&item).ok().flatten() else {
+            normalized.push(item);
+            continue;
+        };
+        if seen.insert(key) {
+            normalized.push(item);
+        } else {
+            removed += 1;
+        }
+    }
+    *items = normalized;
+    removed
 }
 
 pub(super) fn expand_response_create_previous_response(
