@@ -19,3 +19,16 @@ test("request logs table shows and searches client IP", async () => {
   assert.match(cellsSource, /export function ClientIpCell/);
   assert.match(cellsSource, /log\.clientIp/);
 });
+
+test("desktop request-log API exposes the client IP usage RPC", async () => {
+  const [commandSource, registrySource, clientSource] = await Promise.all([
+    readSource("src-tauri/src/commands/requestlog.rs"),
+    readSource("src-tauri/src/commands/registry.rs"),
+    readSource("src/lib/api/service-client.ts"),
+  ]);
+
+  assert.match(commandSource, /requestlog\/client_ip_usage/);
+  assert.match(commandSource, /service_requestlog_client_ip_usage/);
+  assert.match(registrySource, /service_requestlog_client_ip_usage/);
+  assert.match(clientSource, /listClientIpUsage/);
+});

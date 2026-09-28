@@ -4,7 +4,6 @@ import {
   useEffect,
   useMemo,
   useState,
-  type ReactNode,
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
@@ -380,45 +379,6 @@ function DashboardInitialSkeleton() {
       <div className="grid gap-6 md:grid-cols-2">
         <Skeleton className="h-72 w-full rounded-xl" />
         <Skeleton className="h-72 w-full rounded-xl" />
-      </div>
-    </div>
-  );
-}
-
-function DirectModeUnavailable({
-  active,
-  children,
-  className,
-}: {
-  active: boolean;
-  children: ReactNode;
-  className?: string;
-}) {
-  const { t } = useI18n();
-  if (!active) return <>{children}</>;
-
-  return (
-    <div className={cn("relative overflow-hidden rounded-xl", className)}>
-      <div className="pointer-events-none select-none opacity-60 blur-[1px] grayscale">
-        {children}
-      </div>
-      <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/45 p-4 backdrop-blur-sm">
-        <div className="grid max-w-md justify-items-center gap-3 rounded-2xl border border-amber-500/40 bg-background/80 px-5 py-4 text-center shadow-lg shadow-amber-500/10">
-          <div>
-            <div className="text-sm font-semibold text-amber-700 dark:text-amber-200">
-              {t("账号直连模式下不可用")}
-            </div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              {t("切换到本地网关后可统计请求日志、Token 和费用")}
-            </div>
-          </div>
-          <a
-            href={buildStaticRouteUrl("/platform-mode")}
-            className="inline-flex h-8 items-center justify-center rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            {t("切换到本地网关")}
-          </a>
-        </div>
       </div>
     </div>
   );
@@ -1200,8 +1160,7 @@ function AdminDashboard() {
         isError={isActiveRequestsError}
       />
 
-      <DirectModeUnavailable active={isDirectAccountMode}>
-        <AdminUsageAnalyticsCard
+      <AdminUsageAnalyticsCard
           summary={adminUsageSummary}
           isLoading={isLoading || isAdminUsageLoading}
           isRefreshing={isAdminUsageFetching && !isAdminUsageLoading}
@@ -1245,8 +1204,6 @@ function AdminDashboard() {
           granularity={adminUsageGranularity}
           onGranularityChange={setAdminUsageGranularity}
         />
-      </DirectModeUnavailable>
-
     </div>
   );
 }

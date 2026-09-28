@@ -20,6 +20,8 @@ test("API Keys page reads token usage as one row per client IP", async () => {
   assert.match(pageSource, /item\.clientIp/);
   assert.match(pageSource, /item\.todayEstimatedCostUsd/);
   assert.match(pageSource, /item\.estimatedCostUsd/);
+  assert.match(pageSource, /item\.requestCount/);
+  assert.match(pageSource, /item\.lastSeenAt/);
   assert.match(pageSource, /今日 Token \/ 金额/);
   assert.match(pageSource, /累计 Token \/ 金额/);
   assert.match(pageSource, /内网 IP 用量/);

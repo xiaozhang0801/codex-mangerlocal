@@ -16,6 +16,10 @@ inputs:
     description: Optional rust target triple
     required: false
     default: ""
+  config:
+    description: Optional Tauri config override path relative to the working directory
+    required: false
+    default: ""
   shell-type:
     description: pwsh or bash
     required: true
@@ -41,6 +45,9 @@ runs:
           $args = @('dlx', "@tauri-apps/cli@${{ inputs.tauri-cli-version }}", 'build', '--bundles', '${{ inputs.bundles }}')
           if ("${{ inputs.target }}".Trim().Length -gt 0) {
             $args += @('--target', '${{ inputs.target }}')
+          }
+          if ("${{ inputs.config }}".Trim().Length -gt 0) {
+            $args += @('--config', '${{ inputs.config }}')
           }
           pnpm @args
           if ($LASTEXITCODE -eq 0) {
@@ -70,6 +77,9 @@ runs:
           args=(dlx "@tauri-apps/cli@${{ inputs.tauri-cli-version }}" build --bundles "${{ inputs.bundles }}")
           if [ -n "${{ inputs.target }}" ]; then
             args+=(--target "${{ inputs.target }}")
+          fi
+          if [ -n "${{ inputs.config }}" ]; then
+            args+=(--config "${{ inputs.config }}")
           fi
           if pnpm "${args[@]}"; then
             exit 0

@@ -11,7 +11,10 @@ test -d "$bundle_root" || {
   exit 1
 }
 
-bundle_dir="$(find "$bundle_root" -type d -path '*/CodexManager.app' | head -n 1)"
+product_name="$(
+  python3 -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")).get("productName") or "CodexManager")' "$tauri_config_path"
+)"
+bundle_dir="$(find "$bundle_root" -type d -path "*/${product_name}.app" | head -n 1)"
 test -n "$bundle_dir" || {
   echo "macOS app bundle not found under: $bundle_root"
   exit 1
@@ -35,24 +38,30 @@ stage_dir="$(mktemp -d)"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$stage_dir" "$temp_dir"' EXIT
 
-ditto "$bundle_dir" "$stage_dir/CodexManager.app"
+ditto "$bundle_dir" "$stage_dir/${product_name}.app"
 ln -s /Applications "$stage_dir/Applications"
-install -m 0755 "assets/macos/Open CodexManager.command" "$stage_dir/Open CodexManager.command"
-install -m 0644 "assets/macos/README-macOS-first-launch.txt" "$stage_dir/README-macOS-first-launch.txt"
+helper_dir="assets/macos"
+readme_name="README-macOS-first-launch.txt"
+if [ "$product_name" = "CodexManagerLocal" ]; then
+  helper_dir="assets/macos-local"
+  readme_name="README-macOS-first-launch-local.txt"
+fi
+install -m 0755 "$helper_dir/Open ${product_name}.command" "$stage_dir/Open ${product_name}.command"
+install -m 0644 "$helper_dir/$readme_name" "$stage_dir/$readme_name"
 
-codesign --force --deep --sign - "$stage_dir/CodexManager.app"
-codesign --verify --deep --strict "$stage_dir/CodexManager.app"
+codesign --force --deep --sign - "$stage_dir/${product_name}.app"
+codesign --verify --deep --strict "$stage_dir/${product_name}.app"
 
-dmg_path="${dmg_dir}/CodexManager_${version}_${dmg_arch}.dmg"
-temp_dmg_path="${temp_dir}/CodexManager_${version}_${dmg_arch}.dmg"
+dmg_path="${dmg_dir}/${product_name}_${version}_${dmg_arch}.dmg"
+temp_dmg_path="${temp_dir}/${product_name}_${version}_${dmg_arch}.dmg"
 created=0
 
 for attempt in 1 2 3; do
   rm -f "$temp_dmg_path"
-  hdiutil detach "/Volumes/CodexManager" -force >/dev/null 2>&1 || true
+  hdiutil detach "/Volumes/${product_name}" -force >/dev/null 2>&1 || true
   sync || true
   sleep "$attempt"
-  if hdiutil create -volname "CodexManager" -srcfolder "$stage_dir" -ov -format UDZO "$temp_dmg_path"; then
+  if hdiutil create -volname "$product_name" -srcfolder "$stage_dir" -ov -format UDZO "$temp_dmg_path"; then
     created=1
     break
   fi

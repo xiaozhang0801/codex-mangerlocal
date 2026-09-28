@@ -27,3 +27,21 @@ test("client IP usage normalization returns IP-only rows without key id", async 
   assert.match(normalizeSource, /clientIp:\s*asString\(source\.clientIp\s*\?\?\s*source\.client_ip\)/);
   assert.doesNotMatch(normalizeSource, /keyId:\s*asString\(source\.keyId\s*\?\?\s*source\.key_id\)/);
 });
+
+test("client IP usage keeps the aggregate counters required by the App", async () => {
+  const requestLogTypesSource = await readSource("src/types/request-log.ts");
+  const rpcTypesSource = await readSource("../crates/core/src/rpc/types.rs");
+
+  for (const field of [
+    "totalTokens",
+    "todayTokens",
+    "requestCount",
+    "successCount",
+    "errorCount",
+    "estimatedCostUsd",
+  ]) {
+    assert.match(requestLogTypesSource, new RegExp(field));
+  }
+  assert.match(rpcTypesSource, /ClientIpUsageListParams/);
+  assert.match(rpcTypesSource, /ClientIpUsageSummaryResult/);
+});

@@ -3,8 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const PRIMARY_APP_IDENTIFIER: &str = "com.codexmanager.desktop";
-const QA_APP_IDENTIFIER: &str = "com.codexmanager.desktop.qa";
+const PRIMARY_APP_IDENTIFIER: &str = "com.codexmanager.local";
+const QA_APP_IDENTIFIER: &str = "com.codexmanager.local.qa";
 
 /// 函数 `maybe_migrate_legacy_db`
 ///
@@ -256,7 +256,7 @@ fn legacy_db_candidates(current_db: &Path) -> Vec<PathBuf> {
         if parent
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.eq_ignore_ascii_case("com.codexmanager.desktop"))
+            .is_some_and(|name| name.eq_ignore_ascii_case("com.codexmanager.local"))
         {
             if let Some(root) = parent.parent() {
                 out.push(root.join("com.gpttools.desktop").join("gpttools.db"));

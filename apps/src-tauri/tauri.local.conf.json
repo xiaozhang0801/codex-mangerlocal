@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CodexManagerLocal",
+  "identifier": "com.codexmanager.local",
+  "app": {
+    "windows": [
+      {
+        "title": "CodexManager Local"
+      }
+    ]
+  }
+}

@@ -15,6 +15,7 @@ test("桌面端注册并调用实时活跃请求 RPC", async () => {
     readSource("src-tauri/src/commands/registry.rs"),
     readSource("src/lib/api/dashboard-client.ts"),
   ]);
+  const typeSource = await readSource("src/types/dashboard.ts");
 
   assert.match(commandSource, /service_dashboard_active_requests/);
   assert.match(commandSource, /dashboard\/activeRequests/);
@@ -22,6 +23,7 @@ test("桌面端注册并调用实时活跃请求 RPC", async () => {
   assert.match(clientSource, /service_dashboard_active_requests/);
   assert.match(clientSource, /getActiveRequests/);
   assert.match(clientSource, /readActiveRequests/);
+  assert.match(typeSource, /DashboardActiveRequest/);
 });
 
 test("实时活跃请求 hook 仅桌面端启用并轮询", async () => {

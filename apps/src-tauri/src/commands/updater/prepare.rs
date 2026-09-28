@@ -56,19 +56,19 @@ pub(super) fn portable_asset_names_for_platform(latest_version: &str) -> Vec<Str
     let v = latest_version.trim().trim_start_matches(['v', 'V']);
     if cfg!(target_os = "windows") {
         vec![
-            "CodexManager-portable.exe".to_string(),
-            format!("CodexManager-{v}-windows-portable.zip"),
-            "CodexManager-windows-portable.zip".to_string(),
+            "CodexManagerLocal-portable.exe".to_string(),
+            format!("CodexManagerLocal-{v}-windows-portable.zip"),
+            "CodexManagerLocal-windows-portable.zip".to_string(),
         ]
     } else if cfg!(target_os = "macos") {
         vec![
-            format!("CodexManager-{v}-macos-portable.zip"),
-            "CodexManager-macos-portable.zip".to_string(),
+            format!("CodexManagerLocal-{v}-macos-portable.zip"),
+            "CodexManagerLocal-macos-portable.zip".to_string(),
         ]
     } else {
         vec![
-            format!("CodexManager-{v}-linux-portable.zip"),
-            "CodexManager-linux-portable.zip".to_string(),
+            format!("CodexManagerLocal-{v}-linux-portable.zip"),
+            "CodexManagerLocal-linux-portable.zip".to_string(),
         ]
     }
 }
@@ -773,15 +773,15 @@ mod tests {
     fn portable_asset_names_include_current_workflow_artifact() {
         let names = portable_asset_names_for_platform("0.1.8");
         if cfg!(target_os = "windows") {
-            assert!(names.iter().any(|name| name == "CodexManager-portable.exe"));
+            assert!(names.iter().any(|name| name == "CodexManagerLocal-portable.exe"));
         } else if cfg!(target_os = "linux") {
             assert!(names
                 .iter()
-                .any(|name| name == "CodexManager-linux-portable.zip"));
+                .any(|name| name == "CodexManagerLocal-linux-portable.zip"));
         } else if cfg!(target_os = "macos") {
             assert!(names
                 .iter()
-                .any(|name| name == "CodexManager-macos-portable.zip"));
+                .any(|name| name == "CodexManagerLocal-macos-portable.zip"));
         }
     }
 
@@ -816,18 +816,18 @@ mod tests {
     fn macos_dmg_selection_prefers_matching_arch_suffix() {
         let assets = vec![
             GitHubAsset {
-                name: "CodexManager_0.1.8_aarch64.dmg".to_string(),
+                name: "CodexManagerLocal_0.1.8_aarch64.dmg".to_string(),
                 browser_download_url: "https://example.com/arm.dmg".to_string(),
             },
             GitHubAsset {
-                name: "CodexManager_0.1.8_x64.dmg".to_string(),
+                name: "CodexManagerLocal_0.1.8_x64.dmg".to_string(),
                 browser_download_url: "https://example.com/x64.dmg".to_string(),
             },
         ];
 
         let selected =
             select_macos_dmg_asset_for_arch(&assets, &["x64", "x86_64"]).expect("x64 dmg");
-        assert_eq!(selected.name, "CodexManager_0.1.8_x64.dmg");
+        assert_eq!(selected.name, "CodexManagerLocal_0.1.8_x64.dmg");
     }
 
     /// 函数 `macos_dmg_selection_falls_back_to_generic_dmg`
@@ -845,17 +845,17 @@ mod tests {
     fn macos_dmg_selection_falls_back_to_generic_dmg() {
         let assets = vec![
             GitHubAsset {
-                name: "CodexManager_0.1.8_aarch64.dmg".to_string(),
+                name: "CodexManagerLocal_0.1.8_aarch64.dmg".to_string(),
                 browser_download_url: "https://example.com/arm.dmg".to_string(),
             },
             GitHubAsset {
-                name: "CodexManager_0.1.8.dmg".to_string(),
+                name: "CodexManagerLocal_0.1.8.dmg".to_string(),
                 browser_download_url: "https://example.com/generic.dmg".to_string(),
             },
         ];
 
         let selected =
             select_macos_dmg_asset_for_arch(&assets, &["x64", "x86_64"]).expect("generic dmg");
-        assert_eq!(selected.name, "CodexManager_0.1.8.dmg");
+        assert_eq!(selected.name, "CodexManagerLocal_0.1.8.dmg");
     }
 }

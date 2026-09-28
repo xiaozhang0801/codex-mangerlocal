@@ -1813,7 +1813,10 @@ test("模型目录 V2 完成本地管理、原子保存和导入", async ({ page
     page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
 
-  const rows = page.getByRole("main").locator("tbody tr");
+  const modelTable = page.locator("table").filter({
+    has: page.getByRole("columnheader", { name: "模型", exact: true }),
+  });
+  const rows = modelTable.locator("tbody tr");
   await expect(rows).toHaveCount(10);
   const solRow = page.locator("tr", { hasText: "gpt-5.6-sol" });
   await expect(solRow).toContainText("官方价格");

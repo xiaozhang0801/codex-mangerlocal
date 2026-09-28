@@ -100,7 +100,7 @@ pub fn run() {
         )
         .plugin(
             tauri_plugin_autostart::Builder::new()
-                .app_name("CodexManager")
+                .app_name("CodexManagerLocal")
                 .build(),
         )
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {

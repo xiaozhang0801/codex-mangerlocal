@@ -1,0 +1,166 @@
+name: release-local
+run-name: CodexManagerLocal ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (for example local-v0.6.2)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref/branch/sha to build"
+        required: false
+        default: "main"
+        type: string
+      prerelease:
+        description: "Mark the GitHub Release as prerelease"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  TAURI_CLI_VERSION: 2.10.1
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target-shared
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.ref || 'main') || github.sha }}
+  RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease || 'true' }}
+  LOCAL_TAURI_CONFIG: src-tauri/tauri.local.conf.json
+
+jobs:
+  build_frontend_dist:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+        with:
+          enable-rust: "false"
+      - name: Install frontend dependencies
+        working-directory: apps
+        run: pnpm install --frozen-lockfile
+      - name: Build frontend dist
+        working-directory: apps
+        run: pnpm run build:desktop
+      - name: Pack frontend dist
+        run: bash scripts/release/pack-frontend-dist.sh apps frontend-dist.tar.gz
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanagerlocal-frontend-dist
+          path: frontend-dist.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  build_windows:
+    needs: build_frontend_dist
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+        with:
+          enable-pnpm-cache: "false"
+          cargo-cache-key: release-local-desktop
+          cargo-workspaces: apps/src-tauri -> ../../target-shared
+      - name: Prepare frontend dist
+        uses: ./.github/actions/prepare-frontend-dist
+        with:
+          artifact-name: codexmanagerlocal-frontend-dist
+      - name: Build CodexManagerLocal Windows bundle
+        uses: ./.github/actions/build-tauri-with-retry
+        with:
+          working-directory: apps
+          tauri-cli-version: ${{ env.TAURI_CLI_VERSION }}
+          bundles: nsis
+          config: ${{ env.LOCAL_TAURI_CONFIG }}
+          shell-type: pwsh
+      - name: Stage Windows assets
+        shell: pwsh
+        # Produces CodexManagerLocal_<version>_x64-setup.exe.
+        run: ./scripts/release/stage-windows-desktop-assets.ps1 -ReleaseDir "${{ env.CARGO_TARGET_DIR }}/release" -RunnerArch "${{ runner.arch }}" -TauriConfigPath "apps/${{ env.LOCAL_TAURI_CONFIG }}"
+      - name: Upload Windows assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanagerlocal-windows
+          path: ${{ env.CARGO_TARGET_DIR }}/release/release-assets/*.exe
+          if-no-files-found: error
+          compression-level: 0
+
+  build_macos_x64:
+    needs: build_frontend_dist
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - name: Setup release environment
+        uses: ./.github/actions/setup-release-env
+        with:
+          rust-target: x86_64-apple-darwin
+          enable-pnpm-cache: "false"
+          cargo-cache-key: release-local-desktop
+          cargo-workspaces: apps/src-tauri -> ../../target-shared
+      - name: Prepare frontend dist
+        uses: ./.github/actions/prepare-frontend-dist
+        with:
+          artifact-name: codexmanagerlocal-frontend-dist
+      - name: Build CodexManagerLocal macOS bundle
+        uses: ./.github/actions/build-tauri-with-retry
+        with:
+          working-directory: apps
+          tauri-cli-version: ${{ env.TAURI_CLI_VERSION }}
+          bundles: app
+          target: x86_64-apple-darwin
+          config: ${{ env.LOCAL_TAURI_CONFIG }}
+          shell-type: bash
+      - name: Rebuild local macOS DMG
+        # Produces CodexManagerLocal_<version>_x64.dmg.
+        run: bash scripts/release/rebuild-macos-dmg.sh "${{ env.CARGO_TARGET_DIR }}/x86_64-apple-darwin/release" x64 "apps/${{ env.LOCAL_TAURI_CONFIG }}"
+      - name: Stage local macOS portable package
+        run: bash scripts/release/stage-macos-portable.sh "${{ env.CARGO_TARGET_DIR }}/x86_64-apple-darwin/release" "apps/${{ env.LOCAL_TAURI_CONFIG }}"
+      - name: Upload macOS assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: codexmanagerlocal-macos-x64
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            ${{ env.CARGO_TARGET_DIR }}/x86_64-apple-darwin/release/portable/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    needs: [build_windows, build_macos_x64]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+      - name: Download local artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: codexmanagerlocal-*
+          merge-multiple: true
+          path: release-assets
+      - name: Publish CodexManagerLocal release
+        uses: ./.github/actions/publish-github-release
+        with:
+          tag: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.RELEASE_REF }}
+          prerelease-input: ${{ env.RELEASE_PRERELEASE }}
+          release-name: CodexManagerLocal
+          assets-dir: release-assets

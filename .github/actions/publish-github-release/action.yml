@@ -11,6 +11,10 @@ inputs:
   prerelease-input:
     description: auto, true, or false
     required: true
+  release-name:
+    description: Product name used as the GitHub Release title prefix
+    required: false
+    default: CodexManager
   assets-dir:
     description: Directory containing staged release assets
     required: false
@@ -63,7 +67,7 @@ runs:
             ;;
         esac
 
-        TITLE="CodexManager $TAG"
+        TITLE="${{ inputs.release-name }} $TAG"
         mapfile -t FILES < <(find "$ASSETS_DIR" -type f \( \
           -name '*.exe' -o -name '*.zip' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' \
         \) | sort)

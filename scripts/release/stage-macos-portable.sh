@@ -9,7 +9,10 @@ test -d "$bundle_root" || {
   exit 1
 }
 
-bundle_dir="$(find "$bundle_root" -type d -path '*/CodexManager.app' | head -n 1)"
+product_name="$(
+  python3 -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")).get("productName") or "CodexManager")' "${2:-apps/src-tauri/tauri.conf.json}"
+)"
+bundle_dir="$(find "$bundle_root" -type d -path "*/${product_name}.app" | head -n 1)"
 test -n "$bundle_dir" || {
   echo "macOS app bundle not found under: $bundle_root"
   exit 1
@@ -18,7 +21,7 @@ test -n "$bundle_dir" || {
 portable_dir="${release_dir}/portable"
 mkdir -p "$portable_dir"
 
-zip_path="${portable_dir}/CodexManager-macos-portable.zip"
+zip_path="${portable_dir}/${product_name}-macos-portable.zip"
 rm -f "$zip_path"
 ditto -c -k --sequesterRsrc --keepParent "$bundle_dir" "$zip_path"
 
