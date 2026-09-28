@@ -757,6 +757,119 @@ fn temp_file_path(parent: &Path, target: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use codexmanager_core::rpc::types::ModelInfo;
+    use codexmanager_core::storage::{
+        ManagedModelV2, ManagedModelV2Upsert, ModelPriceV2, ModelRouteV2,
+    };
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn aggregate_model_reasoning_levels_survive_persistence_and_catalog_generation() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "codexmanager-aggregate-reasoning-catalog-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create catalog temp dir");
+        let storage = Storage::open(&temp_root.join("codexmanager.db")).expect("open storage");
+        storage.init().expect("initialize storage");
+
+        let inputs = [
+            (
+                "deepseek-flash",
+                vec!["low", "medium", "high"],
+                Some("medium"),
+            ),
+            ("plain-upstream", Vec::new(), None),
+        ]
+        .into_iter()
+        .map(|(slug, efforts, default)| ManagedModelV2Upsert {
+            model: ManagedModelV2 {
+                slug: slug.to_string(),
+                display_name: slug.to_string(),
+                origin: "custom".to_string(),
+                enabled: true,
+                supported_in_api: true,
+                visibility: "list".to_string(),
+                default_reasoning_effort: default.map(str::to_string),
+                capabilities: serde_json::json!({
+                    "supports_text_generation": true,
+                    "reasoningEfforts": efforts,
+                }),
+                instructions_mode: "passthrough".to_string(),
+                price: ModelPriceV2 {
+                    price_status: "missing".to_string(),
+                    ..Default::default()
+                },
+                routes: vec![ModelRouteV2 {
+                    source_kind: "aggregate_api".to_string(),
+                    source_id: "agg-deepseek".to_string(),
+                    upstream_model: slug.to_string(),
+                    enabled: true,
+                    weight: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+        storage
+            .upsert_managed_models_v2(&inputs)
+            .expect("save aggregate models");
+
+        let stored = storage
+            .get_managed_model_v2("deepseek-flash")
+            .expect("read configured model")
+            .expect("configured model exists");
+        assert_eq!(
+            stored.capabilities["reasoningEfforts"],
+            serde_json::json!(["low", "medium", "high"])
+        );
+        assert_eq!(stored.default_reasoning_effort.as_deref(), Some("medium"));
+
+        let (full_content, _) = managed_model_catalog_content_async(&storage)
+            .await
+            .expect("generate managed catalog");
+        let (selected_content, selected_slugs) = selected_managed_model_catalog_content_async(
+            &storage,
+            vec!["deepseek-flash".to_string(), "plain-upstream".to_string()],
+        )
+        .await
+        .expect("generate selected catalog");
+        assert_eq!(selected_slugs, ["deepseek-flash", "plain-upstream"]);
+
+        for content in [full_content, selected_content] {
+            let catalog: Value = serde_json::from_str(&content).expect("parse generated catalog");
+            let models = catalog["models"].as_array().expect("models array");
+            let reasoning = models
+                .iter()
+                .find(|model| model["slug"] == "deepseek-flash")
+                .expect("configured aggregate model");
+            assert_eq!(reasoning["default_reasoning_level"], "medium");
+            assert_eq!(
+                reasoning["supported_reasoning_levels"],
+                serde_json::json!([
+                    {"effort": "low", "description": ""},
+                    {"effort": "medium", "description": ""},
+                    {"effort": "high", "description": ""}
+                ])
+            );
+            let unsupported = models
+                .iter()
+                .find(|model| model["slug"] == "plain-upstream")
+                .expect("unconfigured aggregate model");
+            assert_eq!(
+                unsupported["supported_reasoning_levels"],
+                serde_json::json!([])
+            );
+            assert!(unsupported["default_reasoning_level"].is_null());
+        }
+
+        drop(storage);
+        let _ = fs::remove_dir_all(temp_root);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn selected_catalog_uses_catalog_order_and_canonical_slugs() {

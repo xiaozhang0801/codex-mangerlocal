@@ -1517,11 +1517,75 @@ test("编辑器不依赖后续动画帧即可载入目标模型", async ({ page 
   await expect(page.getByLabel("最大上下文窗口", { exact: true })).toHaveValue(
     "872000",
   );
-  await expect(page.getByLabel("默认推理强度")).toHaveValue("medium");
+  await expect(page.getByRole("combobox", { name: "默认推理强度" })).toContainText("medium");
   await expect(page.getByRole("combobox", { name: "可见性" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Fast 策略" })).toContainText(
     "透传（保留 service_tier）",
   );
+});
+
+test("模型推理档位与默认档位同步保存且保留其他能力", async ({ page }) => {
+  const state = await installMockRuntime(page);
+  const model = state.models.find((item) => item.slug === "gpt-6-sol");
+  if (!model) throw new Error("missing model fixture");
+  model.capabilities = {
+    ...(model.capabilities as JsonObject),
+    reasoning_efforts: ["low", "medium", "experimental"],
+    reasoningEfforts: ["ultra"],
+    customCapability: "preserved",
+  };
+  model.defaultReasoningEffort = "ultra";
+
+  await page.goto("/models/");
+  await page.getByRole("button", { name: "编辑模型 gpt-6-sol", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const defaultEffort = dialog.getByRole("combobox", { name: "默认推理强度" });
+  await expect(dialog.getByRole("checkbox", { name: "experimental" })).toBeChecked();
+  await expect(dialog.getByRole("checkbox", { name: "ultra" })).not.toBeChecked();
+  await expect(defaultEffort).toContainText("ultra (未在支持档位中)");
+  await dialog.getByRole("button", { name: "保存模型" }).click();
+  await expect(dialog.getByText("默认推理强度必须属于支持的档位")).toBeVisible();
+  expect(state.upserts).toHaveLength(0);
+
+  await dialog.getByLabel("关键能力 JSON").fill(JSON.stringify({
+    reasoning_efforts: ["low", "high", "experimental"],
+    reasoningEfforts: ["ultra"],
+    customCapability: "preserved",
+  }));
+  await expect(dialog.getByRole("checkbox", { name: "high", exact: true })).toBeChecked();
+  await expect(dialog.getByRole("checkbox", { name: "medium" })).not.toBeChecked();
+  await expect(defaultEffort).toContainText("不指定");
+
+  await defaultEffort.click();
+  await page.getByRole("option", { name: "high", exact: true }).click();
+  await dialog.locator('label[for="model-reasoning-0"]').click();
+  await expect(dialog.getByRole("checkbox", { name: "low", exact: true })).not.toBeChecked();
+  await dialog.getByRole("checkbox", { name: "experimental" }).uncheck();
+  await expect(defaultEffort).toContainText("high");
+  await dialog.getByRole("button", { name: "保存模型" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  expect(state.upserts).toHaveLength(1);
+  const firstSave = state.upserts[0].model as JsonObject;
+  expect(firstSave.defaultReasoningEffort).toBe("high");
+  expect(firstSave.capabilities).toMatchObject({
+    reasoning_efforts: ["high"],
+    customCapability: "preserved",
+  });
+  expect((firstSave.capabilities as JsonObject).reasoningEfforts).toBeUndefined();
+
+  await page.getByRole("button", { name: "编辑模型 gpt-6-sol", exact: true }).click();
+  const reopened = page.getByRole("dialog");
+  await reopened.getByRole("checkbox", { name: "high", exact: true }).uncheck();
+  await expect(reopened.getByRole("combobox", { name: "默认推理强度" })).toContainText("不指定");
+  await reopened.getByRole("button", { name: "保存模型" }).click();
+  await expect(reopened).toHaveCount(0);
+
+  expect(state.upserts).toHaveLength(2);
+  const secondSave = state.upserts[1].model as JsonObject;
+  expect(secondSave.defaultReasoningEffort).toBeNull();
+  expect((secondSave.capabilities as JsonObject).reasoning_efforts).toEqual([]);
+  expect((secondSave.capabilities as JsonObject).customCapability).toBe("preserved");
 });
 
 test("长路由来源不会覆盖相邻的模型和批量路由字段", async ({ page }) => {
