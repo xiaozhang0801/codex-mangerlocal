@@ -502,8 +502,8 @@ use openai_fallback::try_openai_fallback;
 #[cfg(test)]
 pub(crate) use request_entry::handle_gateway_request;
 pub(crate) use request_entry::handle_gateway_request_async;
-use request_gate::{client_ip_gate_lock, request_gate_lock};
 pub(crate) use request_gate::RequestGateAcquireError;
+use request_gate::{client_ip_gate_lock, request_gate_lock};
 pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;

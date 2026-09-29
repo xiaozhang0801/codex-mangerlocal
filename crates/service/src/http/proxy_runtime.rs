@@ -9,13 +9,13 @@ use http_body::Body as HttpBody;
 use reqwest::Client;
 use std::io;
 use std::io::Read;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
-use std::net::SocketAddr;
 
 use crate::http::proxy_bridge::run_proxy_server;
 #[cfg(test)]

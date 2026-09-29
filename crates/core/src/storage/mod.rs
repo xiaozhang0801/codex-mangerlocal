@@ -1935,6 +1935,7 @@ impl Storage {
             include_str!("../../migrations/045_accounts_preferred.sql"),
             |s| s.ensure_account_meta_columns(),
         )?;
+        self.ensure_column("accounts", "preferred", "INTEGER NOT NULL DEFAULT 0")?;
         self.apply_sql_or_compat_migration(
             "046_request_logs_gateway_mode",
             include_str!("../../migrations/046_request_logs_gateway_mode.sql"),

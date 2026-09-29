@@ -85,6 +85,10 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
         .expect("count 001 migration");
     assert_eq!(applied_001, 1);
 
+    assert!(storage
+        .has_column("accounts", "preferred")
+        .expect("check accounts.preferred"));
+
     let applied_005: i64 = storage
         .conn
         .query_row(
@@ -750,6 +754,42 @@ fn file_open_enables_wal_and_normal_synchronous() {
 
     drop(storage);
     let _ = fs::remove_file(path);
+}
+
+/// 函数 `init_repairs_accounts_preferred_when_marker_exists_but_column_is_missing`
+///
+/// 作者: gaohongshun
+///
+/// 时间: 2026-09-29
+///
+/// # 参数
+/// 无
+///
+/// # 返回
+/// 无
+#[test]
+fn init_repairs_accounts_preferred_when_marker_exists_but_column_is_missing() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("initial schema");
+
+    storage
+        .conn
+        .execute_batch(
+            "DROP INDEX idx_accounts_preferred_updated_at;
+             ALTER TABLE accounts DROP COLUMN preferred;",
+        )
+        .expect("remove preferred column from simulated legacy database");
+    assert!(!storage
+        .has_column("accounts", "preferred")
+        .expect("check removed accounts.preferred"));
+
+    storage
+        .init()
+        .expect("init should repair the missing preferred column");
+
+    assert!(storage
+        .has_column("accounts", "preferred")
+        .expect("check repaired accounts.preferred"));
 }
 
 /// 函数 `account_meta_sql_migration_coexists_with_legacy_compat_marker`
