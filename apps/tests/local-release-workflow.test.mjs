@@ -113,3 +113,15 @@ test("local macOS DMG packaging inherits version from the base Tauri config", ()
   assert.match(script, /version.*missing/i);
   assert.doesNotMatch(script, /\r/);
 });
+
+test("local Windows staging inherits version from the base Tauri config", () => {
+  const script = readRepoFile(
+    "scripts",
+    "release",
+    "stage-windows-desktop-assets.ps1",
+  );
+
+  assert.match(script, /baseConfigPath/);
+  assert.match(script, /IsNullOrWhiteSpace\(\$version\)/);
+  assert.match(script, /version missing/i);
+});

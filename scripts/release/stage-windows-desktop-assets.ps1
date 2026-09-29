@@ -20,7 +20,16 @@ if (-not (Test-Path $TauriConfigPath -PathType Leaf)) {
 }
 
 $config = Get-Content $TauriConfigPath -Raw | ConvertFrom-Json
-$version = $config.version
+$version = [string]$config.version
+if ([string]::IsNullOrWhiteSpace($version)) {
+  $baseConfigPath = Join-Path (Split-Path -Parent $TauriConfigPath) "tauri.conf.json"
+  if (Test-Path $baseConfigPath -PathType Leaf) {
+    $version = [string](Get-Content $baseConfigPath -Raw | ConvertFrom-Json).version
+  }
+}
+if ([string]::IsNullOrWhiteSpace($version)) {
+  throw "version missing from $TauriConfigPath and its base tauri.conf.json"
+}
 $productName = if ([string]::IsNullOrWhiteSpace($config.productName)) { "CodexManager" } else { $config.productName }
 $arch = if ($RunnerArch -eq "ARM64") { "arm64" } else { "x64" }
 
