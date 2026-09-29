@@ -135,14 +135,18 @@ fn stale_shared_lock_entry_is_not_reclaimed() {
 }
 
 #[test]
-fn acquire_waits_until_previous_guard_released() {
+fn acquire_waits_until_capacity_guard_released() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
     let lock = request_gate_lock("gk_wait", "/v1/responses", Some("gpt-5.3-codex"));
-    let first_guard = lock
-        .try_acquire()
-        .expect("lock should not be poisoned")
-        .expect("first guard");
+    let mut occupied_guards = Vec::new();
+    for _ in 0..4 {
+        occupied_guards.push(
+            lock.try_acquire()
+                .expect("lock should not be poisoned")
+                .expect("capacity guard"),
+        );
+    }
     let waiter = lock.clone();
 
     let handle = thread::spawn(move || {
@@ -154,12 +158,34 @@ fn acquire_waits_until_previous_guard_released() {
     });
 
     thread::sleep(Duration::from_millis(60));
-    drop(first_guard);
+    drop(occupied_guards);
 
     let waited = handle.join().expect("join waiter thread");
     assert!(
         waited >= Duration::from_millis(40),
         "expected waiter to block, actual wait: {waited:?}"
+    );
+}
+
+#[test]
+fn request_gate_lock_allows_four_parallel_requests_for_same_scope() {
+    let _guard = crate::test_env_guard();
+    clear_request_gate_locks_for_tests();
+    let lock = request_gate_lock("gk_parallel", "/v1/responses", Some("gpt-5.3-codex"));
+    let mut guards = Vec::new();
+
+    for _ in 0..4 {
+        guards.push(
+            lock.try_acquire()
+                .expect("lock should not be poisoned")
+                .expect("same scope should allow four parallel requests"),
+        );
+    }
+    assert!(
+        lock.try_acquire()
+            .expect("lock should not be poisoned")
+            .is_none(),
+        "same scope should queue the fifth request"
     );
 }
 

@@ -6,6 +6,7 @@ use codexmanager_core::storage::now_ts;
 
 const REQUEST_GATE_LOCK_TTL_SECS: i64 = 30 * 60;
 const REQUEST_GATE_LOCK_CLEANUP_INTERVAL_SECS: i64 = 60;
+const REQUEST_GATE_MAX_RUNNING: usize = 4;
 const CLIENT_IP_GATE_MAX_RUNNING: usize = 4;
 
 struct RequestGateLockEntry {
@@ -265,7 +266,7 @@ pub(crate) fn request_gate_lock(
     path: &str,
     model: Option<&str>,
 ) -> Arc<RequestGateLock> {
-    gate_lock_for_key(gate_key(key_id, path, model), 1)
+    gate_lock_for_key(gate_key(key_id, path, model), REQUEST_GATE_MAX_RUNNING)
 }
 
 pub(crate) fn client_ip_gate_lock(client_ip: &str) -> Arc<RequestGateLock> {
