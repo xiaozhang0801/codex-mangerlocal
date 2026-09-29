@@ -25,6 +25,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ format('{0}-tag-{1}', github.workflow, github.event_name == 'workflow_dispatch' && (github.event.inputs.tag || github.ref_name) || github.ref_name) }}
+  cancel-in-progress: false
+
 env:
   TAURI_CLI_VERSION: 2.10.1
   CARGO_TARGET_DIR: ${{ github.workspace }}/target-shared
@@ -34,7 +38,43 @@ env:
   LOCAL_TAURI_CONFIG: src-tauri/tauri.local.conf.json
 
 jobs:
+  validate_release_inputs:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout selected release ref
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 1
+      - name: Validate selected commit and local app identity
+        shell: bash
+        env:
+          RELEASE_REF: ${{ env.RELEASE_REF }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$RELEASE_REF" ]]; then
+            echo "RELEASE_REF is empty"
+            exit 1
+          fi
+
+          checked_out_sha="$(git rev-parse --verify HEAD^{commit})"
+          if [[ -z "$checked_out_sha" ]]; then
+            echo "selected release ref did not resolve to a commit: $RELEASE_REF"
+            exit 1
+          fi
+          echo "selected release ref: $RELEASE_REF"
+          echo "checked out commit: $checked_out_sha"
+
+          jq -e \
+            '.productName == "CodexManagerLocal" and .identifier == "com.codexmanager.local"' \
+            apps/src-tauri/tauri.conf.json >/dev/null
+          jq -e \
+            '.productName == "CodexManagerLocal" and .identifier == "com.codexmanager.local"' \
+            apps/src-tauri/tauri.local.conf.json >/dev/null
+
   build_frontend_dist:
+    needs: validate_release_inputs
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout

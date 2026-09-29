@@ -51,6 +51,21 @@ test("local updater defaults and release workflow target the local repository", 
   assert.doesNotMatch(workflowSource, /qxcnm\/Codex-Manager/);
 });
 
+test("local release workflow serializes tags and validates the selected ref", () => {
+  const workflowSource = readRepoFile(
+    ".github",
+    "workflows",
+    "release-local.yml",
+  );
+
+  assert.match(workflowSource, /concurrency:/);
+  assert.match(workflowSource, /cancel-in-progress:\s*false/);
+  assert.match(workflowSource, /validate_release_inputs:/);
+  assert.match(workflowSource, /build_frontend_dist:\s+needs:\s+validate_release_inputs/);
+  assert.match(workflowSource, /git rev-parse/);
+  assert.match(workflowSource, /CodexManagerLocal/);
+});
+
 test("local Tauri override and macOS first-launch helpers exist", () => {
   const configPath = path.join(repoDir, "apps", "src-tauri", "tauri.local.conf.json");
   const commandPath = path.join(
