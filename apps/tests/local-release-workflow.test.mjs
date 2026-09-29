@@ -57,6 +57,11 @@ test("local release workflow serializes tags and validates the selected ref", ()
     "workflows",
     "release-local.yml",
   );
+  const releaseAllSource = readRepoFile(
+    ".github",
+    "workflows",
+    "release-all.yml",
+  );
 
   assert.match(workflowSource, /concurrency:/);
   assert.match(workflowSource, /cancel-in-progress:\s*false/);
@@ -64,6 +69,7 @@ test("local release workflow serializes tags and validates the selected ref", ()
   assert.match(workflowSource, /build_frontend_dist:\s+needs:\s+validate_release_inputs/);
   assert.match(workflowSource, /git rev-parse/);
   assert.match(workflowSource, /CodexManagerLocal/);
+  assert.match(releaseAllSource, /!v\*-local\.\*/);
 });
 
 test("local Tauri override and macOS first-launch helpers exist", () => {
