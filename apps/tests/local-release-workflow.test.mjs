@@ -90,3 +90,20 @@ test("local Tauri override and macOS first-launch helpers exist", () => {
   assert.equal(config.identifier, "com.codexmanager.local");
   assert.equal(config.app.windows[0].title, "CodexManager Local");
 });
+
+test("local macOS DMG packaging inherits version from the base Tauri config", () => {
+  const localConfig = JSON.parse(
+    readRepoFile("apps", "src-tauri", "tauri.local.conf.json"),
+  );
+  const script = readRepoFile(
+    "scripts",
+    "release",
+    "rebuild-macos-dmg.sh",
+  );
+
+  assert.equal(localConfig.version, undefined);
+  assert.match(script, /payload\.get\("version"\)/);
+  assert.match(script, /with_name\("tauri\.conf\.json"\)/);
+  assert.match(script, /version.*missing/i);
+  assert.doesNotMatch(script, /\r/);
+});

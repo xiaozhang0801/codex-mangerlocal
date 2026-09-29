@@ -31,7 +31,22 @@ else
 fi
 
 version="$(
-  python3 -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["version"])' "$tauri_config_path"
+  python3 - "$tauri_config_path" <<'PY'
+import json
+import pathlib
+import sys
+
+config_path = pathlib.Path(sys.argv[1])
+payload = json.loads(config_path.read_text(encoding="utf-8"))
+version = payload.get("version")
+if not version:
+    base_config_path = config_path.with_name("tauri.conf.json")
+    if base_config_path != config_path and base_config_path.is_file():
+        version = json.loads(base_config_path.read_text(encoding="utf-8")).get("version")
+if not version:
+    raise SystemExit(f"version missing from {config_path} and its base tauri.conf.json")
+print(version)
+PY
 )"
 
 stage_dir="$(mktemp -d)"
