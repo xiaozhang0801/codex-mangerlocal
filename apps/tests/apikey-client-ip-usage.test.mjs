@@ -17,12 +17,17 @@ test("API Keys page reads token usage as one row per client IP", async () => {
   assert.match(pageSource, /clientIpUsageRows/);
   assert.match(pageSource, /todayTokensByClientIp/);
   assert.match(pageSource, /todayCostByClientIp/);
+  assert.match(pageSource, /weekTokensByClientIp/);
+  assert.match(pageSource, /weekCostByClientIp/);
   assert.match(pageSource, /item\.clientIp/);
   assert.match(pageSource, /item\.todayEstimatedCostUsd/);
+  assert.match(pageSource, /item\.weekTokens/);
+  assert.match(pageSource, /item\.weekEstimatedCostUsd/);
   assert.match(pageSource, /item\.estimatedCostUsd/);
   assert.match(pageSource, /item\.requestCount/);
   assert.match(pageSource, /item\.lastSeenAt/);
   assert.match(pageSource, /今日 Token \/ 金额/);
+  assert.match(pageSource, /本周 Token \/ 金额/);
   assert.match(pageSource, /累计 Token \/ 金额/);
   assert.match(pageSource, /内网 IP 用量/);
   assert.doesNotMatch(pageSource, /keyId:\s*item\.keyId/);
@@ -40,6 +45,8 @@ test("API Keys page sorts LAN IP usage rows from a selectable order", async () =
   assert.match(pageSource, /setClientIpUsageSort/);
   assert.match(pageSource, /今日 Token 高到低/);
   assert.match(pageSource, /累计金额高到低/);
+  assert.match(pageSource, /本周 Token 高到低/);
+  assert.match(pageSource, /本周金额高到低/);
   assert.match(pageSource, /IP 升序/);
   assert.match(pageSource, /<SelectItem[\s\S]*value={option\.value}/);
   assert.match(pageSource, /sortedClientIpUsageRows\.map/);

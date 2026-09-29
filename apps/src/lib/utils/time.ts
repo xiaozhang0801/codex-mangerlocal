@@ -6,6 +6,12 @@ export interface LocalDayRange {
   timeZone: string | null;
 }
 
+export interface LocalWeekRange {
+  weekStartTs: number;
+  weekEndTs: number;
+  timeZone: string | null;
+}
+
 function getPreferredLocale(): string | undefined {
   if (typeof document !== "undefined") {
     const lang = document.documentElement.lang.trim();
@@ -53,6 +59,34 @@ export function getLocalDayRange(referenceDate = new Date()): LocalDayRange {
   return {
     dayStartTs: Math.floor(start.getTime() / 1000),
     dayEndTs: Math.floor(end.getTime() / 1000),
+    timeZone: getBrowserTimeZone(),
+  };
+}
+
+export function getLocalWeekRange(referenceDate = new Date()): LocalWeekRange {
+  const daysSinceMonday = (referenceDate.getDay() + 6) % 7;
+  const weekStart = new Date(
+    referenceDate.getFullYear(),
+    referenceDate.getMonth(),
+    referenceDate.getDate() - daysSinceMonday,
+    0,
+    0,
+    0,
+    0,
+  );
+  const weekEnd = new Date(
+    weekStart.getFullYear(),
+    weekStart.getMonth(),
+    weekStart.getDate() + 7,
+    0,
+    0,
+    0,
+    0,
+  );
+
+  return {
+    weekStartTs: Math.floor(weekStart.getTime() / 1000),
+    weekEndTs: Math.floor(weekEnd.getTime() / 1000),
     timeZone: getBrowserTimeZone(),
   };
 }

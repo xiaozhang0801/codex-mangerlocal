@@ -85,7 +85,10 @@ import {
   estimateQuotaLimitUsd,
   formatQuotaLimitUsd,
 } from "@/lib/utils/api-key-quota";
-import { formatLocalMinuteFromSeconds } from "@/lib/utils/time";
+import {
+  formatLocalMinuteFromSeconds,
+  getLocalWeekRange,
+} from "@/lib/utils/time";
 import { formatCompactNumber } from "@/lib/utils/usage";
 import type { ApiKeyOwner, AppUser } from "@/types";
 import type { ClientIpUsageSummary } from "@/types/request-log";
@@ -99,8 +102,10 @@ const ROTATION_STRATEGY_LABELS: Record<string, string> = {
 
 type ClientIpUsageSortKey =
   | "todayTokens"
+  | "weekTokens"
   | "totalTokens"
   | "todayCost"
+  | "weekCost"
   | "totalCost"
   | "requestCount"
   | "lastSeenAt"
@@ -108,6 +113,8 @@ type ClientIpUsageSortKey =
 
 type ClientIpUsageRow = ClientIpUsageSummary & {
   todayEstimatedCostUsd: number;
+  weekTokens: number;
+  weekEstimatedCostUsd: number;
 };
 
 const CLIENT_IP_USAGE_SORT_OPTIONS: Array<{
@@ -115,8 +122,10 @@ const CLIENT_IP_USAGE_SORT_OPTIONS: Array<{
   label: string;
 }> = [
   { value: "todayTokens", label: "今日 Token 高到低" },
+  { value: "weekTokens", label: "本周 Token 高到低" },
   { value: "totalTokens", label: "累计 Token 高到低" },
   { value: "todayCost", label: "今日金额高到低" },
+  { value: "weekCost", label: "本周金额高到低" },
   { value: "totalCost", label: "累计金额高到低" },
   { value: "requestCount", label: "请求数高到低" },
   { value: "lastSeenAt", label: "最近出现优先" },
@@ -147,10 +156,14 @@ function compareClientIpUsageRows(
     switch (sortKey) {
       case "todayTokens":
         return normalizeSortNumber(row.todayTokens);
+      case "weekTokens":
+        return normalizeSortNumber(row.weekTokens);
       case "totalTokens":
         return normalizeSortNumber(row.totalTokens);
       case "todayCost":
         return normalizeSortNumber(row.todayEstimatedCostUsd);
+      case "weekCost":
+        return normalizeSortNumber(row.weekEstimatedCostUsd);
       case "totalCost":
         return normalizeSortNumber(row.estimatedCostUsd);
       case "requestCount":
@@ -258,6 +271,10 @@ export default function ApiKeysPage() {
   const isPageActive = useDesktopPageActive("/apikeys/");
   const isUsageQueryEnabled = useDeferredDesktopActivation(isServiceReady);
   const localDayRange = useLocalDayRange();
+  const localWeekRange = useMemo(
+    () => getLocalWeekRange(new Date(localDayRange.dayStartTs * 1000)),
+    [localDayRange.dayStartTs],
+  );
   usePageTransitionReady(
     "/apikeys/",
     !isServiceReady || (!isLoading && !isModelsLoading),
@@ -452,6 +469,23 @@ export default function ApiKeysPage() {
     enabled: isUsageQueryEnabled && isPageActive,
     retry: 1,
   });
+  const { data: weekClientIpUsage } = useQuery({
+    queryKey: [
+      "apikey-client-ip-usage",
+      "week",
+      serviceAddr || null,
+      localWeekRange.weekStartTs,
+      localWeekRange.weekEndTs,
+    ],
+    queryFn: () =>
+      serviceClient.listClientIpUsage({
+        startTs: localWeekRange.weekStartTs,
+        endTs: localWeekRange.weekEndTs,
+        limit: 100,
+      }),
+    enabled: isUsageQueryEnabled && isPageActive,
+    retry: 1,
+  });
   const todayTokensByClientIp = useMemo(
     () =>
       new Map(
@@ -472,14 +506,42 @@ export default function ApiKeysPage() {
       ),
     [todayClientIpUsage?.items],
   );
+  const weekTokensByClientIp = useMemo(
+    () =>
+      new Map(
+        (weekClientIpUsage?.items ?? []).map((item) => [
+          item.clientIp,
+          item.totalTokens,
+        ]),
+      ),
+    [weekClientIpUsage?.items],
+  );
+  const weekCostByClientIp = useMemo(
+    () =>
+      new Map(
+        (weekClientIpUsage?.items ?? []).map((item) => [
+          item.clientIp,
+          item.estimatedCostUsd,
+        ]),
+      ),
+    [weekClientIpUsage?.items],
+  );
   const clientIpUsageRows = useMemo(
     () =>
       (clientIpUsage?.items ?? []).map((item) => ({
         ...item,
         todayTokens: todayTokensByClientIp.get(item.clientIp) ?? 0,
         todayEstimatedCostUsd: todayCostByClientIp.get(item.clientIp) ?? 0,
+        weekTokens: weekTokensByClientIp.get(item.clientIp) ?? 0,
+        weekEstimatedCostUsd: weekCostByClientIp.get(item.clientIp) ?? 0,
       })),
-    [clientIpUsage?.items, todayCostByClientIp, todayTokensByClientIp],
+    [
+      clientIpUsage?.items,
+      todayCostByClientIp,
+      todayTokensByClientIp,
+      weekCostByClientIp,
+      weekTokensByClientIp,
+    ],
   );
   const sortedClientIpUsageRows = useMemo(
     () =>
@@ -840,11 +902,12 @@ export default function ApiKeysPage() {
               </Badge>
             </div>
           </div>
-          <Table className="min-w-[860px]">
+          <Table className="min-w-[1000px]">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("客户端 IP")}</TableHead>
                 <TableHead>{t("今日 Token / 金额")}</TableHead>
+                <TableHead>{t("本周 Token / 金额")}</TableHead>
                 <TableHead>{t("累计 Token / 金额")}</TableHead>
                 <TableHead>{t("请求数")}</TableHead>
                 <TableHead>{t("成功 / 异常")}</TableHead>
@@ -858,6 +921,7 @@ export default function ApiKeysPage() {
                     <TableCell><Skeleton className="h-4 w-28" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-24" /></TableCell>
@@ -865,7 +929,7 @@ export default function ApiKeysPage() {
                 ))
               ) : sortedClientIpUsageRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-28 text-center">
+                  <TableCell colSpan={7} className="h-28 text-center">
                     <span className="text-sm text-muted-foreground">
                       {t("暂无 IP 用量")}
                     </span>
@@ -883,6 +947,12 @@ export default function ApiKeysPage() {
                       <div>{formatCompactTokenAmount(item.todayTokens)}</div>
                       <div className="text-[10px] text-muted-foreground">
                         {formatQuotaLimitUsd(item.todayEstimatedCostUsd)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      <div>{formatCompactTokenAmount(item.weekTokens)}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {formatQuotaLimitUsd(item.weekEstimatedCostUsd)}
                       </div>
                     </TableCell>
                     <TableCell className="text-xs tabular-nums">
