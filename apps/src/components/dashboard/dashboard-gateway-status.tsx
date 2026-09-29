@@ -2,7 +2,6 @@
 
 import { AlertTriangle, Check, ArrowRight, PieChart } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -47,32 +46,29 @@ function StatusMetric({
   label,
   value,
   tone = "text-foreground",
-  className,
-  valueClassName,
+  detail,
 }: {
   label: string;
   value: string;
   tone?: string;
-  className?: string;
-  valueClassName?: string;
+  detail?: string;
 }) {
   return (
-    <div
-      className={cn(
-        "flex min-h-[68px] flex-col justify-center border-t border-border/55 px-4 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0 xl:min-h-[76px] xl:px-5",
-        className,
-      )}
-    >
-      <span className="truncate text-compact text-muted-foreground">{label}</span>
+    <div className="flex min-w-0 flex-col justify-center gap-1">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <span
         className={cn(
-          "mt-0.5 truncate font-mono text-2xl font-semibold leading-none",
+          "truncate font-mono text-xl font-semibold leading-none tabular-nums",
           tone,
-          valueClassName,
         )}
       >
         {value}
       </span>
+      {detail ? (
+        <span className="truncate text-xs text-muted-foreground" title={detail}>
+          {detail}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -99,7 +95,7 @@ export function DashboardGatewayStatus({
   const actionLabel = directMode ? t("打开请求日志") : t("查看异常请求");
 
   return (
-    <Card className="dashboard-primary-panel routing-command-card glass-card overflow-hidden rounded-xl border-border/60 py-0 xl:rounded-2xl">
+    <Card className="dashboard-primary-panel routing-command-card glass-card overflow-hidden py-0">
       <CardContent className="p-0">
         <div className="flex min-h-[80px] flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between xl:min-h-[92px] xl:gap-4 xl:px-5 xl:py-4">
           <div className="flex min-w-0 items-center gap-3 xl:gap-4">
@@ -138,29 +134,25 @@ export function DashboardGatewayStatus({
           </a>
         </div>
 
-        <div className="grid border-t border-border/55 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border/55 px-4 py-4 md:grid-cols-4 xl:px-5">
           <StatusMetric
-            label={t("服务连接")}
-            value={connected ? t("正常") : t("离线")}
-            tone={connected ? "text-emerald-600" : "text-rose-600"}
+            label={t("可用账号")}
+            value={`${stats.available} / ${stats.total}`}
+            tone="text-emerald-600"
           />
-          <StatusMetric label={t("账号")} value={String(stats.total)} />
-          <StatusMetric label={t("可用")} value={String(stats.available)} tone="text-emerald-600" />
           <StatusMetric
             label={t("异常")}
             value={String(stats.unavailable)}
             tone={stats.unavailable > 0 ? "text-rose-600" : "text-foreground"}
           />
           <StatusMetric
-            className="lg:col-span-2"
-            label={t("今日/缓存/推理 用量")}
-            value={`${formatCompactTokenAmount(stats.todayTokens)} / ${formatCompactTokenAmount(stats.cachedTokens)} / ${formatCompactTokenAmount(stats.reasoningTokens)}`}
-            valueClassName="text-dense tracking-[-0.035em]"
+            label={`${t("今日")} Token`}
+            value={formatCompactTokenAmount(stats.todayTokens)}
+            detail={`${t("缓存")} ${formatCompactTokenAmount(stats.cachedTokens)} · ${t("推理")} ${formatCompactTokenAmount(stats.reasoningTokens)}`}
           />
           <StatusMetric
             label={t("预计费用")}
             value={formatUsd(stats.todayCost)}
-            valueClassName="text-metric-emphasis"
           />
         </div>
       </CardContent>
@@ -229,19 +221,13 @@ export function DashboardPoolRemaining({
   }
 
   return (
-    <Card className="dashboard-pool-remaining dashboard-primary-panel glass-card overflow-hidden rounded-xl border-border/60 py-0 xl:rounded-2xl">
+    <Card className="dashboard-pool-remaining dashboard-primary-panel glass-card overflow-hidden py-0">
       <CardContent className="grid gap-4 px-4 py-4 md:grid-cols-[200px_minmax(0,1fr)] md:items-center xl:grid-cols-[210px_minmax(0,1fr)_minmax(0,1fr)]">
         <div className="flex min-w-0 items-center gap-3">
           <PieChart className="h-5 w-5 shrink-0 text-emerald-600 xl:h-6 xl:w-6" />
           <span className="truncate text-sm font-semibold text-foreground xl:text-lg">
             {t("账号池剩余")}
           </span>
-          <Badge
-            variant="outline"
-            className="h-6 shrink-0 rounded-md border-emerald-500/25 bg-emerald-500/8 px-2 text-[10px] font-semibold text-emerald-700 xl:h-7 xl:text-xs"
-          >
-            POOL
-          </Badge>
         </div>
         <div className="grid min-w-0 gap-4 sm:grid-cols-2 md:col-span-1 xl:col-span-2">
           <PoolBucket

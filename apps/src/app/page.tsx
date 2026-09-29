@@ -905,10 +905,8 @@ function AdminUsageAnalyticsCard({
             <p className="mt-1 text-xs text-muted-foreground">
               {t("按模型查看 token 和请求趋势，支持小时粒度")}
             </p>
-            <div className="mt-2 text-[11px] text-muted-foreground">
+            <div className="mt-2 text-xs text-muted-foreground">
               {t("当前区间")} {formatShortDateRange(summary.rangeStartTs, summary.rangeEndTs, locale)}
-              {" · "}
-              {t("图表区域支持鼠标滚轮缩放")}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 xl:justify-end">
@@ -934,28 +932,30 @@ function AdminUsageAnalyticsCard({
                   </SelectGroup>
                 </SelectContent>
               </Select>
-              <Input
-                type="date"
-                className="w-[144px] bg-background/40 text-xs"
-                value={rangeStartInput}
-                disabled={rangePreset !== "custom"}
-                onChange={(event) => onRangeStartInputChange(event.target.value)}
-              />
-              <Input
-                type="date"
-                className="w-[144px] bg-background/40 text-xs"
-                value={rangeEndInput}
-                disabled={rangePreset !== "custom"}
-                onChange={(event) => onRangeEndInputChange(event.target.value)}
-              />
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={rangePreset !== "custom" || isCustomRangeInvalid}
-                onClick={onApplyCustomRange}
-              >
-                {t("应用")}
-              </Button>
+              {rangePreset === "custom" ? (
+                <>
+                  <Input
+                    type="date"
+                    className="w-[144px] bg-background/40 text-xs"
+                    value={rangeStartInput}
+                    onChange={(event) => onRangeStartInputChange(event.target.value)}
+                  />
+                  <Input
+                    type="date"
+                    className="w-[144px] bg-background/40 text-xs"
+                    value={rangeEndInput}
+                    onChange={(event) => onRangeEndInputChange(event.target.value)}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={isCustomRangeInvalid}
+                    onClick={onApplyCustomRange}
+                  >
+                    {t("应用")}
+                  </Button>
+                </>
+              ) : null}
               {hasZoomWindow ? (
                 <Button
                   size="sm"
@@ -993,7 +993,7 @@ function AdminUsageAnalyticsCard({
           />
         )}
         <div className="grid gap-3 text-xs sm:grid-cols-2 xl:grid-cols-4">
-          <div className="mission-panel rounded-md border border-primary/20 bg-primary/10 px-3 py-2">
+          <div className="min-w-0 border-t border-border/60 pt-3">
             <div className="text-muted-foreground">{rangeBadgeLabel}</div>
             <div className="mt-1 font-mono font-semibold text-primary">
               {formatCompactTokenAmount(rangeUsage.totalTokens)}
@@ -1002,7 +1002,7 @@ function AdminUsageAnalyticsCard({
               {formatUsd(rangeUsage.estimatedCostUsd)}
             </div>
           </div>
-          <div className="mission-panel rounded-md border border-primary/20 bg-primary/10 px-3 py-2">
+          <div className="min-w-0 border-t border-border/60 pt-3">
             <div className="text-muted-foreground">
               {isTodayOnlyRange ? t("今日请求") : t("区间请求")}
             </div>
@@ -1010,7 +1010,7 @@ function AdminUsageAnalyticsCard({
               {rangeUsage.requestCount} · {t("成功")} {rangeUsage.successCount}
             </div>
           </div>
-          <div className="mission-panel rounded-md border border-primary/20 bg-primary/10 px-3 py-2">
+          <div className="min-w-0 border-t border-border/60 pt-3">
             <div className="text-muted-foreground">
               {isTodayOnlyRange ? t("输入 / 输出") : t("区间输入 / 输出")}
             </div>
@@ -1019,7 +1019,7 @@ function AdminUsageAnalyticsCard({
               {formatCompactTokenAmount(rangeUsage.outputTokens)}
             </div>
           </div>
-          <div className="mission-panel rounded-md border border-primary/20 bg-primary/10 px-3 py-2">
+          <div className="min-w-0 border-t border-border/60 pt-3">
             <div className="text-muted-foreground">
               {isTodayOnlyRange ? t("缓存 / 推理") : t("区间缓存 / 推理")}
             </div>
