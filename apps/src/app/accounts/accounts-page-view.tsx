@@ -946,7 +946,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
   );
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       {!isServiceReady ? (
         <Card className="glass-card mission-panel shadow-sm">
           <CardContent className="pt-6 text-sm text-muted-foreground">
@@ -1580,7 +1580,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                         />
                       </TableCell>
                       <TableCell>
-                        <QuotaOverviewCell items={quotaItems} />
+                        <QuotaOverviewCell items={quotaItems} compact />
                         <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
                           {account.quotaCapacityPrimaryWindowTokens ||
                           account.quotaCapacitySecondaryWindowTokens ? (

@@ -197,7 +197,7 @@ PatewayAI는 공식 고품질 모델 API 중계에 집중하며 Claude와 Codex 
 - 계정 인증: `chatgpt.com` 브라우저 OAuth와 Device Code 로그인, 콜백 URL 수동 붙여넣기.
 - 플랫폼 Key: 임의 또는 고정 Key, 비활성화, 삭제, 모델·추론·서비스 등급 바인딩, 사용자 그룹과 플랜 필터의 교집합 내 순환.
 - 모델 관리: Model Catalog V2를 유일한 런타임 기준으로 사용하며 builtin/custom, 3단계 및 긴 컨텍스트 가격, 계정 풀/집계 API 라우트, instructions policy, JSON preview/commit, Codex cache 내보내기를 지원.
-- 현재 builtin 카탈로그에는 11개 레코드가 있습니다. `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, GPT-5.6 세 모델, `gpt-5.5`, `gpt-image-2`, Image 2.5 변형 두 개까지 총 10개 모델이 기본 표시되며, `codex-auto-review`만 숨겨집니다.
+- 현재 builtin 카탈로그에는 12개 레코드가 있습니다. `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, GPT-5.6 세 모델, `gpt-5.5`, `gpt-image-2`, Image 2.5 변형 두 개까지 총 11개 모델이 기본 표시되며, `codex-auto-review`만 숨겨집니다.
 - `gpt-5.4`와 `gpt-5.4-mini`는 2026-08-31에 ChatGPT 로그인 방식의 Codex에서 retired되었고, `gpt-5.2`도 해당 로그인 경로에서 deprecated되었습니다. 일반 API 모델은 이 정리의 영향을 받지 않습니다. revision 9는 수정되지 않은 해당 builtin을 제거하지만 사용자 편집, 가격 tier, 기본값이 아닌 route, permission/API Key 연결은 custom 모델로 전환해 보존합니다. API Key 사용자는 같은 slug를 custom 모델로 명시적으로 추가할 수도 있습니다.
 - 집계 API: V2 라우트 기준으로 외부 upstream 생성, 편집, 잔액, 연결 테스트를 제공하며 모델은 관리자가 가져와 선택적으로 연결.
 - 플러그인 센터: `/plugins/`에서 내장 추천, 기업 비공개, 사용자 소스 marketplace와 manifest, 작업, 로그, Rhai 인터페이스를 제공.

@@ -124,6 +124,13 @@ fn pending_model_catalog_data_migration_requires_backup() {
         ["137_model_catalog_revision9"],
     )
     .expect("mark revision 9 catalog migration complete");
+    assert!(model_catalog_v2_migration_needed(Path::new(&db_path))
+        .expect("inspect pending GPT-6.1 Sol migration"));
+    conn.execute(
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,5)",
+        ["138_model_catalog_gpt61_sol"],
+    )
+    .expect("mark GPT-6.1 Sol migration complete");
     drop(conn);
 
     assert!(

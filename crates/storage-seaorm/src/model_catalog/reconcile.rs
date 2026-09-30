@@ -44,6 +44,43 @@ struct BuiltinModelSeed {
 }
 
 pub(crate) async fn reconcile_builtin_catalog(db: &DatabaseConnection) -> Result<(), DbErr> {
+    reconcile_revision9_catalog(db).await?;
+    // Revision 10 only adds GPT-6.1 Sol. Existing rows own their metadata,
+    // prices and routes; insert_missing_seed also respects custom slugs and tombstones.
+    let latest: BuiltinCatalogFixture = serde_json::from_str(include_str!(
+        "../../../core/seeds/model_catalog_v2_2026_09_30.json"
+    ))
+    .expect("revision 10 model catalog fixture must be valid");
+    let tx = db.begin().await?;
+    crate::UsersRepository::lock(&tx, "model_groups").await?;
+    let stored_revision = meta_value(&tx, "builtin_revision")
+        .await?
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or_default();
+    let max_revision = models::Entity::find()
+        .select_only()
+        .column_as(models::Column::BuiltinRevision.max(), "max_revision")
+        .filter(models::Column::Origin.eq("builtin"))
+        .filter(models::Column::UserEdited.eq(false))
+        .into_tuple::<Option<i64>>()
+        .one(&tx)
+        .await?
+        .flatten()
+        .unwrap_or_default();
+    let effective_revision = stored_revision.max(max_revision);
+    if effective_revision <= latest.revision {
+        for seed in &latest.models {
+            insert_missing_seed(&tx, &latest, seed, now_ts()).await?;
+        }
+        set_meta(&tx, "builtin_revision", &latest.revision.to_string()).await?;
+        set_meta(&tx, "fixture_sha256", &latest.source_sha256).await?;
+    } else if stored_revision < effective_revision {
+        set_meta(&tx, "builtin_revision", &effective_revision.to_string()).await?;
+    }
+    tx.commit().await
+}
+
+async fn reconcile_revision9_catalog(db: &DatabaseConnection) -> Result<(), DbErr> {
     let latest = latest_fixture();
     let previous = previous_fixture();
     let tx = db.begin().await?;
@@ -551,6 +588,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn revision10_adds_sol61_and_preserves_revision9_catalog_and_new_model_edits() {
+        let storage = schema_only().await;
+        reconcile_revision9_catalog(storage.connection())
+            .await
+            .unwrap();
+        let before = ManagedModelsRepository::list(storage.connection(), true)
+            .await
+            .unwrap();
+        reconcile_builtin_catalog(storage.connection())
+            .await
+            .unwrap();
+        let sol = model(storage.connection(), "gpt-6.1-sol").await;
+        assert_eq!(sol.builtin_revision, Some(10));
+        assert_eq!(sol.default_reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(sol.price.cached_input_microusd_per_1m, Some(100_000));
+        assert_eq!(sol.price.cache_write_microusd_per_1m, Some(2_500_000));
+        assert_eq!(sol.price_tiers[1].min_input_tokens, 272_001);
+        assert_eq!(sol.price_tiers[1].cached_input_microusd_per_1m, 200_000);
+        assert_eq!(sol.price_tiers[1].output_microusd_per_1m, 15_000_000);
+        assert_eq!(sol.routes[0].upstream_model, "gpt-6.1-sol");
+        let after: Vec<_> = ManagedModelsRepository::list(storage.connection(), true)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.slug != "gpt-6.1-sol")
+            .collect();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+        for custom in [false, true] {
+            let mut edited = model(storage.connection(), "gpt-6.1-sol").await;
+            edited.display_name = "My Sol".into();
+            edited.user_edited = true;
+            edited.enabled = false;
+            if custom {
+                edited.origin = "custom".into();
+                edited.builtin_revision = None;
+            }
+            ModelCatalogRepository::put(
+                storage.connection(),
+                CatalogModelRecord::from(edited.clone()),
+            )
+            .await
+            .unwrap();
+            set_meta(storage.connection(), "builtin_revision", "9")
+                .await
+                .unwrap();
+            reconcile_builtin_catalog(storage.connection())
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(model(storage.connection(), "gpt-6.1-sol").await).unwrap(),
+                serde_json::to_value(edited).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn fresh_catalog_seeds_all_models_and_respects_delete_tombstones() {
         let storage = SeaOrmStorage::connect(StorageBackendKind::Sqlite, "sqlite::memory:")
             .await
@@ -569,7 +665,7 @@ mod tests {
         let models = ManagedModelsRepository::list(storage.connection(), true)
             .await
             .expect("list seeded models");
-        assert_eq!(models.len(), 11);
+        assert_eq!(models.len(), 12);
         let slugs = models
             .iter()
             .map(|model| model.slug.as_str())
@@ -597,7 +693,13 @@ mod tests {
             assert_eq!(image.routes[0].upstream_model, slug);
         }
         assert!(models.iter().all(|model| {
-            model.origin == "builtin" && model.builtin_revision == Some(LATEST_REVISION)
+            model.origin == "builtin"
+                && model.builtin_revision
+                    == Some(if model.slug == "gpt-6.1-sol" {
+                        10
+                    } else {
+                        LATEST_REVISION
+                    })
         }));
 
         ManagedModelsRepository::delete(storage.connection(), "gpt-6-luna")
@@ -654,16 +756,22 @@ mod tests {
         let models = ManagedModelsRepository::list(storage.connection(), true)
             .await
             .expect("list upgraded models");
-        assert_eq!(models.len(), 11);
+        assert_eq!(models.len(), 12);
         assert!(models.iter().all(|model| {
-            model.origin != "builtin" || model.builtin_revision == Some(LATEST_REVISION)
+            model.origin != "builtin"
+                || model.builtin_revision
+                    == Some(if model.slug == "gpt-6.1-sol" {
+                        10
+                    } else {
+                        LATEST_REVISION
+                    })
         }));
         assert_eq!(
             meta_value(storage.connection(), "builtin_revision")
                 .await
                 .expect("read catalog marker")
                 .as_deref(),
-            Some("9")
+            Some("10")
         );
     }
 
@@ -956,11 +1064,11 @@ mod tests {
             .expect("read future model")
             .expect("future model exists");
         future.display_name = "Future Astra".into();
-        future.builtin_revision = Some(10);
+        future.builtin_revision = Some(11);
         ModelCatalogRepository::put(storage.connection(), future)
             .await
             .expect("simulate future catalog");
-        set_meta(storage.connection(), "builtin_revision", "10")
+        set_meta(storage.connection(), "builtin_revision", "11")
             .await
             .expect("store future marker");
         reconcile_builtin_catalog(storage.connection())
@@ -977,7 +1085,7 @@ mod tests {
                 .await
                 .expect("read future marker")
                 .as_deref(),
-            Some("10")
+            Some("11")
         );
     }
 

@@ -156,7 +156,7 @@ import {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       <div>
         <h2 className="text-xl font-bold tracking-tight">{t("个人设置")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -1356,7 +1356,7 @@ function AdminSettingsPage() {
   }
 
   return (
-    <div className="flex w-full max-w-[1120px] flex-col gap-6">
+    <div className="flex w-full max-w-[1120px] flex-col gap-3">
       <div>
         <h2 className="text-xl font-semibold">{t("系统设置")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -1373,7 +1373,7 @@ function AdminSettingsPage() {
         }}
         className="w-full"
       >
-        <TabsList variant="line" className="mb-5 flex h-11 w-full justify-start gap-1 overflow-x-auto rounded-none border-b border-border/60 p-0 no-scrollbar">
+        <TabsList variant="line" className="mb-3 flex h-10 w-full justify-start gap-1 overflow-x-auto rounded-none border-b border-border/60 p-0 no-scrollbar">
           <TabsTrigger value="general" className="h-10 shrink-0 rounded-none border-b-2 px-3 data-active:border-primary data-active:bg-transparent data-active:shadow-none">
             <SettingsIcon className="h-4 w-4" /> {t("通用")}
           </TabsTrigger>

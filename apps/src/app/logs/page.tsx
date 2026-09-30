@@ -413,7 +413,7 @@ function LogsPageContent() {
   };
 
   return (
-    <div className="animate-in space-y-5 fade-in duration-500">
+    <div className="animate-in space-y-3 fade-in duration-500">
       <RequestLogsTabContent
         t={t}
         isDirectAccountMode={isDirectAccountMode}

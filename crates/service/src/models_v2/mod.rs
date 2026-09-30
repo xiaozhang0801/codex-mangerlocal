@@ -723,6 +723,35 @@ mod tests {
     use codexmanager_core::storage::Storage;
 
     #[test]
+    fn sol61_is_available_in_managed_and_codex_text_catalogs() {
+        let storage = Storage::open_in_memory().unwrap();
+        storage.init().unwrap();
+        for catalog in [
+            models_response_with_storage(&storage).unwrap(),
+            text_generation_models_response_with_storage(&storage).unwrap(),
+        ] {
+            let sol = catalog
+                .models
+                .iter()
+                .find(|m| m.slug == "gpt-6.1-sol")
+                .unwrap();
+            assert_eq!(sol.default_reasoning_level.as_deref(), Some("medium"));
+            assert_eq!(
+                sol.supported_reasoning_levels
+                    .iter()
+                    .map(|level| level.effort.as_str())
+                    .collect::<Vec<_>>(),
+                ["low", "medium", "high", "xhigh", "max"]
+            );
+            assert_eq!(sol.input_modalities, ["text", "image"]);
+            assert_eq!(sol.extra["api_context_window"], 1_050_000);
+            assert_eq!(sol.extra["max_output_tokens"], 128_000);
+            assert_eq!(sol.service_tiers.len(), 1);
+            assert_eq!(sol.service_tiers[0].id, "priority");
+        }
+    }
+
+    #[test]
     fn policy_catalog_slug_normalizes_reserve_alias_and_whitespace() {
         assert_eq!(policy_catalog_slug(" GPT-RESERVE "), "gpt-6-luna");
         assert_eq!(policy_catalog_slug(" gpt-5.4 "), "gpt-5.4");

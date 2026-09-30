@@ -45,7 +45,7 @@ export function PageWorkspace({ children, className }: PageWorkspaceProps) {
   return (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-[1680px] flex-col gap-4",
+        "mx-auto flex w-full max-w-[1680px] flex-col gap-2.5",
         className,
       )}
     >
@@ -65,13 +65,13 @@ export function PageHeader({
   return (
     <section
       className={cn(
-        "flex flex-col gap-3 border-b border-border/60 pb-4 lg:flex-row lg:items-end lg:justify-between",
+        "flex flex-col gap-1.5 border-b border-border/60 pb-2 lg:flex-row lg:items-center lg:justify-between",
         className,
       )}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <h2 className="min-w-0 text-xl font-semibold text-foreground">
+          <h2 className="min-w-0 text-lg font-semibold text-foreground">
             {title}
           </h2>
           {eyebrow ? (

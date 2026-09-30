@@ -77,36 +77,36 @@ export default function PlatformModePage() {
     : undefined;
 
   return (
-    <main className="flex w-full flex-col gap-5">
+    <main className="flex w-full flex-col gap-2.5">
       <Card className="routing-command-card glass-card overflow-hidden py-0 shadow-sm">
-        <CardContent className="flex min-h-[80px] items-center gap-3 px-4 py-3 xl:min-h-[92px] xl:gap-4 xl:px-5 xl:py-4">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary xl:size-10">
+        <CardContent className="flex min-h-[56px] items-center gap-2.5 px-4 py-2 xl:px-5">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10 text-primary">
             <TerminalSquare className="size-[18px] xl:size-5" />
           </div>
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold leading-tight tracking-[-0.02em] text-foreground">
+            <h1 className="text-lg font-semibold leading-tight text-foreground">
               {t("Codex 接入方式")}
             </h1>
-            <p className="mt-1 text-sm leading-5 text-muted-foreground xl:leading-6">
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
               {t("选择 Codex 直接连接 OpenAI、直连聚合 API，或通过 CodexManager 进行转发与管理。")}
             </p>
           </div>
         </CardContent>
       </Card>
 
-      <Alert className="border-amber-500/30 bg-amber-500/10">
+      <Alert className="border-amber-500/30 bg-amber-500/10 lg:flex lg:items-center lg:gap-2">
         <AlertTriangle className="size-4" />
         <AlertTitle>{t("写入位置说明")}</AlertTitle>
-        <AlertDescription>
+        <AlertDescription className="text-xs">
           {t("这里修改的是 codexmanager-service 所在机器的 Codex 配置目录，不一定是当前浏览器所在机器。")}
         </AlertDescription>
       </Alert>
 
       {state.mode === "web-gateway" ? (
-        <Alert className="border-sky-500/30 bg-sky-500/10">
+        <Alert className="border-sky-500/30 bg-sky-500/10 lg:flex lg:items-center lg:gap-2">
           <AlertTriangle className="size-4" />
           <AlertTitle>{t("Web / Docker 模式")}</AlertTitle>
-          <AlertDescription>
+          <AlertDescription className="text-xs">
             {t("当前页面会通过 /api/rpc 写入 codexmanager-service 进程可访问的 Codex profile；Docker 部署时请确认 CODEX_HOME 或挂载卷指向你希望 Codex CLI 使用的配置目录。")}
           </AlertDescription>
         </Alert>
@@ -137,7 +137,7 @@ export default function PlatformModePage() {
         onEnabledChange={state.setReloadAfterSwitch}
       />
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-2.5 lg:grid-cols-3">
         <CurrentModeCard
           t={t}
           status={state.status}

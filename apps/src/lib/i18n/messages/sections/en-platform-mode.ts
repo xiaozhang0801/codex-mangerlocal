@@ -183,8 +183,8 @@ export const EN_PLATFORM_MODE_MESSAGES: MessageCatalog = {
   "请选择聚合 API": "Select an aggregated API",
   "所选聚合 API": "Selected aggregated API",
   "由聚合 API 提供": "Provided by the aggregated API",
-  "该条目的模型覆盖仅在 CodexManager 网关中生效；直连时 Codex 会发送当前选择的模型。":
-    "This entry's model override only applies through the CodexManager gateway. In direct mode, Codex sends the currently selected model.",
+  "该条目的模型覆盖会作为直连默认模型；网关模式中用于上游重写。":
+    "This entry's model override becomes the direct-mode default model and rewrites the upstream model in gateway mode.",
   "直连 base_url：{baseUrl}": "Direct base_url: {baseUrl}",
   "重新应用直连聚合 API": "Reapply direct aggregated API",
   "切换为直连聚合 API": "Switch to direct aggregated API",

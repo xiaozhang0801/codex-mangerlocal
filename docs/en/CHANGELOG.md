@@ -5,6 +5,20 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-30
+
+### Added
+
+- Added built-in `gpt-6.1-sol` in model catalog revision 10 with its official description, reasoning levels, and short/long-context input, cached-input, cache-write, and output prices. Custom models, user edits, and deletion tombstones are preserved.
+
+### Changed
+
+- Refined desktop navigation, settings, dashboard, platform-mode, and model-management layouts for denser scanning and clearer state presentation across supported locales.
+
+### Fixed
+
+- Improved streaming terminal-delivery tracking and bridge diagnostics so responses that already delivered a terminal event are distinguished from upstream-incomplete or client-delivery failures.
+
 ## [0.6.2] - 2026-09-25
 
 ### Added
@@ -574,7 +588,8 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Changed
 - The operation area of ​​the account management page is integrated into a single "Account Operation" drop-down menu, replacing the stack of multiple buttons on the right, making the interface more concise.
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.3
 [0.6.2]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.2
 [0.6.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.0

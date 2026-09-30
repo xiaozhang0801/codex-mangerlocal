@@ -121,9 +121,9 @@ function routeStrategyLabel(
 
 function CatalogStatusFact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-border/60 bg-background/40 p-3">
+    <div className="min-w-0 border-l border-border/60 pl-3">
       <p className="text-[11px] text-muted-foreground">{label}</p>
-      <p className="mt-1 break-words text-sm font-semibold text-foreground">
+      <p className="mt-0.5 break-words text-sm font-semibold text-foreground">
         {value}
       </p>
     </div>
@@ -518,13 +518,13 @@ export default function ModelsPage() {
 
         {isAdminMode ? (
           <Card className="glass-card">
-            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
                   <Cable className="h-4 w-4 text-primary" />
                   {t("当前 Codex 模型来源")}
                 </CardTitle>
-                <CardDescription className="mt-1.5">
+                <CardDescription className="mt-1">
                   {catalogImpactDescription}
                 </CardDescription>
               </div>
@@ -546,7 +546,7 @@ export default function ModelsPage() {
           </Card>
         ) : null}
 
-        <section className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+        <section className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
           <MetricCard title={t("总数")} value={stats.total} icon={Database} tone="blue" />
           <MetricCard title={t("已启用")} value={stats.enabled} icon={Boxes} tone="emerald" />
           <MetricCard title={t("内置模型")} value={stats.builtin} icon={Database} tone="violet" />

@@ -141,6 +141,7 @@ async fn respond_passthrough_collector_stream(
         UpstreamResponseBridgeResult {
             usage: collector.usage,
             stream_terminal_seen: collector.saw_terminal,
+            stream_terminal_delivered: collector.terminal_delivered,
             stream_terminal_error: collector.terminal_error,
             delivery_error,
             upstream_error_hint: collector.upstream_error_hint,
@@ -873,6 +874,7 @@ pub(crate) async fn respond_with_stream_upstream(
                     UpstreamResponseBridgeResult {
                         usage: collector.usage,
                         stream_terminal_seen: collector.saw_terminal,
+                        stream_terminal_delivered: collector.terminal_delivered,
                         stream_terminal_error: collector.terminal_error,
                         delivery_error,
                         upstream_error_hint: with_upstream_debug_suffix(

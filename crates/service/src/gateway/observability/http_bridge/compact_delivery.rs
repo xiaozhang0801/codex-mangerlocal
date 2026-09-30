@@ -34,6 +34,7 @@ async fn respond_synthesized_compact_error_body(
     UpstreamResponseBridgeResult {
         usage,
         stream_terminal_seen: true,
+        stream_terminal_delivered: false,
         stream_terminal_error: None,
         delivery_error,
         upstream_error_hint: Some(message),
@@ -121,6 +122,7 @@ pub(super) async fn respond_compact_success_body(
         UpstreamResponseBridgeResult {
             usage,
             stream_terminal_seen: true,
+            stream_terminal_delivered: false,
             stream_terminal_error: None,
             delivery_error,
             upstream_error_hint: None,

@@ -319,6 +319,7 @@ fn finalize_bridge_result(
             path,
             is_stream: client_is_stream,
             stream_terminal_seen: bridge.stream_terminal_seen,
+            stream_terminal_delivered: bridge.stream_terminal_delivered,
             stream_terminal_error: bridge.stream_terminal_error.as_deref(),
             delivery_error: bridge.delivery_error.as_deref(),
             output_text_len: bridge_output_text_len,

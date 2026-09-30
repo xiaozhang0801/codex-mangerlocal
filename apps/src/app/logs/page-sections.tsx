@@ -147,7 +147,7 @@ export function RequestLogsTabContent({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {isDirectAccountMode ? (
         <div className="flex gap-3 rounded-xl border border-primary/25 bg-primary/8 px-4 py-3 text-sm">
           <div className="flex min-w-0 items-start gap-3">
@@ -169,7 +169,7 @@ export function RequestLogsTabContent({
           <div className={cn("grid", filtersExpanded ? "xl:grid-cols-[minmax(0,1fr)_390px]" : "")}>
             <div
               className={cn(
-                "space-y-4 p-4",
+                "space-y-3 p-3",
                 filtersExpanded ? "xl:border-r xl:border-border/50" : "",
               )}
             >
@@ -210,7 +210,7 @@ export function RequestLogsTabContent({
                 </div>
               </div>
 
-              <div className="grid gap-3 2xl:grid-cols-[minmax(320px,1fr)_auto] 2xl:items-center">
+              <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_auto] lg:items-center">
                 <div className="relative min-w-0">
                   <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
@@ -221,7 +221,7 @@ export function RequestLogsTabContent({
                   />
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 2xl:justify-end">
+                <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                   <span className="inline-flex h-9 items-center rounded-xl border border-border/60 bg-background/70 px-3 text-xs font-medium text-muted-foreground">
                     {currentFilterLabel}
                   </span>

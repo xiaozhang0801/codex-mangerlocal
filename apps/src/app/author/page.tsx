@@ -327,15 +327,15 @@ export default function AuthorPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-2">
+    <div className="space-y-3">
+      <div className="flex flex-col gap-1">
         <div className="flex items-center gap-2 text-primary">
           <Sparkles className="h-4 w-4" />
           <span className="text-xs font-medium uppercase tracking-[0.24em]">
             {t("赞助与推荐")}
           </span>
         </div>
-        <div className="space-y-2">
+        <div className="space-y-1">
           <h2 className="text-xl font-bold tracking-tight">{t("赞助与推荐")}</h2>
           <p className="text-sm leading-6 text-muted-foreground">
             {t("这里集中展示 README 里的赞助信息、推荐服务，以及作者联系入口。")}

@@ -183,8 +183,8 @@ export const KO_PLATFORM_MODE_MESSAGES: MessageCatalog = {
   "请选择聚合 API": "집계 API를 선택하세요",
   "所选聚合 API": "선택한 집계 API",
   "由聚合 API 提供": "집계 API에서 제공",
-  "该条目的模型覆盖仅在 CodexManager 网关中生效；直连时 Codex 会发送当前选择的模型。":
-    "이 항목의 모델 재정의는 CodexManager 게이트웨이에서만 적용됩니다. 직접 연결 시 Codex는 현재 선택한 모델을 전송합니다.",
+  "该条目的模型覆盖会作为直连默认模型；网关模式中用于上游重写。":
+    "이 항목의 모델 재정의는 직접 연결 모드의 기본 모델이 되며 게이트웨이 모드에서는 업스트림 모델을 재작성합니다.",
   "直连 base_url：{baseUrl}": "직접 연결 base_url: {baseUrl}",
   "重新应用直连聚合 API": "집계 API 직접 연결 다시 적용",
   "切换为直连聚合 API": "집계 API 직접 연결로 전환",

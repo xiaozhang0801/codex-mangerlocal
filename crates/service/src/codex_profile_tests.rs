@@ -1216,6 +1216,39 @@ fn direct_config_only_removes_manager_owned_catalog() {
 }
 
 #[test]
+fn direct_mode_preserves_previous_catalog_from_config_and_state() {
+    let dir = temp_profile("previous-direct-catalog");
+    fs::create_dir_all(&dir).expect("create profile dir");
+    let config = "model_catalog_json = \"C:/user-models.json\"\n";
+    assert_eq!(
+        previous_model_catalog_for_direct(&dir, Some(config)).expect("read config catalog"),
+        Some("C:/user-models.json".to_string())
+    );
+
+    let state = ManagedState {
+        profile_dir: profile_key(&dir),
+        mode: CodexProfileMode::DirectAggregate,
+        account_id: None,
+        api_key_id: None,
+        aggregate_api_id: Some("aggregate".to_string()),
+        gateway_base_url: None,
+        aggregate_api_base_url: Some("https://aggregate.example.test/v1".to_string()),
+        supports_websockets: Some(false),
+        provider_id: DIRECT_AGGREGATE_PROVIDER_ID.to_string(),
+        previous_model_catalog_json: Some("C:/user-models.json".to_string()),
+        managed_model_slugs: vec!["aggregate-model".to_string()],
+        updated_at: now_ts(),
+    };
+    write_managed_state(&dir, &state).expect("write direct aggregate state");
+    assert_eq!(
+        previous_model_catalog_for_direct(&dir, Some("model_catalog_json = \"other.json\"\n"))
+            .expect("read state catalog"),
+        Some("C:/user-models.json".to_string())
+    );
+    cleanup_profile(&dir);
+}
+
+#[test]
 fn invalid_toml_is_rejected() {
     assert!(patch_config_for_gateway(
         Some("bad = [".to_string()),
@@ -1461,6 +1494,7 @@ async fn direct_aggregate_profile_writes_upstream_provider_and_tracks_selection(
     aggregate.url = "https://aggregate.example.test/openai".to_string();
     aggregate.action = Some("/v1/responses".to_string());
     aggregate.user_agent = Some("Profile-Aggregate/2.0".to_string());
+    aggregate.model_override = Some("aggregate-model".to_string());
     storage
         .insert_aggregate_api(&aggregate)
         .expect("insert aggregate api");
@@ -1536,6 +1570,14 @@ async fn direct_aggregate_profile_writes_upstream_provider_and_tracks_selection(
         provider_http_header(provider, "User-Agent"),
         Some("Profile-Aggregate/2.0")
     );
+    assert_eq!(
+        config.get("model").and_then(Item::as_str),
+        Some("aggregate-model")
+    );
+    assert!(config
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .is_some());
 
     let marker = read_marker(
         &managed_profile_paths(&dir)

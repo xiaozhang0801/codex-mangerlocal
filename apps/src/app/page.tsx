@@ -836,7 +836,7 @@ function AdminUsageAnalyticsCard({
   }, [summary?.dailyUsage.length, summary?.rangeEndTs, summary?.rangeStartTs]);
 
   if (isLoading) {
-    return <Skeleton className="h-[420px] w-full rounded-xl" />;
+    return <Skeleton className="h-[320px] w-full rounded-lg" />;
   }
   if (isError) {
     return (
@@ -895,21 +895,18 @@ function AdminUsageAnalyticsCard({
       id="admin-usage-analytics"
       className="dashboard-analytics-card dashboard-primary-panel glass-card mission-panel scroll-mt-4 overflow-hidden shadow-sm"
     >
-      <CardHeader className="flex flex-col gap-4">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div>
+      <CardHeader className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <CardTitle className="flex items-center gap-2 text-base font-semibold">
               <LineChart className="h-4 w-4 text-primary" />
               {t("管理员用量分析")}
             </CardTitle>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("按模型查看 token 和请求趋势，支持小时粒度")}
-            </p>
-            <div className="mt-2 text-xs text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {t("当前区间")} {formatShortDateRange(summary.rangeStartTs, summary.rangeEndTs, locale)}
-            </div>
+            </span>
           </div>
-          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+          <div className="flex flex-wrap items-center gap-2 md:justify-end">
             <div className="flex flex-wrap items-center gap-2">
               <Select
                 value={rangePreset}
@@ -917,7 +914,7 @@ function AdminUsageAnalyticsCard({
                   onRangePresetChange(value as AdminUsageRangePreset)
                 }
               >
-                <SelectTrigger className="w-[132px] bg-background/40">
+                <SelectTrigger className="h-8 w-[120px] bg-background/40">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -936,13 +933,13 @@ function AdminUsageAnalyticsCard({
                 <>
                   <Input
                     type="date"
-                    className="w-[144px] bg-background/40 text-xs"
+                    className="h-8 w-[144px] bg-background/40 text-xs"
                     value={rangeStartInput}
                     onChange={(event) => onRangeStartInputChange(event.target.value)}
                   />
                   <Input
                     type="date"
-                    className="w-[144px] bg-background/40 text-xs"
+                    className="h-8 w-[144px] bg-background/40 text-xs"
                     value={rangeEndInput}
                     onChange={(event) => onRangeEndInputChange(event.target.value)}
                   />
@@ -974,7 +971,7 @@ function AdminUsageAnalyticsCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2">
         {summary.seriesUsage.length > 0 ? (
           <AdminUsageTrendChart
             summary={summary}
@@ -1125,7 +1122,7 @@ function AdminDashboard() {
     })();
 
   return (
-    <div className="space-y-5 animate-in fade-in duration-500 xl:space-y-7">
+    <div className="space-y-2 animate-in fade-in duration-500">
       <DashboardGatewayStatus
         connected={isServiceReady}
         directMode={isDirectAccountMode}

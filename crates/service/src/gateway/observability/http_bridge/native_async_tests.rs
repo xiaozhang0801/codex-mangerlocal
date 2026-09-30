@@ -75,6 +75,7 @@ fn native_disconnect_preserves_usage_from_forwarded_responses_frame() {
                 .as_deref()
                 .unwrap()
                 .contains("broken pipe"));
+            assert!(bridge.stream_terminal_delivered);
             assert_eq!(bridge.usage.input_tokens, Some(11));
             assert_eq!(bridge.usage.output_tokens, Some(7));
             assert_eq!(bridge.usage.total_tokens, Some(18));

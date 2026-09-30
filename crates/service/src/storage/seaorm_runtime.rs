@@ -173,8 +173,9 @@ mod tests {
                 .map_err(|error| error.to_string())
         })
         .unwrap();
-        assert_eq!(catalog_slugs.len(), 11);
+        assert_eq!(catalog_slugs.len(), 12);
         for slug in [
+            "gpt-6.1-sol",
             "gpt-6-sol",
             "gpt-6-luna",
             "gpt-image-2.5-sunburst",

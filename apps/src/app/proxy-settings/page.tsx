@@ -11,7 +11,7 @@ export default function ProxySettingsPage() {
   const isPageActive = useDesktopPageActive("/proxy-settings/");
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       <div>
         <h2 className="text-xl font-bold tracking-tight">{t("代理设置")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">

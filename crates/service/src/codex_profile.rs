@@ -370,6 +370,7 @@ struct DirectAggregateConfig {
     provider_name: String,
     auth: DirectAggregateAuth,
     user_agent: Option<String>,
+    model_override: Option<String>,
 }
 
 pub(crate) fn get_status(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
@@ -541,6 +542,12 @@ fn direct_aggregate_config(api: &AggregateApi) -> Result<DirectAggregateConfig, 
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
+        model_override: api
+            .model_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -677,7 +684,8 @@ pub(crate) async fn apply_direct_account_async(
         let auth_json = build_direct_auth_json(&account, &token)?;
         let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
         let paths = managed_profile_paths(&profile_dir)?;
-        let previous_model_catalog_json = previous_model_catalog_for_direct(&profile_dir);
+        let previous_model_catalog_json =
+            previous_model_catalog_for_direct(&profile_dir, current_config.as_deref())?;
         let config_toml = patch_config_for_direct(
             current_config,
             &paths.gateway_model_catalog_path,
@@ -727,6 +735,7 @@ pub(crate) async fn apply_direct_aggregate_async(
 ) -> Result<CodexProfileStatus, String> {
     let aggregate_api_id =
         normalize_required(aggregate_api_id, "missing aggregateApiId")?.to_owned();
+    let aggregate_api_id_for_load = aggregate_api_id.clone();
     let codex_home = codex_home.map(str::to_owned);
     let lease = profile_mutation_lease().await;
     let (
@@ -744,7 +753,7 @@ pub(crate) async fn apply_direct_aggregate_async(
         let storage = open_storage()?;
         let account_storage = crate::account::remote_storage::AccountStorage::new(&storage);
         let aggregate_api = account_storage
-            .find_aggregate_api_with_secrets_by_id(&aggregate_api_id)
+            .find_aggregate_api_with_secrets_by_id(&aggregate_api_id_for_load)
             .map_err(|err| format!("read aggregate api failed: {err}"))?
             .ok_or_else(|| "aggregate api not found".to_string())?;
         if !aggregate_api
@@ -765,7 +774,8 @@ pub(crate) async fn apply_direct_aggregate_async(
             .ok_or_else(|| "aggregate api secret not found".to_string())?;
         ensure_backup(&profile_dir)?;
         let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
-        let previous_model_catalog_json = previous_model_catalog_for_direct(&profile_dir);
+        let previous_model_catalog_json =
+            previous_model_catalog_for_direct(&profile_dir, current_config.as_deref())?;
         let paths = managed_profile_paths(&profile_dir)?;
         Ok((
             profile_dir,
@@ -779,6 +789,74 @@ pub(crate) async fn apply_direct_aggregate_async(
     })
     .await?;
 
+    // Direct mode has no gateway to translate model names. Discover and associate the
+    // upstream models before writing the profile so Codex receives a usable catalog.
+    let (upstream_models, display_names) =
+        if let Some(model_override) = aggregate_config.model_override.as_deref() {
+            // An explicit override is already the provider's canonical model name. This also
+            // keeps providers without a public /models endpoint usable in direct mode.
+            (
+                vec![model_override.to_string()],
+                std::collections::BTreeMap::new(),
+            )
+        } else {
+            let fetched_models =
+                crate::aggregate_api::fetch_aggregate_api_models_async(&aggregate_api_id)
+                    .await
+                    .map_err(|err| format!("fetch aggregate models failed: {err}"))?;
+            (
+                fetched_models
+                    .items
+                    .iter()
+                    .map(|item| item.upstream_model.clone())
+                    .collect::<Vec<_>>(),
+                fetched_models
+                    .items
+                    .iter()
+                    .filter_map(|item| {
+                        item.display_name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(|value| (item.upstream_model.clone(), value.to_string()))
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            )
+        };
+    if upstream_models.is_empty() {
+        return Err("aggregate api returned no models; configure a default model or check its /models endpoint".to_string());
+    }
+    let association_models = upstream_models.clone();
+    let association_api_id = aggregate_api_id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::aggregate_api::associate_aggregate_api_models(
+            &association_api_id,
+            association_models,
+            display_names,
+        )
+    })
+    .await
+    .map_err(|err| format!("associate aggregate models task failed: {err}"))??;
+    let storage = profile_phase(|| Ok(open_storage()?.shared_handle())).await?;
+    let (catalog_content, canonical_model_slugs) =
+        crate::codex_model_catalog::selected_managed_model_catalog_content_async(
+            &storage,
+            upstream_models,
+        )
+        .await?;
+    drop(storage);
+    let default_model = aggregate_config
+        .model_override
+        .as_deref()
+        .and_then(|override_model| {
+            canonical_model_slugs
+                .iter()
+                .find(|model| model.eq_ignore_ascii_case(override_model))
+                .cloned()
+        })
+        .or_else(|| canonical_model_slugs.first().cloned())
+        .ok_or_else(|| "aggregate api model catalog is empty".to_string())?;
+
     profile_commit(&lease, move || {
         let auth_json = build_gateway_auth_json(&secret)?;
         let config_toml = patch_config_for_direct_aggregate(
@@ -787,7 +865,9 @@ pub(crate) async fn apply_direct_aggregate_async(
             &secret,
             &paths.gateway_model_catalog_path,
             previous_model_catalog_json.as_deref(),
+            &default_model,
         )?;
+        write_atomic(&paths.gateway_model_catalog_path, &catalog_content)?;
         write_profile_files(
             &profile_dir,
             &auth_json,
@@ -802,8 +882,8 @@ pub(crate) async fn apply_direct_aggregate_async(
                 aggregate_api_base_url: Some(aggregate_config.base_url),
                 supports_websockets: Some(false),
                 provider_id: DIRECT_AGGREGATE_PROVIDER_ID.to_string(),
-                previous_model_catalog_json: None,
-                managed_model_slugs: Vec::new(),
+                previous_model_catalog_json,
+                managed_model_slugs: canonical_model_slugs,
                 updated_at: now_ts(),
             },
         )?;
@@ -2760,24 +2840,38 @@ fn build_gateway_auth_json(api_key: &str) -> Result<String, String> {
     .map_err(|err| format!("serialize auth.json failed: {err}"))
 }
 
-fn previous_model_catalog_for_direct(profile_dir: &Path) -> Option<String> {
-    load_state()
-        .filter(|state| {
-            state.profile_dir == profile_key(profile_dir)
-                && matches!(state.mode, CodexProfileMode::Gateway)
-        })
-        .and_then(|state| state.previous_model_catalog_json)
+fn previous_model_catalog_for_direct(
+    profile_dir: &Path,
+    config_toml: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(state) = load_state().filter(|state| state.profile_dir == profile_key(profile_dir))
+    {
+        if matches!(
+            state.mode,
+            CodexProfileMode::Gateway | CodexProfileMode::DirectAggregate
+        ) {
+            return Ok(state.previous_model_catalog_json);
+        }
+    }
+    let doc = parse_config(config_toml.unwrap_or(""))?;
+    Ok(doc
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .map(ToString::to_string))
 }
 
 fn previous_model_catalog_for_gateway(
     profile_dir: &Path,
     config_toml: Option<&str>,
 ) -> Result<Option<String>, String> {
-    if let Some(state) = load_state().filter(|state| {
-        state.profile_dir == profile_key(profile_dir)
-            && matches!(state.mode, CodexProfileMode::Gateway)
-    }) {
-        return Ok(state.previous_model_catalog_json);
+    if let Some(state) = load_state().filter(|state| state.profile_dir == profile_key(profile_dir))
+    {
+        if matches!(
+            state.mode,
+            CodexProfileMode::Gateway | CodexProfileMode::DirectAggregate
+        ) {
+            return Ok(state.previous_model_catalog_json);
+        }
     }
     let doc = parse_config(config_toml.unwrap_or(""))?;
     Ok(doc
@@ -2833,6 +2927,7 @@ fn patch_config_for_direct_aggregate(
     secret: &str,
     managed_catalog_path: &Path,
     previous_model_catalog_json: Option<&str>,
+    default_model: &str,
 ) -> Result<String, String> {
     let restored = patch_config_to_restore_previous_catalog(
         content,
@@ -2842,6 +2937,12 @@ fn patch_config_for_direct_aggregate(
     let mut doc = parse_config(&restored)?;
     doc.as_table_mut()
         .insert("model_provider", toml_value(DIRECT_AGGREGATE_PROVIDER_ID));
+    doc.as_table_mut().insert(
+        "model_catalog_json",
+        toml_value(managed_catalog_path.to_string_lossy().as_ref()),
+    );
+    doc.as_table_mut()
+        .insert("model", toml_value(default_model));
     if doc.as_table().get("model_providers").is_none() {
         doc.as_table_mut()
             .insert("model_providers", Item::Table(Table::new()));

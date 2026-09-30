@@ -1,8 +1,9 @@
 use super::{
-    classify_upstream_stream_read_error, mark_first_response_ms, stream_idle_timed_out,
-    stream_idle_timeout_message, stream_reader_disconnected_message, stream_wait_timeout,
-    upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex, OpenAIResponsesEvent,
-    OpenAIResponsesOutputTextState, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
+    classify_upstream_stream_read_error, mark_first_response_ms, mark_terminal_delivered,
+    stream_idle_timed_out, stream_idle_timeout_message, stream_reader_disconnected_message,
+    stream_wait_timeout, upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex,
+    OpenAIResponsesEvent, OpenAIResponsesOutputTextState, PassthroughSseCollector, Read,
+    SseKeepAliveFrame, SseTerminal,
 };
 use crate::gateway::upstream::attempt_flow::transport::runtime::upstream_runtime;
 use crate::gateway::upstream::{GatewayByteStream, GatewayByteStreamItem, GatewayStreamResponse};
@@ -224,7 +225,9 @@ impl OpenAIResponsesPassthroughSseReader {
                 self.last_upstream_activity = Instant::now();
                 mark_first_response_ms(&self.usage_collector, self.request_started_at);
                 self.drain_sidecar_events();
-                Ok(bytes.to_vec())
+                let bytes = bytes.to_vec();
+                mark_terminal_delivered(&self.usage_collector, &bytes);
+                Ok(bytes)
             }
             Ok(GatewayByteStreamItem::Eof) => {
                 self.finish_sidecar().await;

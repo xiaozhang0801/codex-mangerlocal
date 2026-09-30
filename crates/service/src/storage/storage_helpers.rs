@@ -30,6 +30,7 @@ const MODEL_CATALOG_V2_MIGRATION: &str = "112_model_catalog_v2";
 const MODEL_BILLING_V2_HARDENING_MIGRATION: &str = "113_model_billing_v2_hardening";
 const MODEL_CATALOG_GPT56_PRICES_MIGRATION: &str = "114_model_catalog_gpt56_prices";
 const MODEL_CATALOG_REVISION9_MIGRATION: &str = "137_model_catalog_revision9";
+const MODEL_CATALOG_REVISION10_MIGRATION: &str = "138_model_catalog_gpt61_sol";
 
 struct ModelCatalogMigrationLock {
     path: PathBuf,
@@ -671,6 +672,7 @@ fn model_catalog_v2_migration_needed(db_path: &Path) -> Result<bool, String> {
         MODEL_BILLING_V2_HARDENING_MIGRATION,
         MODEL_CATALOG_GPT56_PRICES_MIGRATION,
         MODEL_CATALOG_REVISION9_MIGRATION,
+        MODEL_CATALOG_REVISION10_MIGRATION,
     ] {
         let applied = conn
             .query_row(

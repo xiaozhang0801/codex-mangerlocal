@@ -227,7 +227,7 @@ export function Sidebar() {
       />
       <div
         className={cn(
-          "flex h-[64px] shrink-0 items-center border-b border-border/55",
+          "flex h-[50px] shrink-0 items-center border-b border-border/55",
           isSidebarOpen ? "px-3.5" : "px-2 xl:px-2.5"
         )}
       >

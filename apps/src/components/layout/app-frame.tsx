@@ -64,7 +64,7 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
           className="flex h-full w-full flex-col"
         >
           <Header />
-          <main className="relative min-w-0 flex-1 overflow-y-auto px-4 pb-7 pt-5 no-scrollbar lg:px-6 lg:pb-9 lg:pt-6">
+          <main className="relative min-w-0 flex-1 overflow-y-auto px-4 pb-5 pt-2 no-scrollbar lg:px-6 lg:pb-6 lg:pt-3">
             <RouteTransitionOverlay />
             <PageKeepAliveViewport initialChildren={children} />
           </main>

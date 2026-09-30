@@ -67,11 +67,11 @@ function ModeFact({ label, value }: { label: string; value: string }) {
         ? "text-[0.75rem] leading-snug"
         : "text-sm";
   return (
-    <div className="min-w-0 rounded-xl border border-border/60 bg-background/35 p-3">
-      <p className="min-w-0 text-[11px] text-muted-foreground">{label}</p>
+    <div className="flex min-w-0 items-center justify-between gap-1.5 rounded-md border border-border/60 bg-background/35 px-2.5 py-1.5">
+      <p className="shrink-0 text-[11px] text-muted-foreground">{label}</p>
       <p
         className={cn(
-          "mt-1 block min-w-0 max-w-full break-all font-semibold [overflow-wrap:anywhere]",
+          "min-w-0 truncate text-right font-semibold",
           valueSizeClass,
         )}
         title={displayValue}
@@ -166,9 +166,15 @@ function ConnectionPreview({
     ],
   ];
   return (
-    <div className="grid gap-2 rounded-xl border border-border/60 bg-muted/20 p-3">
-      <p className="text-xs font-semibold text-foreground">{t("应用后")}</p>
-      <dl className="grid gap-1.5 text-xs">
+    <details className="group rounded-md border border-border/60 bg-muted/20">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2.5 py-1.5 text-xs text-foreground">
+        <span className="shrink-0 font-semibold">{t("应用后")}</span>
+        <span className="min-w-0 flex-1 truncate text-muted-foreground" title={`${connection} · ${route}`}>
+          {connection} · {route}
+        </span>
+        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+      </summary>
+      <dl className="grid gap-1 border-t border-border/60 p-2.5 text-xs">
         {facts.map(([label, value]) => (
           <div
             key={label}
@@ -181,7 +187,7 @@ function ConnectionPreview({
           </div>
         ))}
       </dl>
-    </div>
+    </details>
   );
 }
 
@@ -233,8 +239,8 @@ export function ReloadAfterSwitchOption({
   onEnabledChange: (enabled: boolean) => void;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-background/45 p-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="grid gap-1">
+    <div className="flex flex-col gap-2 rounded-md border border-border/70 bg-background/45 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="grid gap-0.5">
         <Label htmlFor="reload-codex-after-switch">
           {t("切换后重载 Codex 后台")}
         </Label>
@@ -315,16 +321,16 @@ export function CurrentModeCard({
         ? t("CodexManager 不记录")
         : "-";
   return (
-    <Card className="overflow-hidden border-primary/20 bg-primary/5 shadow-sm lg:col-span-2 xl:col-span-1">
-      <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between xl:flex-col 2xl:flex-row">
+    <Card className="overflow-hidden border-primary/20 bg-primary/5 shadow-sm lg:col-span-3">
+      <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <CardTitle className="flex flex-wrap items-center gap-2 text-xl">
+          <CardTitle className="flex flex-wrap items-center gap-2 text-base">
             {t("当前 Codex 接入")}
             <Badge variant={isGatewayActive ? "default" : "secondary"}>
               {connection}
             </Badge>
           </CardTitle>
-          <CardDescription className="mt-2 text-sm">{modeDescription}</CardDescription>
+          <CardDescription className="mt-0.5 text-xs">{modeDescription}</CardDescription>
         </div>
         <Button
           type="button"
@@ -340,7 +346,7 @@ export function CurrentModeCard({
           {t("刷新状态")}
         </Button>
       </CardHeader>
-      <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-1 2xl:grid-cols-2">
+      <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <ModeFact label={t("Codex profile")} value={codexHome || "-"} />
         <ModeFact label={t("当前账号")} value={activeAccountValue} />
         <ModeFact label={t("当前平台 Key")} value={activeKeyValue} />
@@ -396,15 +402,18 @@ export function DirectAggregateCard({
           <CardTitle>{t("直连聚合 API")}</CardTitle>
           {isDirectAggregateActive ? <Badge>{t("正在使用")}</Badge> : null}
         </div>
-        <CardDescription>
+        <CardDescription
+          className="line-clamp-2 text-xs leading-4"
+          title={t("Codex 直接请求所选聚合 API，不经过 CodexManager 网关；切换时会自动写入对应的 Responses base_url 与认证配置。")}
+        >
           {t(
             "Codex 直接请求所选聚合 API，不经过 CodexManager 网关；切换时会自动写入对应的 Responses base_url 与认证配置。",
           )}
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-2.5">
         {candidates.length === 0 && !isLoading ? (
-          <div className="grid gap-3 rounded-xl border border-dashed border-border/70 bg-muted/25 p-4 text-sm text-muted-foreground">
+          <div className="grid gap-2 rounded-md border border-dashed border-border/70 bg-muted/25 p-2.5 text-sm text-muted-foreground">
             <p>
               {t(
                 "没有可直连的聚合 API；仅支持 active 的 Codex / Compatible Responses API-key 条目。",
@@ -457,7 +466,7 @@ export function DirectAggregateCard({
             </Select>
             <p className="text-xs text-muted-foreground">
               {selectedAggregateApi?.modelOverride
-                ? t("该条目的模型覆盖仅在 CodexManager 网关中生效；直连时 Codex 会发送当前选择的模型。")
+                ? t("该条目的模型覆盖会作为直连默认模型；网关模式中用于上游重写。")
                 : t("直连 base_url：{baseUrl}", {
                     baseUrl: selectedAggregateApi?.baseUrl || "-",
                   })}
@@ -528,15 +537,18 @@ export function DirectAccountCard({
           <CardTitle>{t("直接连接 OpenAI")}</CardTitle>
           {isDirectActive ? <Badge>{t("正在使用")}</Badge> : null}
         </div>
-        <CardDescription>
+        <CardDescription
+          className="line-clamp-2 text-xs leading-4"
+          title={t("直连 OpenAI 官方后端，不经过 CodexManager 网关；本机 Codex 的直连请求不会写入网关日志，但仪表盘仍会展示已记录的其他网关流量。")}
+        >
           {t(
             "直连 OpenAI 官方后端，不经过 CodexManager 网关；本机 Codex 的直连请求不会写入网关日志，但仪表盘仍会展示已记录的其他网关流量。",
           )}
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-2.5">
         {candidates.length === 0 && !isLoading ? (
-          <div className="grid gap-3 rounded-xl border border-dashed border-border/70 bg-muted/25 p-4 text-sm text-muted-foreground">
+          <div className="grid gap-2 rounded-md border border-dashed border-border/70 bg-muted/25 p-2.5 text-sm text-muted-foreground">
             <p>{t("没有可用于直接连接 OpenAI 的 active 账号。")}</p>
             <ActionLink href="/accounts">{t("去添加 OpenAI 账号")}</ActionLink>
           </div>
@@ -651,15 +663,18 @@ export function GatewayModeCard({
           <CardTitle>{t("通过 CodexManager")}</CardTitle>
           {isGatewayActive ? <Badge>{t("正在使用")}</Badge> : null}
         </div>
-        <CardDescription>
+        <CardDescription
+          className="line-clamp-2 text-xs leading-4"
+          title={t("通过 CodexManager 本地网关转发 Codex CLI 请求；请求日志、Token、费用估算和仪表盘统计可用。")}
+        >
           {t(
             "通过 CodexManager 本地网关转发 Codex CLI 请求；请求日志、Token、费用估算和仪表盘统计可用。",
           )}
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-2.5">
         {candidates.length === 0 && !isLoading ? (
-          <div className="grid gap-3 rounded-xl border border-dashed border-border/70 bg-muted/25 p-4 text-sm text-muted-foreground">
+          <div className="grid gap-2 rounded-md border border-dashed border-border/70 bg-muted/25 p-2.5 text-sm text-muted-foreground">
             <p>{t("没有可用于 CodexManager 转发的平台密钥。")}</p>
             <ActionLink href="/apikeys">{t("去创建平台密钥")}</ActionLink>
           </div>
@@ -708,12 +723,15 @@ export function GatewayModeCard({
             </p>
           </div>
         )}
-        <div className="flex items-center justify-between gap-4 rounded-xl border border-border/70 bg-background/45 p-4">
-          <div className="grid gap-1">
+        <div className="flex items-center justify-between gap-2 rounded-md border border-border/70 bg-background/45 p-2.5">
+          <div className="grid gap-0.5">
             <Label htmlFor="gateway-responses-websocket">
               {t("启用 Responses WebSocket")}
             </Label>
-            <p className="text-xs text-muted-foreground">
+            <p
+              className="line-clamp-2 text-[11px] leading-4 text-muted-foreground"
+              title={t("关闭时 Codex 使用普通 Responses HTTP 流；开启时使用 Responses WebSocket。仅在当前平台密钥支持时开启。")}
+            >
               {t(
                 "关闭时 Codex 使用普通 Responses HTTP 流；开启时使用 Responses WebSocket。仅在当前平台密钥支持时开启。",
               )}

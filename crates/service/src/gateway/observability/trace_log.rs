@@ -1199,6 +1199,7 @@ pub(crate) struct BridgeResultLog<'a> {
     pub path: &'a str,
     pub is_stream: bool,
     pub stream_terminal_seen: bool,
+    pub stream_terminal_delivered: bool,
     pub stream_terminal_error: Option<&'a str>,
     pub delivery_error: Option<&'a str>,
     pub output_text_len: usize,
@@ -1221,6 +1222,7 @@ pub(crate) fn log_bridge_result(params: BridgeResultLog<'_>) {
         path,
         is_stream,
         stream_terminal_seen,
+        stream_terminal_delivered,
         stream_terminal_error,
         delivery_error,
         output_text_len,
@@ -1245,13 +1247,14 @@ pub(crate) fn log_bridge_result(params: BridgeResultLog<'_>) {
         mark_trace_has_error(trace_id);
     }
     let line = format!(
-        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} path={} stream={} terminal_seen={} terminal_error={} delivery_error={} output_text_len={} output_tokens={} first_response_ms={} delivered_status={} upstream_hint={} upstream_request_id={} upstream_cf_ray={} upstream_auth_error={} upstream_identity_error_code={} upstream_content_type={} last_sse_event={}",
+        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} path={} stream={} terminal_seen={} terminal_delivered={} terminal_error={} delivery_error={} output_text_len={} output_tokens={} first_response_ms={} delivered_status={} upstream_hint={} upstream_request_id={} upstream_cf_ray={} upstream_auth_error={} upstream_identity_error_code={} upstream_content_type={} last_sse_event={}",
         current_trace_ts(),
         sanitize_text(trace_id),
         sanitize_text(adapter),
         sanitize_text(path),
         if is_stream { "true" } else { "false" },
         if stream_terminal_seen { "true" } else { "false" },
+        if stream_terminal_delivered { "true" } else { "false" },
         sanitize_text(stream_terminal_error.unwrap_or("-")),
         sanitize_text(delivery_error.unwrap_or("-")),
         output_text_len,

@@ -5,9 +5,20 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-30
+
 ### Added
 
+- 模型目录 revision 10 内置 `gpt-6.1-sol`，同步官方模型介绍、推理档位，以及短/长上下文的输入、缓存输入、缓存写入和输出价格；保留同名 custom、用户编辑及删除记录。
 - 模型管理页可为每个聚合或自定义模型选择支持的推理强度档位及默认档位；生成的 Codex 模型目录据此启用思考强度选择器（#481）。
+
+### Changed
+
+- 收紧桌面导航、设置、仪表盘、平台模式和模型管理页面的布局密度与状态呈现，统一支持的多语言界面细节。
+
+### Fixed
+
+- 改进流式响应终态投递跟踪和桥接诊断日志，区分已向客户端投递终态、上游未完成和客户端投递失败等情况。
 
 ## [0.6.2] - 2026-09-25
 
@@ -578,7 +589,8 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.3
 [0.6.2]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.2
 [0.6.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.0

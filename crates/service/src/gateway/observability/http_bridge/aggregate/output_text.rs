@@ -26,6 +26,7 @@ pub(crate) struct UpstreamResponseUsage {
 pub(crate) struct UpstreamResponseBridgeResult {
     pub usage: UpstreamResponseUsage,
     pub stream_terminal_seen: bool,
+    pub stream_terminal_delivered: bool,
     pub stream_terminal_error: Option<String>,
     pub delivery_error: Option<String>,
     pub upstream_error_hint: Option<String>,
