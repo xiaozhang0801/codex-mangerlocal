@@ -795,15 +795,16 @@ pub(in super::super) async fn proxy_validated_request(
 
     let execution_plan =
         resolve_gateway_upstream_execution_plan(protocol_type.as_str(), rotation_strategy.as_str());
-    let _activity_guard =
-        super::super::begin_request_activity(super::super::RequestActivityStart {
-            trace_id: trace_id.as_str(),
-            client_ip: client_ip.as_deref(),
-            key_id: key_id.as_str(),
-            path: path.as_str(),
-            method: request_method.as_str(),
-            model: model_for_log.as_deref(),
-        });
+    let activity_guard = super::super::begin_request_activity(super::super::RequestActivityStart {
+        trace_id: trace_id.as_str(),
+        client_ip: client_ip.as_deref(),
+        key_id: key_id.as_str(),
+        path: path.as_str(),
+        method: request_method.as_str(),
+        model: model_for_log.as_deref(),
+    });
+    let mut request = request;
+    request.hold_until_complete(activity_guard);
     super::super::log_request_execution_plan(
         trace_id.as_str(),
         path.as_str(),
@@ -849,7 +850,6 @@ pub(in super::super) async fn proxy_validated_request(
 
     // 聚合优先混合轮转：聚合路径失败且请求未被消费时，需要把请求交还给账号路径继续，
     // 因此这里使用可变绑定。
-    let mut request = request;
     let _client_ip_gate_guard = if client_ip
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())

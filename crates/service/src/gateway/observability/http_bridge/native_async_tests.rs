@@ -87,10 +87,23 @@ fn deferred_disconnect_drain_keeps_request_gate_until_accounting_completes() {
     crate::gateway::response_test_runtime()
         .unwrap()
         .block_on(async {
+            crate::gateway::clear_request_activity_for_tests();
             let (mut request, receiver) = request();
+            let activity_guard =
+                crate::gateway::begin_request_activity(crate::gateway::RequestActivityStart {
+                    trace_id: "native-async-activity",
+                    client_ip: Some("127.0.0.1"),
+                    key_id: "fixture-key",
+                    path: "/v1/responses",
+                    method: "POST",
+                    model: Some("gpt-5"),
+                });
+            request.hold_until_complete(activity_guard);
             let gate =
                 crate::gateway::request_gate_lock("native-async-gate", "/v1/responses", None);
-            request.hold_until_complete(gate.try_acquire().unwrap().unwrap());
+            for _ in 0..4 {
+                request.hold_until_complete(gate.try_acquire().unwrap().unwrap());
+            }
             let (started, accounting_started) = tokio::sync::oneshot::channel();
             let (finish, accounting_finish) = std::sync::mpsc::channel();
             defer_upstream_response(
@@ -120,6 +133,7 @@ fn deferred_disconnect_drain_keeps_request_gate_until_accounting_completes() {
             let response = receiver.await.unwrap();
             accounting_started.await.unwrap();
             assert!(gate.try_acquire().unwrap().is_none());
+            assert_eq!(crate::gateway::request_activity_snapshot(50).total_count, 1);
             // A closed HTTP body cannot keep Hyper's graceful shutdown alive.
             drop(response);
             let mut draining = Box::pin(drain_deferred_responses());
@@ -133,5 +147,7 @@ fn deferred_disconnect_drain_keeps_request_gate_until_accounting_completes() {
                 .await
                 .expect("shutdown drains detached accounting");
             assert!(gate.try_acquire().unwrap().is_some());
+            assert_eq!(crate::gateway::request_activity_snapshot(50).total_count, 0);
+            crate::gateway::clear_request_activity_for_tests();
         });
 }
