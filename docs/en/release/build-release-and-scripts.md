@@ -36,6 +36,8 @@ pwsh -NoLogo -NoProfile -File scripts/rebuild.ps1 -Bundle nsis -CleanDist -Porta
 ./scripts/rebuild-macos.sh --bundles "dmg" --clean-dist
 ```
 
+Linux packaging requires `squashfs-tools` and checks that each AppImage contains a valid root `.DirIcon`, repairing the bundle when needed. The interface language defaults to **Auto-detect**, following the system language in the desktop app or the browser language in Web mode. Chinese, English, Russian, and Korean are supported; other languages fall back to English. Choose Auto-detect or a fixed language in Settings or the header; the choice applies immediately and remains saved.
+
 ## GitHub Actions
 The unified release workflow is `.github/workflows/release-all.yml`. Pushing a `v*` tag automatically runs `build-and-publish`; `workflow_dispatch` also supports manual runs in `build-and-publish`, `build-artifacts`, or `publish-artifacts` mode.
 

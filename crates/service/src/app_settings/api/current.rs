@@ -349,7 +349,7 @@ fn current_app_settings_value_inner(
         "theme": theme,
         "appearancePreset": appearance_preset,
         "locale": locale,
-        "localeOptions": ["zh-CN", "en", "ru", "ko"],
+        "localeOptions": ["auto", "zh-CN", "en", "ru", "ko"],
         "serviceAddr": service_addr,
         "serviceListenMode": service_listen_mode,
         "serviceListenModeOptions": [

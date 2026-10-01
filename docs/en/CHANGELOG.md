@@ -9,6 +9,7 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ### Added
 
+- Added Auto-detect to the interface language selector in Settings and the header. It follows supported system/browser languages and falls back to English; fixed language choices remain saved.
 - Added built-in `gpt-6.1-sol` in model catalog revision 10 with its official description, reasoning levels, and short/long-context input, cached-input, cache-write, and output prices. Custom models, user edits, and deletion tombstones are preserved.
 
 ### Changed
@@ -17,6 +18,7 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ### Fixed
 
+- Linux packaging now checks and repairs missing `.DirIcon` metadata in final AppImages, resolving the AppImageHub catalog packaging failure.
 - Improved streaming terminal-delivery tracking and bridge diagnostics so responses that already delivered a terminal event are distinguished from upstream-incomplete or client-delivery failures.
 
 ## [0.6.2] - 2026-09-25

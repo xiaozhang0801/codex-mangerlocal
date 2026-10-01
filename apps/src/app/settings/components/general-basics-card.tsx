@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { LanguageSwitcher } from "@/components/layout/language-switcher";
 import type { UpdateCheckResult, UpdatePrepareResult } from "@/lib/api/app-updates";
 import type { AppSettings } from "@/types";
 
@@ -77,7 +78,21 @@ export function GeneralBasicsCard({
         <CardDescription>{t("控制应用启动和窗口行为")}</CardDescription>
       </CardHeader>
       <CardContent className="divide-y divide-border/60">
-        <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center justify-between gap-4 pb-3" data-testid="settings-language-row">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <Label htmlFor="settings-language">{t("界面语言")}</Label>
+            <p id="settings-language-description" className="text-xs text-muted-foreground">
+              {t("自动检测会跟随系统语言，不支持的语言使用英文。")}
+            </p>
+          </div>
+          <LanguageSwitcher
+            compact
+            triggerId="settings-language"
+            descriptionId="settings-language-description"
+            className="shrink-0"
+          />
+        </div>
+        <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 space-y-1">
             <Label>{updateActionLabel}</Label>
             <p className="text-xs text-muted-foreground">{updateActionDescription}</p>

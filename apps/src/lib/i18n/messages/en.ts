@@ -218,6 +218,9 @@ export const EN_MESSAGES: MessageCatalog = {
   默认网关: "Default gateway",
   实际监听地址: "Actual bind address",
   界面语言: "Interface language",
+  自动检测: "Auto-detect",
+  "自动检测会跟随系统语言，不支持的语言使用英文。":
+    "Auto-detect follows your system language and uses English for unsupported languages.",
   "切换应用界面语言，设置后会立即生效并持久化保存。":
     "Switch the UI language. Changes apply immediately and persist.",
   选择语言: "Select language",

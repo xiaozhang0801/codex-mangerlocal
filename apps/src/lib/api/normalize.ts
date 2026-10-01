@@ -1886,7 +1886,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     billingModeLock: readBillingModeLock(source.billingModeLock),
     appUsersConfigured: asBoolean(source.appUsersConfigured, false),
     appUserCount: asInteger(source.appUserCount, 0, 0),
-    locale: asString(source.locale) || "zh-CN",
+    locale: asString(source.locale) || "auto",
     localeOptions: asArray(source.localeOptions).map((item) => asString(item)).filter(Boolean),
     serviceAddr: asString(source.serviceAddr) || "localhost:48760",
     serviceListenMode: asString(source.serviceListenMode) || "loopback",
