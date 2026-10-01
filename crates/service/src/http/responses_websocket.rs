@@ -4039,30 +4039,36 @@ fn is_previous_response_not_found_terminal(terminal: &WsTerminalEvent) -> bool {
 fn parse_missing_ws_tool_call_error_message(message: &str) -> Option<(WsToolCallKind, String)> {
     let message = message.trim();
     let lower = message.to_ascii_lowercase();
-    let prefixes = [
-        (
-            "no tool call found for custom tool call output with call_id ",
-            WsToolCallKind::Custom,
-        ),
-        (
-            "no tool call found for function tool call output with call_id ",
-            WsToolCallKind::Function,
-        ),
-        (
-            "no tool call found for function call output with call_id ",
-            WsToolCallKind::Function,
-        ),
-    ];
-    let (prefix, kind) = prefixes
-        .into_iter()
-        .find(|(prefix, _)| lower.starts_with(prefix))?;
+    if !lower.starts_with("no tool call found") {
+        return None;
+    }
+    let kind = if lower.contains("custom tool call output") {
+        WsToolCallKind::Custom
+    } else if lower.contains("function tool call output") || lower.contains("function call output")
+    {
+        WsToolCallKind::Function
+    } else {
+        return None;
+    };
+
+    // Upstream has used both `call_id <id>` and `call_id: <id>` (and some
+    // versions append a request hint after the id). Read the identifier as a
+    // token instead of coupling recovery to one complete English sentence.
+    let call_id_marker = lower.find("call_id")?;
     let call_id = message
-        .get(prefix.len()..)?
-        .trim()
-        .trim_end_matches('.')
-        .trim()
-        .trim_matches(|character| matches!(character, '\'' | '"' | '`'));
-    if call_id.is_empty() || call_id.chars().any(char::is_whitespace) {
+        .get(call_id_marker + "call_id".len()..)?
+        .trim_start()
+        .trim_start_matches([':', '=', ' '])
+        .trim_start()
+        .trim_matches(['\'', '"', '`'])
+        .split(|character: char| {
+            character.is_whitespace()
+                || matches!(character, '.' | ',' | ';' | ':' | ')' | ']' | '}')
+        })
+        .next()
+        .unwrap_or_default()
+        .trim_matches(['\'', '"', '`']);
+    if call_id.is_empty() {
         return None;
     }
     Some((kind, call_id.to_string()))

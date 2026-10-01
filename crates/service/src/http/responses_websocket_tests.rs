@@ -1954,6 +1954,16 @@ fn websocket_detects_exact_missing_custom_and_function_tool_call_terminals() {
             WsToolCallKind::Function,
             "call_function_2",
         ),
+        (
+            "No tool call found for custom tool call output with call_id: `call_custom_3` (request req_123)",
+            WsToolCallKind::Custom,
+            "call_custom_3",
+        ),
+        (
+            "NO TOOL CALL FOUND for function call output related to call_id=\"call_function_3\".",
+            WsToolCallKind::Function,
+            "call_function_3",
+        ),
     ] {
         let terminal = inspect_ws_terminal_event(
             json!({ "type": "error", "error": { "message": message } })
