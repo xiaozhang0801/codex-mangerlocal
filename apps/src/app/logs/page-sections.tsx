@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Clock3,
   Database,
+  Eye,
   Info,
   RefreshCw,
   Search,
@@ -84,6 +85,7 @@ export function RequestLogsTabContent({
   onFilterChange,
   onRefresh,
   onOpenClearConfirm,
+  onOpenDetail,
   onApplyTimePreset,
   onStartTimeChange,
   onEndTimeChange,
@@ -120,6 +122,7 @@ export function RequestLogsTabContent({
   onFilterChange: (value: StatusFilter) => void;
   onRefresh: () => void;
   onOpenClearConfirm: () => void;
+  onOpenDetail: (log: RequestLog) => void;
   onApplyTimePreset: (preset: TimeRangePreset) => void;
   onStartTimeChange: (value: string) => void;
   onEndTimeChange: (value: string) => void;
@@ -453,6 +456,9 @@ export function RequestLogsTabContent({
                   <TableHead className="w-[240px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
                     {t("错误")}
                   </TableHead>
+                  <TableHead className="w-[72px] px-2 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
+                    {t("操作")}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -468,12 +474,13 @@ export function RequestLogsTabContent({
                       <TableCell><Skeleton className="h-4 w-12" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-full" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-7" /></TableCell>
                     </TableRow>
                   ))
                 ) : logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                          colSpan={9}
+                      colSpan={9}
                       className="h-52 px-4 text-center text-sm text-muted-foreground"
                     >
                       {!serviceConnected
@@ -529,6 +536,18 @@ export function RequestLogsTabContent({
                       </TableCell>
                       <TableCell className="px-4 py-3 text-left align-top">
                         <ErrorInfoCell error={log.error} />
+                      </TableCell>
+                      <TableCell className="px-2 py-3 align-top">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-7 opacity-40 transition-opacity group-hover:opacity-100"
+                          title={t("查看请求内容")}
+                          onClick={() => onOpenDetail(log)}
+                        >
+                          <Eye className="size-3.5" />
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))

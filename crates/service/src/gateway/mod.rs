@@ -185,6 +185,8 @@ mod request_gate;
 mod request_helpers;
 #[path = "observability/request_log.rs"]
 mod request_log;
+#[path = "observability/request_log_payload.rs"]
+mod request_log_payload;
 #[path = "request/request_rewrite.rs"]
 mod request_rewrite;
 #[path = "routing/route_hint.rs"]
@@ -506,6 +508,12 @@ pub(crate) use request_entry::handle_gateway_request_async;
 pub(crate) use request_gate::RequestGateAcquireError;
 use request_gate::{client_ip_gate_lock, request_gate_lock};
 pub(crate) use request_log::write_request_log;
+pub(crate) use request_log_payload::{
+    capture_outbound_payload, request_log_payload_conversation_key,
+    request_log_payload_preview_enabled, request_log_payload_redaction_enabled,
+    set_request_log_payload_preview_enabled, set_request_log_payload_redaction_enabled,
+    store_client_request_log_payload, OutboundPayloadContext,
+};
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::async_upstream_client_for_aggregate_url;

@@ -2,6 +2,8 @@
 pub(crate) mod clear;
 #[path = "requestlog_client_ip_usage.rs"]
 pub(crate) mod client_ip_usage;
+#[path = "requestlog_detail.rs"]
+pub(crate) mod detail;
 #[path = "requestlog_list.rs"]
 pub(crate) mod list;
 pub(crate) mod seaorm;

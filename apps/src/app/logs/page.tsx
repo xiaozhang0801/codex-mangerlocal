@@ -31,6 +31,7 @@ import { useAppStore } from "@/lib/store/useAppStore";
 import { DASHBOARD_ADMIN_USAGE_QUERY_KEY } from "@/hooks/useDashboardAdminUsageSummary";
 import { MEMBER_DASHBOARD_SUMMARY_QUERY_KEY } from "@/hooks/useMemberDashboardSummary";
 import { RequestLogsTabContent } from "./page-sections";
+import { RequestDetailModal } from "./request-detail-modal";
 import {
   buildFixedTimePreset,
   LogsPageSkeleton,
@@ -39,7 +40,7 @@ import {
   fromDateTimeLocalValue,
 } from "./page-helpers";
 import { buildSummaryPlaceholder } from "./page-cells";
-import { AccountListResult, ApiKey, RequestLogListWithSummaryResult, StartupSnapshot } from "@/types";
+import { AccountListResult, ApiKey, RequestLog, RequestLogListWithSummaryResult, StartupSnapshot } from "@/types";
 
 const LOG_SEARCH_DEBOUNCE_MS = 300;
 const LOG_REFRESH_ACTIVE_MS = 5_000;
@@ -83,6 +84,7 @@ function LogsPageContent() {
   const [pageSize, setPageSize] = useState("10");
   const [page, setPage] = useState(1);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [detailLog, setDetailLog] = useState<RequestLog | null>(null);
   const pageSizeNumber = Number(pageSize) || 10;
   const startTs = useMemo(
     () => fromDateTimeLocalValue(startTimeInput),
@@ -451,6 +453,7 @@ function LogsPageContent() {
           });
         }}
         onOpenClearConfirm={() => setClearConfirmOpen(true)}
+        onOpenDetail={setDetailLog}
         onApplyTimePreset={applyTimePreset}
         onStartTimeChange={(value) => {
           setTimePreset("custom");
@@ -483,6 +486,14 @@ function LogsPageContent() {
           onConfirm={() => clearMutation.mutate()}
         />
       ) : null}
+      <RequestDetailModal
+        open={detailLog !== null}
+        onOpenChange={(open) => {
+          if (!open) setDetailLog(null);
+        }}
+        log={detailLog}
+        serviceAddr={serviceAddr}
+      />
     </div>
   );
 }
