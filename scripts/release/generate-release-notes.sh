@@ -6,8 +6,14 @@ REPO="${2:?GitHub repository is required}"
 CHANGELOG="${3:-docs/zh-CN/CHANGELOG.md}"
 PRODUCT_NAME="${4:-CodexManager}"
 VERSION="${TAG#v}"
+CHANGELOG_VERSION="$VERSION"
 
-awk -v tag="$TAG" -v version="$VERSION" -v repo="$REPO" -v product_name="$PRODUCT_NAME" '
+# Local prerelease tags share the release notes of their base semantic version.
+if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-local\.[0-9]+$ ]]; then
+  CHANGELOG_VERSION="${BASH_REMATCH[1]}"
+fi
+
+awk -v tag="$TAG" -v version="$CHANGELOG_VERSION" -v repo="$REPO" -v product_name="$PRODUCT_NAME" '
   {
     sub(/\r$/, "")
     if (done) next
