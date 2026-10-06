@@ -505,8 +505,8 @@ use openai_fallback::try_openai_fallback;
 #[cfg(test)]
 pub(crate) use request_entry::handle_gateway_request;
 pub(crate) use request_entry::handle_gateway_request_async;
-pub(crate) use request_gate::RequestGateAcquireError;
-use request_gate::{client_ip_gate_lock, request_gate_lock};
+pub(crate) use request_gate::{account_request_gate_lock, client_ip_gate_lock};
+pub(crate) use request_gate::{RequestGateAcquireError, RequestGateGuard};
 pub(crate) use request_log::write_request_log;
 pub(crate) use request_log_payload::{
     capture_outbound_payload, request_log_payload_conversation_key,
@@ -518,7 +518,12 @@ use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::async_upstream_client_for_aggregate_url;
 pub(crate) use runtime_config::invalidate_account_proxy_client_cache as invalidate_account_proxy_cache;
-pub(crate) use runtime_config::{account_max_inflight_limit, set_account_max_inflight_limit};
+pub(crate) use runtime_config::{
+    account_max_concurrent_limit, account_max_inflight_limit, client_ip_multi_max_concurrent_limit,
+    client_ip_single_max_concurrent_limit, set_account_max_concurrent_limit,
+    set_account_max_inflight_limit, set_client_ip_multi_max_concurrent_limit,
+    set_client_ip_single_max_concurrent_limit,
+};
 pub(crate) use runtime_config::{
     account_test_proxy_url_for_account, build_account_test_client_with_timeouts,
     current_codex_image_main_model,

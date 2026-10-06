@@ -37,6 +37,11 @@ static UPSTREAM_STREAM_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_S
 static SSE_KEEPALIVE_ENABLED: AtomicBool = AtomicBool::new(DEFAULT_SSE_KEEPALIVE_ENABLED);
 static SSE_KEEPALIVE_INTERVAL_MS: AtomicU64 = AtomicU64::new(DEFAULT_SSE_KEEPALIVE_INTERVAL_MS);
 static ACCOUNT_MAX_INFLIGHT: AtomicUsize = AtomicUsize::new(DEFAULT_ACCOUNT_MAX_INFLIGHT);
+static ACCOUNT_MAX_CONCURRENT: AtomicUsize = AtomicUsize::new(DEFAULT_ACCOUNT_MAX_CONCURRENT);
+static CLIENT_IP_SINGLE_MAX_CONCURRENT: AtomicUsize =
+    AtomicUsize::new(DEFAULT_CLIENT_IP_SINGLE_MAX_CONCURRENT);
+static CLIENT_IP_MULTI_MAX_CONCURRENT: AtomicUsize =
+    AtomicUsize::new(DEFAULT_CLIENT_IP_MULTI_MAX_CONCURRENT);
 static THREAD_AWARE_ACCOUNT_DISTRIBUTION: AtomicBool =
     AtomicBool::new(DEFAULT_THREAD_AWARE_ACCOUNT_DISTRIBUTION);
 static STRICT_REQUEST_PARAM_ALLOWLIST: AtomicBool =
@@ -68,6 +73,9 @@ const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_SSE_KEEPALIVE_ENABLED: bool = true;
 const DEFAULT_SSE_KEEPALIVE_INTERVAL_MS: u64 = 15_000;
 const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 0;
+const DEFAULT_ACCOUNT_MAX_CONCURRENT: usize = 3;
+const DEFAULT_CLIENT_IP_SINGLE_MAX_CONCURRENT: usize = 3;
+const DEFAULT_CLIENT_IP_MULTI_MAX_CONCURRENT: usize = 2;
 const DEFAULT_THREAD_AWARE_ACCOUNT_DISTRIBUTION: bool = true;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = false;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
@@ -878,6 +886,42 @@ pub(crate) fn set_account_max_inflight_limit(limit: usize) -> usize {
     limit
 }
 
+pub(crate) fn account_max_concurrent_limit() -> usize {
+    ensure_runtime_config_loaded();
+    ACCOUNT_MAX_CONCURRENT.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_account_max_concurrent_limit(limit: usize) -> usize {
+    ensure_runtime_config_loaded();
+    let applied = limit.max(1);
+    ACCOUNT_MAX_CONCURRENT.store(applied, Ordering::Relaxed);
+    applied
+}
+
+pub(crate) fn client_ip_single_max_concurrent_limit() -> usize {
+    ensure_runtime_config_loaded();
+    CLIENT_IP_SINGLE_MAX_CONCURRENT.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_client_ip_single_max_concurrent_limit(limit: usize) -> usize {
+    ensure_runtime_config_loaded();
+    let applied = limit.max(1);
+    CLIENT_IP_SINGLE_MAX_CONCURRENT.store(applied, Ordering::Relaxed);
+    applied
+}
+
+pub(crate) fn client_ip_multi_max_concurrent_limit() -> usize {
+    ensure_runtime_config_loaded();
+    CLIENT_IP_MULTI_MAX_CONCURRENT.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_client_ip_multi_max_concurrent_limit(limit: usize) -> usize {
+    ensure_runtime_config_loaded();
+    let applied = limit.max(1);
+    CLIENT_IP_MULTI_MAX_CONCURRENT.store(applied, Ordering::Relaxed);
+    applied
+}
+
 pub(crate) fn thread_aware_account_distribution_enabled() -> bool {
     ensure_runtime_config_loaded();
     THREAD_AWARE_ACCOUNT_DISTRIBUTION.load(Ordering::Relaxed)
@@ -1609,6 +1653,10 @@ pub(super) fn reload_from_env() {
         env_usize_or(ENV_ACCOUNT_MAX_INFLIGHT, DEFAULT_ACCOUNT_MAX_INFLIGHT),
         Ordering::Relaxed,
     );
+    ACCOUNT_MAX_CONCURRENT.store(DEFAULT_ACCOUNT_MAX_CONCURRENT, Ordering::Relaxed);
+    CLIENT_IP_SINGLE_MAX_CONCURRENT
+        .store(DEFAULT_CLIENT_IP_SINGLE_MAX_CONCURRENT, Ordering::Relaxed);
+    CLIENT_IP_MULTI_MAX_CONCURRENT.store(DEFAULT_CLIENT_IP_MULTI_MAX_CONCURRENT, Ordering::Relaxed);
     STRICT_REQUEST_PARAM_ALLOWLIST.store(
         env_bool_or(
             ENV_STRICT_REQUEST_PARAM_ALLOWLIST,

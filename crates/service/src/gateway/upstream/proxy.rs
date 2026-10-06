@@ -13,7 +13,6 @@ use super::proxy_pipeline::candidate_executor::{
     execute_candidate_sequence, CandidateExecutionResult, CandidateExecutorParams,
 };
 use super::proxy_pipeline::execution_context::GatewayUpstreamExecutionContext;
-use super::proxy_pipeline::request_gate::acquire_request_gate_async;
 use super::proxy_pipeline::request_gate::{
     acquire_client_ip_request_gate, ClientIpRequestGateError,
 };
@@ -850,7 +849,7 @@ pub(in super::super) async fn proxy_validated_request(
 
     // 聚合优先混合轮转：聚合路径失败且请求未被消费时，需要把请求交还给账号路径继续，
     // 因此这里使用可变绑定。
-    let _client_ip_gate_guard = if client_ip
+    let client_ip_gate_guard = if client_ip
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
     {
@@ -899,6 +898,7 @@ pub(in super::super) async fn proxy_validated_request(
     } else {
         None
     };
+    request.hold_until_complete(client_ip_gate_guard);
     super::super::mark_request_activity_running(
         trace_id.as_str(),
         route_kind_label(execution_plan.route_kind),
@@ -1172,17 +1172,6 @@ pub(in super::super) async fn proxy_validated_request(
     let disable_challenge_stateless_retry = !(protocol_type == PROTOCOL_ANTHROPIC_NATIVE
         && body.len() <= 2 * 1024)
         && !path.starts_with("/v1/responses");
-    super::super::mark_request_activity_queued(trace_id.as_str(), "request_gate");
-    let request_gate_guard = acquire_request_gate_async(
-        trace_id.as_str(),
-        key_id.as_str(),
-        path.as_str(),
-        model_for_log.as_deref(),
-        request_deadline,
-    )
-    .await;
-    request.hold_until_complete(request_gate_guard);
-    super::super::mark_request_activity_running(trace_id.as_str(), "request_gate");
     let exhausted = match execute_candidate_sequence(
         request,
         candidates,

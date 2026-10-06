@@ -100,9 +100,8 @@ fn deferred_disconnect_drain_keeps_request_gate_until_accounting_completes() {
                     model: Some("gpt-5"),
                 });
             request.hold_until_complete(activity_guard);
-            let gate =
-                crate::gateway::request_gate_lock("native-async-gate", "/v1/responses", None);
-            for _ in 0..4 {
+            let gate = crate::gateway::account_request_gate_lock("native-async-gate", 3);
+            for _ in 0..3 {
                 request.hold_until_complete(gate.try_acquire().unwrap().unwrap());
             }
             let (started, accounting_started) = tokio::sync::oneshot::channel();

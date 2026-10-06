@@ -1,20 +1,32 @@
 use super::super::support::deadline;
 use std::time::Instant;
 
-pub(in super::super) async fn acquire_request_gate_async(
+pub(in super::super) enum AccountRequestGateError {
+    Unavailable,
+    Timeout,
+    Cancelled,
+}
+
+pub(in super::super) async fn acquire_account_request_gate_async(
     trace_id: &str,
-    key_id: &str,
-    path: &str,
-    model_for_log: Option<&str>,
+    account_id: &str,
     request_deadline: Option<Instant>,
-) -> Option<super::super::super::request_gate::RequestGateGuard> {
-    let lock = super::super::super::request_gate_lock(key_id, path, model_for_log);
-    super::super::super::trace_log::log_request_gate_wait(trace_id, key_id, path, model_for_log);
+) -> Result<super::super::super::RequestGateGuard, AccountRequestGateError> {
+    let lock = super::super::super::account_request_gate_lock(
+        account_id,
+        super::super::super::account_max_concurrent_limit(),
+    );
     let started = Instant::now();
     let timeout = match super::super::super::request_gate_wait_timeout() {
         Some(timeout) => deadline::cap_wait(timeout, request_deadline),
         None => deadline::remaining(request_deadline),
     };
+    log::debug!(
+        "event=account_request_gate_wait trace_id={} account_id={}",
+        trace_id,
+        account_id
+    );
+
     let wait = async {
         if let Some(guard) = lock.try_acquire()? {
             return Ok(Some(guard));
@@ -27,29 +39,42 @@ pub(in super::super) async fn acquire_request_gate_async(
             None => lock.acquire_async().await.map(Some),
         }
     };
-    let result = crate::http::gateway_request::with_response_cancellation(wait).await;
-    if let Ok(Ok(Some(guard))) = result {
-        super::super::super::trace_log::log_request_gate_acquired(
-            trace_id,
-            key_id,
-            path,
-            model_for_log,
-            started.elapsed().as_millis(),
-        );
-        return Some(guard);
+    match crate::http::gateway_request::with_response_cancellation(wait).await {
+        Ok(Ok(Some(guard))) => {
+            log::debug!(
+                "event=account_request_gate_acquired trace_id={} account_id={} wait_ms={}",
+                trace_id,
+                account_id,
+                started.elapsed().as_millis()
+            );
+            Ok(guard)
+        }
+        Ok(Err(_)) => {
+            log::warn!(
+                "event=account_request_gate_unavailable trace_id={} account_id={} wait_ms={}",
+                trace_id,
+                account_id,
+                started.elapsed().as_millis()
+            );
+            Err(AccountRequestGateError::Unavailable)
+        }
+        Err(()) => Err(AccountRequestGateError::Cancelled),
+        Ok(Ok(None)) => {
+            let reason = if deadline::is_expired(request_deadline) {
+                "total_timeout"
+            } else {
+                "gate_wait_timeout"
+            };
+            log::warn!(
+                "event=account_request_gate_timeout trace_id={} account_id={} reason={} wait_ms={}",
+                trace_id,
+                account_id,
+                reason,
+                started.elapsed().as_millis()
+            );
+            Err(AccountRequestGateError::Timeout)
+        }
     }
-    let reason = match result {
-        Err(()) => "client_cancelled",
-        Ok(Err(_)) => "lock_poisoned",
-        _ if deadline::is_expired(request_deadline) => "total_timeout",
-        _ => "gate_wait_timeout",
-    };
-    super::super::super::trace_log::log_request_gate_skip(
-        trace_id,
-        reason,
-        started.elapsed().as_millis(),
-    );
-    None
 }
 
 pub(in super::super) enum ClientIpRequestGateError {
@@ -57,114 +82,27 @@ pub(in super::super) enum ClientIpRequestGateError {
     Timeout,
 }
 
-/// 函数 `acquire_request_gate`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - in super: 参数 in super
-///
-/// # 返回
-/// 返回函数执行结果
-#[cfg(test)]
-pub(in super::super) fn acquire_request_gate(
-    trace_id: &str,
-    key_id: &str,
-    path: &str,
-    model_for_log: Option<&str>,
-    request_deadline: Option<Instant>,
-) -> Option<super::super::super::request_gate::RequestGateGuard> {
-    let request_gate_lock = super::super::super::request_gate_lock(key_id, path, model_for_log);
-    let request_gate_wait_timeout = super::super::super::request_gate_wait_timeout();
-    super::super::super::trace_log::log_request_gate_wait(trace_id, key_id, path, model_for_log);
-    let gate_wait_started_at = Instant::now();
-
-    match request_gate_lock.try_acquire() {
-        Ok(Some(guard)) => {
-            super::super::super::trace_log::log_request_gate_acquired(
-                trace_id,
-                key_id,
-                path,
-                model_for_log,
-                0,
-            );
-            Some(guard)
-        }
-        Ok(None) => {
-            let wait_result = match request_gate_wait_timeout {
-                Some(wait_timeout) => match deadline::cap_wait(wait_timeout, request_deadline) {
-                    Some(effective_wait) if !effective_wait.is_zero() => {
-                        request_gate_lock.acquire_with_timeout(effective_wait)
-                    }
-                    _ => Ok(None),
-                },
-                None => match deadline::remaining(request_deadline) {
-                    Some(remaining) if remaining.is_zero() => Ok(None),
-                    Some(remaining) => request_gate_lock.acquire_with_timeout(remaining),
-                    None => request_gate_lock.acquire().map(Some),
-                },
-            };
-            if let Ok(Some(guard)) = wait_result {
-                super::super::super::trace_log::log_request_gate_acquired(
-                    trace_id,
-                    key_id,
-                    path,
-                    model_for_log,
-                    gate_wait_started_at.elapsed().as_millis(),
-                );
-                Some(guard)
-            } else {
-                match wait_result {
-                    Err(super::super::super::RequestGateAcquireError::Poisoned) => {
-                        super::super::super::trace_log::log_request_gate_skip(
-                            trace_id,
-                            "lock_poisoned",
-                            gate_wait_started_at.elapsed().as_millis(),
-                        );
-                    }
-                    _ => {
-                        let reason = if deadline::is_expired(request_deadline) {
-                            "total_timeout"
-                        } else {
-                            "gate_wait_timeout"
-                        };
-                        super::super::super::trace_log::log_request_gate_skip(
-                            trace_id,
-                            reason,
-                            gate_wait_started_at.elapsed().as_millis(),
-                        );
-                    }
-                }
-                None
-            }
-        }
-        Err(super::super::super::RequestGateAcquireError::Poisoned) => {
-            super::super::super::trace_log::log_request_gate_skip(trace_id, "lock_poisoned", 0);
-            None
-        }
-    }
-}
-
 pub(in super::super) fn acquire_client_ip_request_gate(
     trace_id: &str,
     client_ip: Option<&str>,
     request_deadline: Option<Instant>,
-) -> Result<Option<super::super::super::request_gate::RequestGateGuard>, ClientIpRequestGateError> {
+) -> Result<Option<super::super::super::RequestGateGuard>, ClientIpRequestGateError> {
     let Some(client_ip) = client_ip.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    if !super::super::super::has_multiple_active_client_ips() {
-        return Ok(None);
-    }
-    let request_gate_lock = super::super::super::client_ip_gate_lock(client_ip);
+    let max_concurrent = if super::super::super::has_multiple_active_client_ips() {
+        super::super::super::client_ip_multi_max_concurrent_limit()
+    } else {
+        super::super::super::client_ip_single_max_concurrent_limit()
+    };
+    let request_gate_lock = super::super::super::client_ip_gate_lock(client_ip, max_concurrent);
     let request_gate_wait_timeout = super::super::super::request_gate_wait_timeout();
     let gate_wait_started_at = Instant::now();
     log::debug!(
-        "event=client_ip_request_gate_wait trace_id={} client_ip={}",
+        "event=client_ip_request_gate_wait trace_id={} client_ip={} max_concurrent={}",
         trace_id,
-        client_ip
+        client_ip,
+        max_concurrent
     );
 
     match request_gate_lock.try_acquire() {

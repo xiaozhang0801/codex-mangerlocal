@@ -87,6 +87,9 @@ fn reset_runtime_defaults() {
         "freeAccountMaxModel": "gpt-5.2",
         "modelForwardRules": "",
         "compactModelForwardRules": "",
+        "accountMaxConcurrent": 3,
+        "clientIpSingleMaxConcurrent": 3,
+        "clientIpMultiMaxConcurrent": 2,
         "quotaGuard": {
             "enabled": true,
             "primaryMinRemainingPercent": 5,
@@ -648,6 +651,36 @@ fn sync_runtime_settings_ignores_legacy_max_inflight_env_override() {
             1
         );
         assert!(std::env::var_os("CODEXMANAGER_ACCOUNT_MAX_INFLIGHT").is_none());
+    });
+}
+
+#[test]
+fn app_settings_persist_gateway_hard_concurrency_limits() {
+    with_temp_db(|_| {
+        let snapshot = codexmanager_service::app_settings_set(Some(&json!({
+            "accountMaxConcurrent": 4,
+            "clientIpSingleMaxConcurrent": 5,
+            "clientIpMultiMaxConcurrent": 2
+        })))
+        .expect("save hard concurrency limits");
+
+        assert_eq!(snapshot["accountMaxConcurrent"], 4);
+        assert_eq!(snapshot["clientIpSingleMaxConcurrent"], 5);
+        assert_eq!(snapshot["clientIpMultiMaxConcurrent"], 2);
+
+        codexmanager_service::sync_runtime_settings_from_storage();
+        assert_eq!(
+            codexmanager_service::current_gateway_account_max_concurrent(),
+            4
+        );
+        assert_eq!(
+            codexmanager_service::current_gateway_client_ip_single_max_concurrent(),
+            5
+        );
+        assert_eq!(
+            codexmanager_service::current_gateway_client_ip_multi_max_concurrent(),
+            2
+        );
     });
 }
 

@@ -1988,6 +1988,9 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
       source.compactModelForwardRules ?? source.compact_model_forward_rules
     ),
     accountMaxInflight: asInteger(source.accountMaxInflight, 1, 0),
+    accountMaxConcurrent: asInteger(source.accountMaxConcurrent, 3, 1),
+    clientIpSingleMaxConcurrent: asInteger(source.clientIpSingleMaxConcurrent, 3, 1),
+    clientIpMultiMaxConcurrent: asInteger(source.clientIpMultiMaxConcurrent, 2, 1),
     threadAwareAccountDistributionEnabled: asBoolean(
       source.threadAwareAccountDistributionEnabled,
       true

@@ -26,7 +26,10 @@ struct CodexNpmLatestResponse {
 
 use super::{
     normalize_optional_text, save_persisted_app_setting, save_persisted_bool_setting,
-    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_ACCOUNT_MAX_CONCURRENT_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
+    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_CLIENT_IP_MULTI_MAX_CONCURRENT_KEY,
+    APP_SETTING_GATEWAY_CLIENT_IP_SINGLE_MAX_CONCURRENT_KEY,
     APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
@@ -258,6 +261,45 @@ pub fn set_gateway_account_max_inflight(limit: usize) -> Result<usize, String> {
 /// 返回函数执行结果
 pub fn current_gateway_account_max_inflight() -> usize {
     gateway::account_max_inflight_limit()
+}
+
+pub fn set_gateway_account_max_concurrent(limit: usize) -> Result<usize, String> {
+    let applied = gateway::set_account_max_concurrent_limit(limit);
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_ACCOUNT_MAX_CONCURRENT_KEY,
+        Some(&applied.to_string()),
+    )?;
+    Ok(applied)
+}
+
+pub fn current_gateway_account_max_concurrent() -> usize {
+    gateway::account_max_concurrent_limit()
+}
+
+pub fn set_gateway_client_ip_single_max_concurrent(limit: usize) -> Result<usize, String> {
+    let applied = gateway::set_client_ip_single_max_concurrent_limit(limit);
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_CLIENT_IP_SINGLE_MAX_CONCURRENT_KEY,
+        Some(&applied.to_string()),
+    )?;
+    Ok(applied)
+}
+
+pub fn current_gateway_client_ip_single_max_concurrent() -> usize {
+    gateway::client_ip_single_max_concurrent_limit()
+}
+
+pub fn set_gateway_client_ip_multi_max_concurrent(limit: usize) -> Result<usize, String> {
+    let applied = gateway::set_client_ip_multi_max_concurrent_limit(limit);
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_CLIENT_IP_MULTI_MAX_CONCURRENT_KEY,
+        Some(&applied.to_string()),
+    )?;
+    Ok(applied)
+}
+
+pub fn current_gateway_client_ip_multi_max_concurrent() -> usize {
+    gateway::client_ip_multi_max_concurrent_limit()
 }
 
 pub fn set_gateway_thread_aware_account_distribution_enabled(

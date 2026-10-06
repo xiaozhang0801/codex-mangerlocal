@@ -38,11 +38,11 @@ async fn async_waiters_release_and_cancel_without_blocking_runtime() {
 /// # 返回
 /// 无
 #[test]
-fn same_scope_reuses_same_lock_instance() {
+fn same_account_reuses_same_lock_instance() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
-    let first = request_gate_lock("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
-    let second = request_gate_lock("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
+    let first = account_request_gate_lock("account-1", 3);
+    let second = account_request_gate_lock("account-1", 3);
     assert!(Arc::ptr_eq(&first, &second));
 }
 
@@ -58,11 +58,11 @@ fn same_scope_reuses_same_lock_instance() {
 /// # 返回
 /// 无
 #[test]
-fn different_scope_uses_different_lock_instances() {
+fn different_accounts_use_different_lock_instances() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
-    let first = request_gate_lock("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
-    let second = request_gate_lock("gk_1", "/v1/responses", Some("gpt-5.3-codex-high"));
+    let first = account_request_gate_lock("account-1", 3);
+    let second = account_request_gate_lock("account-2", 3);
     assert!(!Arc::ptr_eq(&first, &second));
 }
 
@@ -78,11 +78,11 @@ fn different_scope_uses_different_lock_instances() {
 /// # 返回
 /// 无
 #[test]
-fn stale_unshared_lock_entry_is_reclaimed() {
+fn stale_unshared_account_lock_entry_is_reclaimed() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
-    let key = gate_key("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
-    let first = request_gate_lock("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
+    let key = account_gate_key("account-1");
+    let first = account_request_gate_lock("account-1", 3);
     let weak = Arc::downgrade(&first);
     drop(first);
 
@@ -97,7 +97,7 @@ fn stale_unshared_lock_entry_is_reclaimed() {
     table.last_cleanup_at = now - REQUEST_GATE_LOCK_CLEANUP_INTERVAL_SECS - 1;
     drop(table);
 
-    let _second = request_gate_lock("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
+    let _second = account_request_gate_lock("account-1", 3);
     assert!(weak.upgrade().is_none());
 }
 
@@ -113,11 +113,11 @@ fn stale_unshared_lock_entry_is_reclaimed() {
 /// # 返回
 /// 无
 #[test]
-fn stale_shared_lock_entry_is_not_reclaimed() {
+fn stale_shared_account_lock_entry_is_not_reclaimed() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
-    let key = gate_key("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
-    let first = request_gate_lock("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
+    let key = account_gate_key("account-1");
+    let first = account_request_gate_lock("account-1", 3);
 
     let lock = REQUEST_GATE_LOCKS.get_or_init(|| Mutex::new(RequestGateLockTable::default()));
     let mut table = lock.lock().expect("request gate table lock");
@@ -130,7 +130,7 @@ fn stale_shared_lock_entry_is_not_reclaimed() {
     table.last_cleanup_at = now - REQUEST_GATE_LOCK_CLEANUP_INTERVAL_SECS - 1;
     drop(table);
 
-    let second = request_gate_lock("gk_1", "/v1/responses", Some("gpt-5.3-codex"));
+    let second = account_request_gate_lock("account-1", 3);
     assert!(Arc::ptr_eq(&first, &second));
 }
 
@@ -138,9 +138,9 @@ fn stale_shared_lock_entry_is_not_reclaimed() {
 fn acquire_waits_until_capacity_guard_released() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
-    let lock = request_gate_lock("gk_wait", "/v1/responses", Some("gpt-5.3-codex"));
+    let lock = account_request_gate_lock("account-wait", 3);
     let mut occupied_guards = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..3 {
         occupied_guards.push(
             lock.try_acquire()
                 .expect("lock should not be poisoned")
@@ -168,24 +168,24 @@ fn acquire_waits_until_capacity_guard_released() {
 }
 
 #[test]
-fn request_gate_lock_allows_four_parallel_requests_for_same_scope() {
+fn account_request_gate_limits_one_account_to_three_parallel_requests() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
-    let lock = request_gate_lock("gk_parallel", "/v1/responses", Some("gpt-5.3-codex"));
+    let lock = account_request_gate_lock("account-parallel", 3);
     let mut guards = Vec::new();
 
-    for _ in 0..4 {
+    for _ in 0..3 {
         guards.push(
             lock.try_acquire()
                 .expect("lock should not be poisoned")
-                .expect("same scope should allow four parallel requests"),
+                .expect("same account should allow three parallel requests"),
         );
     }
     assert!(
         lock.try_acquire()
             .expect("lock should not be poisoned")
             .is_none(),
-        "same scope should queue the fifth request"
+        "same account should queue the fourth request"
     );
 }
 
@@ -219,13 +219,31 @@ fn lock_with_max_running_allows_configured_parallel_guards() {
 }
 
 #[test]
-fn client_ip_gate_lock_limits_same_ip_to_four_running() {
+fn updating_an_account_limit_updates_the_existing_lock() {
     let _guard = crate::test_env_guard();
     clear_request_gate_locks_for_tests();
-    let lock = client_ip_gate_lock("192.168.1.20");
+    let lock = account_request_gate_lock("account-dynamic", 3);
+    let mut guards = Vec::new();
+    for _ in 0..3 {
+        guards.push(lock.try_acquire().unwrap().expect("account slot"));
+    }
+    assert!(lock.try_acquire().unwrap().is_none());
+
+    let same_lock = account_request_gate_lock("account-dynamic", 4);
+    assert!(Arc::ptr_eq(&lock, &same_lock));
+    let fourth = lock.try_acquire().unwrap().expect("expanded account slot");
+    drop(fourth);
+    drop(guards);
+}
+
+#[test]
+fn client_ip_gate_uses_the_configured_single_and_multi_ip_limits() {
+    let _guard = crate::test_env_guard();
+    clear_request_gate_locks_for_tests();
+    let lock = client_ip_gate_lock("192.168.1.20", 3);
     let mut guards = Vec::new();
 
-    for _ in 0..CLIENT_IP_GATE_MAX_RUNNING {
+    for _ in 0..3 {
         guards.push(
             lock.try_acquire()
                 .expect("lock should not be poisoned")
@@ -236,20 +254,24 @@ fn client_ip_gate_lock_limits_same_ip_to_four_running() {
         lock.try_acquire()
             .expect("lock should not be poisoned")
             .is_none(),
-        "same IP should be queued after max running slots"
+        "single active IP should be queued after three slots"
     );
 
-    let other_ip_lock = client_ip_gate_lock("192.168.1.21");
-    let other_ip_guard = other_ip_lock
-        .try_acquire()
-        .expect("lock should not be poisoned")
-        .expect("different IP has independent slots");
+    let same_lock = client_ip_gate_lock("192.168.1.20", 2);
+    assert!(Arc::ptr_eq(&lock, &same_lock));
+    assert!(
+        same_lock.try_acquire().unwrap().is_none(),
+        "multiple active IPs must lower each IP to two slots"
+    );
+
+    let other_ip_lock = client_ip_gate_lock("192.168.1.21", 2);
+    let first_other_ip_guard = other_ip_lock.try_acquire().unwrap().expect("other IP slot");
+    let second_other_ip_guard = other_ip_lock.try_acquire().unwrap().expect("other IP slot");
+    assert!(other_ip_lock.try_acquire().unwrap().is_none());
 
     drop(guards.pop());
-    let released_slot = lock
-        .try_acquire()
-        .expect("lock should not be poisoned")
-        .expect("released IP slot");
-    drop(released_slot);
-    drop(other_ip_guard);
+    assert!(lock.try_acquire().unwrap().is_none());
+    drop(guards);
+    drop(first_other_ip_guard);
+    drop(second_other_ip_guard);
 }

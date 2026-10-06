@@ -80,6 +80,9 @@ export interface AppSettings extends GatewayTransportValues {
   modelForwardRules: string;
   compactModelForwardRules: string;
   accountMaxInflight: number;
+  accountMaxConcurrent: number;
+  clientIpSingleMaxConcurrent: number;
+  clientIpMultiMaxConcurrent: number;
   threadAwareAccountDistributionEnabled: boolean;
   requestLogPayloadRedactionEnabled: boolean;
   requestLogPayloadPreviewEnabled: boolean;

@@ -20,6 +20,11 @@ pub const APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY: &str = "gateway.model_for
 pub const APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY: &str =
     "gateway.compact_model_forward_rules";
 pub const APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY: &str = "gateway.account_max_inflight";
+pub const APP_SETTING_GATEWAY_ACCOUNT_MAX_CONCURRENT_KEY: &str = "gateway.account_max_concurrent";
+pub const APP_SETTING_GATEWAY_CLIENT_IP_SINGLE_MAX_CONCURRENT_KEY: &str =
+    "gateway.client_ip_single_max_concurrent";
+pub const APP_SETTING_GATEWAY_CLIENT_IP_MULTI_MAX_CONCURRENT_KEY: &str =
+    "gateway.client_ip_multi_max_concurrent";
 pub const APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY: &str =
     "gateway.thread_aware_account_distribution_enabled";
 pub const APP_SETTING_GATEWAY_REQUEST_LOG_PAYLOAD_REDACTION_ENABLED_KEY: &str =

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -6,8 +7,6 @@ use codexmanager_core::storage::now_ts;
 
 const REQUEST_GATE_LOCK_TTL_SECS: i64 = 30 * 60;
 const REQUEST_GATE_LOCK_CLEANUP_INTERVAL_SECS: i64 = 60;
-const REQUEST_GATE_MAX_RUNNING: usize = 4;
-const CLIENT_IP_GATE_MAX_RUNNING: usize = 4;
 
 struct RequestGateLockEntry {
     lock: Arc<RequestGateLock>,
@@ -36,7 +35,7 @@ pub(crate) struct RequestGateLock {
     state: Mutex<RequestGateState>,
     available: Condvar,
     async_available: tokio::sync::Notify,
-    max_running: usize,
+    max_running: AtomicUsize,
 }
 
 impl RequestGateLock {
@@ -56,13 +55,25 @@ impl RequestGateLock {
             state: Mutex::new(RequestGateState::default()),
             available: Condvar::new(),
             async_available: tokio::sync::Notify::new(),
-            max_running: 1,
+            max_running: AtomicUsize::new(1),
         }
     }
 
-    fn with_max_running(mut self, max_running: usize) -> Self {
-        self.max_running = max_running.max(1);
+    fn with_max_running(self, max_running: usize) -> Self {
+        self.max_running
+            .store(max_running.max(1), Ordering::Relaxed);
         self
+    }
+
+    fn set_max_running(&self, max_running: usize) {
+        self.max_running
+            .store(max_running.max(1), Ordering::Relaxed);
+        self.available.notify_all();
+        self.async_available.notify_waiters();
+    }
+
+    fn max_running(&self) -> usize {
+        self.max_running.load(Ordering::Relaxed)
     }
 
     /// 函数 `try_acquire`
@@ -86,7 +97,7 @@ impl RequestGateLock {
                 return Err(RequestGateAcquireError::Poisoned);
             }
         };
-        if state.running >= self.max_running {
+        if state.running >= self.max_running() {
             return Ok(None);
         }
         state.running += 1;
@@ -120,10 +131,9 @@ impl RequestGateLock {
                 return Err(RequestGateAcquireError::Poisoned);
             }
         };
-        let max_running = self.max_running;
         let Ok(mut state) = self
             .available
-            .wait_while(state, |state| state.running >= max_running)
+            .wait_while(state, |state| state.running >= self.max_running())
         else {
             log::warn!("event=lock_poisoned lock=request_gate_state action=skip_wait_while");
             return Err(RequestGateAcquireError::Poisoned);
@@ -159,12 +169,12 @@ impl RequestGateLock {
         };
         let wait_result = self
             .available
-            .wait_timeout_while(state, timeout, |state| state.running >= self.max_running);
+            .wait_timeout_while(state, timeout, |state| state.running >= self.max_running());
         let Ok((mut state, _)) = wait_result else {
             log::warn!("event=lock_poisoned lock=request_gate_state action=skip_wait_timeout");
             return Err(RequestGateAcquireError::Poisoned);
         };
-        if state.running >= self.max_running {
+        if state.running >= self.max_running() {
             return Ok(None);
         }
         state.running += 1;
@@ -218,16 +228,8 @@ impl Drop for RequestGateGuard {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn gate_key(key_id: &str, path: &str, model: Option<&str>) -> String {
-    format!(
-        "{}|{}|{}",
-        key_id.trim(),
-        path.trim(),
-        model
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .unwrap_or("-")
-    )
+fn account_gate_key(account_id: &str) -> String {
+    format!("account|{}", account_id.trim())
 }
 
 fn client_ip_gate_key(client_ip: &str) -> String {
@@ -246,6 +248,7 @@ fn gate_lock_for_key(key: String, max_running: usize) -> Arc<RequestGateLock> {
             lock: Arc::new(RequestGateLock::new().with_max_running(max_running)),
             last_seen_at: now,
         });
+    entry.lock.set_max_running(max_running);
     entry.last_seen_at = now;
     entry.lock.clone()
 }
@@ -261,16 +264,15 @@ fn gate_lock_for_key(key: String, max_running: usize) -> Arc<RequestGateLock> {
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(crate) fn request_gate_lock(
-    key_id: &str,
-    path: &str,
-    model: Option<&str>,
+pub(crate) fn account_request_gate_lock(
+    account_id: &str,
+    max_running: usize,
 ) -> Arc<RequestGateLock> {
-    gate_lock_for_key(gate_key(key_id, path, model), REQUEST_GATE_MAX_RUNNING)
+    gate_lock_for_key(account_gate_key(account_id), max_running)
 }
 
-pub(crate) fn client_ip_gate_lock(client_ip: &str) -> Arc<RequestGateLock> {
-    gate_lock_for_key(client_ip_gate_key(client_ip), CLIENT_IP_GATE_MAX_RUNNING)
+pub(crate) fn client_ip_gate_lock(client_ip: &str, max_running: usize) -> Arc<RequestGateLock> {
+    gate_lock_for_key(client_ip_gate_key(client_ip), max_running)
 }
 
 /// 函数 `maybe_cleanup_request_gate_locks`

@@ -11,7 +11,9 @@ use super::author_links::{
 };
 use super::{
     current_background_tasks_snapshot_value, current_env_overrides,
-    current_gateway_account_max_inflight, current_gateway_compact_model_forward_rules,
+    current_gateway_account_max_concurrent, current_gateway_account_max_inflight,
+    current_gateway_client_ip_multi_max_concurrent,
+    current_gateway_client_ip_single_max_concurrent, current_gateway_compact_model_forward_rules,
     current_gateway_free_account_max_model, current_gateway_model_forward_rules,
     current_gateway_originator, current_gateway_quota_guard, current_gateway_residency_requirement,
     current_gateway_sse_keepalive_enabled, current_gateway_sse_keepalive_interval_ms,
@@ -212,6 +214,9 @@ fn current_app_settings_value_inner(
     let model_forward_rules = current_gateway_model_forward_rules();
     let compact_model_forward_rules = current_gateway_compact_model_forward_rules();
     let account_max_inflight = current_gateway_account_max_inflight();
+    let account_max_concurrent = current_gateway_account_max_concurrent();
+    let client_ip_single_max_concurrent = current_gateway_client_ip_single_max_concurrent();
+    let client_ip_multi_max_concurrent = current_gateway_client_ip_multi_max_concurrent();
     let thread_aware_account_distribution_enabled =
         current_gateway_thread_aware_account_distribution_enabled();
     let quota_guard = current_gateway_quota_guard();
@@ -388,6 +393,18 @@ fn current_app_settings_value_inner(
     if let Some(object) = result.as_object_mut() {
         object.insert("zoomFactor".to_string(), zoom_factor.into());
         object.insert("gatewayUserAgent".to_string(), gateway_user_agent.into());
+        object.insert(
+            "accountMaxConcurrent".to_string(),
+            account_max_concurrent.into(),
+        );
+        object.insert(
+            "clientIpSingleMaxConcurrent".to_string(),
+            client_ip_single_max_concurrent.into(),
+        );
+        object.insert(
+            "clientIpMultiMaxConcurrent".to_string(),
+            client_ip_multi_max_concurrent.into(),
+        );
         object.insert(
             "gatewayUserAgentDefault".to_string(),
             gateway_user_agent_default.into(),

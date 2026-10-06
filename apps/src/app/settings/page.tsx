@@ -335,7 +335,10 @@ function AdminSettingsPage() {
       Record<
         | "sseKeepaliveIntervalMs"
         | "upstreamStreamTimeoutMs"
-        | "upstreamTotalTimeoutMs",
+        | "upstreamTotalTimeoutMs"
+        | "accountMaxConcurrent"
+        | "clientIpSingleMaxConcurrent"
+        | "clientIpMultiMaxConcurrent",
         string
       >
     >
@@ -784,6 +787,14 @@ function AdminSettingsPage() {
     upstreamTotalTimeoutMs:
       transportDraft.upstreamTotalTimeoutMs ??
       stringifyNumber(snapshot?.upstreamTotalTimeoutMs),
+    accountMaxConcurrent:
+      transportDraft.accountMaxConcurrent ?? stringifyNumber(snapshot?.accountMaxConcurrent),
+    clientIpSingleMaxConcurrent:
+      transportDraft.clientIpSingleMaxConcurrent ??
+      stringifyNumber(snapshot?.clientIpSingleMaxConcurrent),
+    clientIpMultiMaxConcurrent:
+      transportDraft.clientIpMultiMaxConcurrent ??
+      stringifyNumber(snapshot?.clientIpMultiMaxConcurrent),
   };
   const quotaGuardInputValues = {
     primaryMinRemainingPercent:
@@ -1056,7 +1067,10 @@ function AdminSettingsPage() {
     key:
       | "sseKeepaliveIntervalMs"
       | "upstreamStreamTimeoutMs"
-      | "upstreamTotalTimeoutMs",
+      | "upstreamTotalTimeoutMs"
+      | "accountMaxConcurrent"
+      | "clientIpSingleMaxConcurrent"
+      | "clientIpMultiMaxConcurrent",
     minimum: number,
   ) => {
     const nextValue = parseIntegerInput(transportInputValues[key], minimum);

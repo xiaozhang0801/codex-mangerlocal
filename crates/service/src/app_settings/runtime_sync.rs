@@ -6,7 +6,10 @@ use super::{
     apply_env_overrides_to_process, list_app_settings_map, normalize_optional_text,
     persisted_env_overrides_missing_process_env, reload_runtime_after_env_override_apply,
     save_persisted_app_setting, set_service_bind_mode, BackgroundTasksInput, QuotaGuardInput,
-    APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_ACCOUNT_MAX_CONCURRENT_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
+    APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    APP_SETTING_GATEWAY_CLIENT_IP_MULTI_MAX_CONCURRENT_KEY,
+    APP_SETTING_GATEWAY_CLIENT_IP_SINGLE_MAX_CONCURRENT_KEY,
     APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
@@ -186,6 +189,27 @@ pub fn sync_runtime_settings_from_storage() {
             } else {
                 log::warn!("parse persisted account max inflight failed: {raw}");
             }
+        }
+    }
+    if let Some(raw) = settings.get(APP_SETTING_GATEWAY_ACCOUNT_MAX_CONCURRENT_KEY) {
+        if let Ok(limit) = raw.trim().parse::<usize>() {
+            gateway::set_account_max_concurrent_limit(limit);
+        } else {
+            log::warn!("parse persisted account max concurrent failed: {raw}");
+        }
+    }
+    if let Some(raw) = settings.get(APP_SETTING_GATEWAY_CLIENT_IP_SINGLE_MAX_CONCURRENT_KEY) {
+        if let Ok(limit) = raw.trim().parse::<usize>() {
+            gateway::set_client_ip_single_max_concurrent_limit(limit);
+        } else {
+            log::warn!("parse persisted single IP max concurrent failed: {raw}");
+        }
+    }
+    if let Some(raw) = settings.get(APP_SETTING_GATEWAY_CLIENT_IP_MULTI_MAX_CONCURRENT_KEY) {
+        if let Ok(limit) = raw.trim().parse::<usize>() {
+            gateway::set_client_ip_multi_max_concurrent_limit(limit);
+        } else {
+            log::warn!("parse persisted multi IP max concurrent failed: {raw}");
         }
     }
     if let Some(raw) =

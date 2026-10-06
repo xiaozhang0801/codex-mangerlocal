@@ -13,6 +13,7 @@ use super::candidate_attempt::{
 };
 use super::candidate_state::CandidateExecutionState;
 use super::execution_context::GatewayUpstreamExecutionContext;
+use super::request_gate::{acquire_account_request_gate_async, AccountRequestGateError};
 use super::request_setup::UpstreamRequestSetup;
 use super::response_finalize::{
     finalize_terminal_candidate, finalize_upstream_response, respond_total_timeout,
@@ -431,7 +432,33 @@ pub(in super::super) async fn execute_candidate_sequence(
             },
         );
 
-        let mut inflight_guard = Some(super::super::super::acquire_account_inflight(&account.id));
+        let account_request_gate =
+            match acquire_account_request_gate_async(trace_id, &account.id, request_deadline).await
+            {
+                Ok(guard) => guard,
+                Err(AccountRequestGateError::Timeout) => {
+                    skipped_inflight += 1;
+                    context.log_candidate_skip(
+                        &account.id,
+                        idx,
+                        super::super::support::candidates::CandidateSkipReason::Inflight,
+                    );
+                    continue;
+                }
+                Err(AccountRequestGateError::Cancelled) => {
+                    return Ok(CandidateExecutionResult::Handled);
+                }
+                Err(AccountRequestGateError::Unavailable) => {
+                    return Err(format!(
+                        "account request gate unavailable for account {}",
+                        account.id
+                    ));
+                }
+            };
+        let mut inflight_guard = Some(
+            super::super::super::acquire_account_inflight(&account.id)
+                .hold_account_request_gate(account_request_gate),
+        );
         let mut attempt_trace = CandidateAttemptTrace::default();
         let mut same_account_retry_count = 0u8;
         let mut decision = run_candidate_attempt(CandidateAttemptParams {

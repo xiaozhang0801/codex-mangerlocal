@@ -78,12 +78,31 @@ export function GatewayTabContent({
     sseKeepaliveIntervalMs: string;
     upstreamStreamTimeoutMs: string;
     upstreamTotalTimeoutMs: string;
+    accountMaxConcurrent: string;
+    clientIpSingleMaxConcurrent: string;
+    clientIpMultiMaxConcurrent: string;
   };
   setTransportDraft: React.Dispatch<React.SetStateAction<
-    Partial<Record<"sseKeepaliveIntervalMs" | "upstreamStreamTimeoutMs" | "upstreamTotalTimeoutMs", string>>
+    Partial<
+      Record<
+        | "sseKeepaliveIntervalMs"
+        | "upstreamStreamTimeoutMs"
+        | "upstreamTotalTimeoutMs"
+        | "accountMaxConcurrent"
+        | "clientIpSingleMaxConcurrent"
+        | "clientIpMultiMaxConcurrent",
+        string
+      >
+    >
   >>;
   saveTransportField: (
-    key: "sseKeepaliveIntervalMs" | "upstreamStreamTimeoutMs" | "upstreamTotalTimeoutMs",
+    key:
+      | "sseKeepaliveIntervalMs"
+      | "upstreamStreamTimeoutMs"
+      | "upstreamTotalTimeoutMs"
+      | "accountMaxConcurrent"
+      | "clientIpSingleMaxConcurrent"
+      | "clientIpMultiMaxConcurrent",
     minimum: number,
   ) => void;
   modelForwardRuleRows: Array<{ pattern: string; target: string }>;
@@ -177,6 +196,63 @@ export function GatewayTabContent({
               })
             }
           />
+        </div>
+
+        <div className="grid gap-4 border-t pt-6 md:grid-cols-3">
+          <div className="grid gap-2">
+            <Label>{t("单个活跃 IP 最大并发")}</Label>
+            <Input
+              type="number"
+              min={1}
+              value={transportInputValues.clientIpSingleMaxConcurrent}
+              onChange={(event) =>
+                setTransportDraft((current) => ({
+                  ...current,
+                  clientIpSingleMaxConcurrent: event.target.value,
+                }))
+              }
+              onBlur={() => saveTransportField("clientIpSingleMaxConcurrent", 1)}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              {t("只有一个活跃内网 IP 请求时，该 IP 可同时执行的最大请求数。")}
+            </p>
+          </div>
+          <div className="grid gap-2">
+            <Label>{t("多个活跃 IP 时每个 IP 最大并发")}</Label>
+            <Input
+              type="number"
+              min={1}
+              value={transportInputValues.clientIpMultiMaxConcurrent}
+              onChange={(event) =>
+                setTransportDraft((current) => ({
+                  ...current,
+                  clientIpMultiMaxConcurrent: event.target.value,
+                }))
+              }
+              onBlur={() => saveTransportField("clientIpMultiMaxConcurrent", 1)}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              {t("检测到多个活跃 IP 后，每个 IP 单独使用此并发上限。")}
+            </p>
+          </div>
+          <div className="grid gap-2">
+            <Label>{t("单个账号最大并发")}</Label>
+            <Input
+              type="number"
+              min={1}
+              value={transportInputValues.accountMaxConcurrent}
+              onChange={(event) =>
+                setTransportDraft((current) => ({
+                  ...current,
+                  accountMaxConcurrent: event.target.value,
+                }))
+              }
+              onBlur={() => saveTransportField("accountMaxConcurrent", 1)}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              {t("每个账号独立计算；第 4 个请求会等待可用名额，不按团队或分组汇总。")}
+            </p>
+          </div>
         </div>
 
         <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:items-start sm:justify-between">

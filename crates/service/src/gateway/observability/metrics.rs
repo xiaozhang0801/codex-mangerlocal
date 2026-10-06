@@ -669,6 +669,17 @@ pub(crate) fn account_inflight_count(account_id: &str) -> usize {
 
 pub(crate) struct AccountInFlightGuard {
     account_id: String,
+    account_request_gate: Option<super::request_gate::RequestGateGuard>,
+}
+
+impl AccountInFlightGuard {
+    pub(crate) fn hold_account_request_gate(
+        mut self,
+        account_request_gate: super::request_gate::RequestGateGuard,
+    ) -> Self {
+        self.account_request_gate = Some(account_request_gate);
+        self
+    }
 }
 
 impl Drop for AccountInFlightGuard {
@@ -714,6 +725,7 @@ pub(crate) fn acquire_account_inflight(account_id: &str) -> AccountInFlightGuard
     *entry += 1;
     AccountInFlightGuard {
         account_id: account_id.to_string(),
+        account_request_gate: None,
     }
 }
 
