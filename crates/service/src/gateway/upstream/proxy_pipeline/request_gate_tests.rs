@@ -18,14 +18,19 @@ fn acquire_request_gate_times_out_before_request_deadline_when_busy() {
     std::env::set_var(ENV_REQUEST_GATE_WAIT_TIMEOUT_MS, "30");
     crate::gateway::reload_runtime_config_from_env();
 
-    let first_guard = acquire_request_gate(
-        "trc_gate_first",
-        "gk_gate_bounded",
-        "/v1/responses",
-        Some("gpt-5.5"),
-        Some(Instant::now() + Duration::from_secs(5)),
-    )
-    .expect("first request should acquire the gate immediately");
+    let mut occupied_guards = Vec::new();
+    for index in 0..4 {
+        occupied_guards.push(
+            acquire_request_gate(
+                format!("trc_gate_occupied_{index}").as_str(),
+                "gk_gate_bounded",
+                "/v1/responses",
+                Some("gpt-5.5"),
+                Some(Instant::now() + Duration::from_secs(5)),
+            )
+            .expect("request should acquire an available gate slot"),
+        );
+    }
 
     let started_at = Instant::now();
     let second_guard = acquire_request_gate(
@@ -37,7 +42,7 @@ fn acquire_request_gate_times_out_before_request_deadline_when_busy() {
     );
     let waited = started_at.elapsed();
 
-    drop(first_guard);
+    drop(occupied_guards);
     restore_request_gate_wait_timeout(previous);
 
     assert!(
