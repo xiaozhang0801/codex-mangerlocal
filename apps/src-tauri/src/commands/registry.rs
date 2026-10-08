@@ -61,6 +61,8 @@ macro_rules! invoke_handler {
             crate::commands::requestlog::service_requestlog_clear,
             crate::commands::requestlog::service_requestlog_today_summary,
             crate::commands::requestlog::service_requestlog_client_ip_usage,
+            crate::commands::storage_space::service_storage_space_usage,
+            crate::commands::storage_space::service_storage_reclaim,
             // plugin
             crate::commands::plugin::service_plugin_catalog_list,
             crate::commands::plugin::service_plugin_catalog_refresh,

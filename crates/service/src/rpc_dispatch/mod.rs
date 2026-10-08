@@ -39,6 +39,7 @@ mod quota;
 mod requestlog;
 mod service_config;
 mod startup;
+mod storage_space;
 mod system;
 mod usage;
 
@@ -277,6 +278,8 @@ fn admin_only_method(method: &str) -> bool {
             | "account/usage/resetCredits"
             | "account/usage/resetCredit/consume"
             | "apikey/managedModelPriceSyncV2"
+            | "storage/spaceUsage"
+            | "storage/reclaim"
     )
 }
 
@@ -382,6 +385,9 @@ pub(crate) fn handle_request_with_actor(req: JsonRpcRequest, actor: RpcActor) ->
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = requestlog::try_handle(&req, &actor) {
+        return JsonRpcMessage::Response(resp);
+    }
+    if let Some(resp) = storage_space::try_handle(&req) {
         return JsonRpcMessage::Response(resp);
     }
 
