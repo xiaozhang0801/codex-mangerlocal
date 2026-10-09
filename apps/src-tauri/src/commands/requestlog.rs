@@ -148,3 +148,15 @@ pub async fn service_requestlog_client_ip_usage(
     });
     rpc_call_in_background("requestlog/client_ip_usage", addr, Some(params)).await
 }
+
+/// Admin diagnostics of the request payload write queue (memory budget,
+/// spill files, dropped captures). With `trace_id`, also reports why that
+/// trace's content was not recorded.
+#[tauri::command]
+pub async fn service_requestlog_payload_queue_stats(
+    addr: Option<String>,
+    trace_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "traceId": trace_id });
+    rpc_call_in_background("requestlog/payload_queue_stats", addr, Some(params)).await
+}
