@@ -121,8 +121,8 @@ test("conditional IP gate keeps the four-running-request rule explicit", () => {
   const testSource = fs.readFileSync(testPath, "utf8");
 
   assert.ok(
-    /CLIENT_IP_GATE_MAX_RUNNING/.test(routingSource),
-    "IP gate should define the four-request limit",
+    /max_running/.test(routingSource),
+    "IP gate should define a configurable running-slot limit",
   );
   assert.ok(
     /client_ip_gate/.test(routingSource),

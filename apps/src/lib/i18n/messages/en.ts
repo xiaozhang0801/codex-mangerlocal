@@ -159,6 +159,15 @@ export const EN_MESSAGES: MessageCatalog = {
   线程感知账号分配: "Thread-aware account distribution",
   "开启后未绑定的新线程会优先选择当前承载线程更少的可用账号，已有线程仍保持账号粘性。":
     "When enabled, unbound new threads prefer available accounts with fewer assigned threads while existing threads stay sticky.",
+  "单个活跃 IP 最大并发": "Max concurrency for a single active IP",
+  "只有一个活跃内网 IP 请求时，该 IP 可同时执行的最大请求数。":
+    "The maximum number of requests this IP can run concurrently when only one intranet IP is active.",
+  "多个活跃 IP 时每个 IP 最大并发": "Max concurrency per IP when multiple IPs are active",
+  "检测到多个活跃 IP 后，每个 IP 单独使用此并发上限。":
+    "Once multiple active IPs are detected, each IP uses this concurrency limit independently.",
+  "单个账号最大并发": "Max concurrency per account",
+  "每个账号独立计算；第 4 个请求会等待可用名额，不按团队或分组汇总。":
+    "Counted independently per account; the 4th request waits for an available slot and is not aggregated by team or group.",
   "Free 账号模型上限": "Free account model ceiling",
   "选择 Free 账号模型上限": "Select the Free account model ceiling",
   "设为“不限制”时，Free 账号可参与所有模型请求；选择具体模型后，目录中排在该模型之上的请求会跳过 Free 账号，但不会改写请求模型。混合模式会继续尝试其他账号，账号候选耗尽后仍按现有策略转聚合 API。":
