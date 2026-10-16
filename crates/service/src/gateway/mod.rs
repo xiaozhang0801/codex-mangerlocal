@@ -226,8 +226,8 @@ use protocol_adapter::{
 pub(crate) use request_activity::clear_request_activity_for_tests;
 pub(crate) use request_activity::{
     begin_request_activity, has_multiple_active_client_ips, mark_request_activity_queued,
-    mark_request_activity_running, request_activity_snapshot, update_request_activity_source,
-    RequestActivityStart,
+    mark_request_activity_running, request_activity_snapshot, update_request_activity_account,
+    update_request_activity_source, RequestActivityStart,
 };
 #[cfg(test)]
 pub(super) use request_helpers::parse_request_metadata;

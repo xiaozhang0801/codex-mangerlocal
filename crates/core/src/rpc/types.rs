@@ -1891,6 +1891,14 @@ pub struct DashboardActiveRequestItem {
     pub route_kind: String,
     pub source_kind: Option<String>,
     pub source_id: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub account_label: Option<String>,
+    #[serde(default)]
+    pub team_name: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     pub created_at_ms: i64,
     pub queued_at_ms: Option<i64>,
     pub running_at_ms: Option<i64>,

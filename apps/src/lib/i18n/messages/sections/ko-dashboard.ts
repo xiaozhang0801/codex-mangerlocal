@@ -3,6 +3,9 @@
 import type { MessageCatalog } from "../types";
 
 export const KO_DASHBOARD_MESSAGES: MessageCatalog = {
+  "团队": "팀",
+  "待分配": "배정 대기 중",
+  "未设置团队": "팀 미설정",
   "本机 Codex 的直连请求不会经过网关；下方仍展示 CodexManager 已记录的网关流量。":
     "이 컴퓨터의 Codex 직결 요청은 게이트웨이를 거치지 않습니다. 아래에는 CodexManager가 기록한 게이트웨이 트래픽이 계속 표시됩니다.",
   "OpenAI 账号今日消耗": "오늘 OpenAI 계정 사용량",

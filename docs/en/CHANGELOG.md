@@ -5,6 +5,34 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+### CodexManagerLocal
+
+- Active IP requests display the selected account and team instead of source. Team names use the account group with workspace ID fallback; requests without a selected account remain pending assignment.
+- Requests waiting for an account slot remain queued until acquisition. Queue and running durations accumulate across account retries. Concurrency remains per account, not per team.
+- Request log IPs remain complete on one line, including IPv6, with horizontal table scrolling when needed.
+
+## [0.6.4] - 2026-10-15
+
+### Added
+
+- Added request payload details for captured client requests, upstream requests, and responses to diagnose protocol conversion and tool calls (#489).
+- Added storage usage and cleanup controls in Settings and a configurable local gateway text input limit (#488, #494).
+- Account selection remembers explicit account/model incompatibility, filters candidates before sticky selection, and restores eligibility after expiry (#492).
+
+### Changed
+
+- Request payload logging uses a bounded background queue, batch commits, and disk spill; dropped payloads are reported on the logs page (#495, #496).
+- Log cleanup uses batched deletion and incremental space reclamation, with generation boundaries protecting new data (#494, #498).
+- Added control over removing requires_openai_auth from Codex configuration. Cleanup remains enabled by default; disabling it preserves existing values (#464).
+- Synchronized workspace, frontend, Tauri, and lockfile versions to 0.6.4.
+
+### Fixed
+
+- Propagated upstream stream interruptions and read failures to Chat Completions, passthrough, and native Responses clients; native Responses reports response.failed events (#487, #491, #502).
+- Improved WebSocket tool-call recovery, flattened array content in Chat tool results, and declared web_search for replayed search history (#490, #504).
+- Fixed spill cleanup races and optimized SQLite connection reuse and last_insert_rowid reads (#491, #493).
+- Added automatic system/browser language detection and fixed missing Linux AppImage icon metadata and the credit-reset dialog layout (#461).
+
 ## [0.6.3] - 2026-09-30
 
 ### Added
@@ -590,7 +618,8 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Changed
 - The operation area of ​​the account management page is integrated into a single "Account Operation" drop-down menu, replacing the stack of multiple buttons on the right, making the interface more concise.
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.4
 [0.6.3]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.3
 [0.6.2]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.2
 [0.6.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...v0.6.1

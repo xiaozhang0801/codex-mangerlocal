@@ -41,9 +41,9 @@ export function ClientIpCell({ log }: { log: RequestLog }) {
   }
 
   return (
-    <div className="flex max-w-[140px] items-center gap-1.5">
+    <div className="flex w-max items-center gap-1.5 whitespace-nowrap">
       <Network className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <span className="truncate font-mono text-[11px]" title={clientIp}>
+      <span className="shrink-0 whitespace-nowrap font-mono text-[11px]" title={clientIp}>
         {clientIp}
       </span>
     </div>

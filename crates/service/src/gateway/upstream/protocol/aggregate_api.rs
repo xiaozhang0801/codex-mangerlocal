@@ -1401,6 +1401,7 @@ pub(in super::super) async fn proxy_aggregate_request(
             "aggregate_api",
             candidate_id.as_str(),
         );
+        super::super::super::mark_request_activity_running(trace_id, "aggregate_api");
         let candidate_upstream_model =
             aggregate_upstream_model_for_log(&candidate, model_for_log).map(str::to_string);
         let candidate_supplier_name = candidate.supplier_name.clone();

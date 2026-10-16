@@ -3,7 +3,7 @@ use super::{
     stream_idle_timed_out, stream_idle_timeout_message, stream_reader_disconnected_message,
     stream_wait_timeout, upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex,
     OpenAIResponsesEvent, OpenAIResponsesOutputTextState, PassthroughSseCollector, Read,
-    SseKeepAliveFrame, SseTerminal,
+    SseKeepAliveFrame, SseTerminal, TerminalDeliveryTracker,
 };
 use crate::gateway::upstream::attempt_flow::transport::runtime::upstream_runtime;
 use crate::gateway::upstream::{GatewayByteStream, GatewayByteStreamItem, GatewayStreamResponse};
@@ -110,6 +110,7 @@ pub(crate) struct OpenAIResponsesPassthroughSseReader {
     observer: OpenAIResponsesSidecarObserver,
     out_cursor: Cursor<Vec<u8>>,
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
+    terminal_delivery: TerminalDeliveryTracker,
     usage_text_state: OpenAIResponsesOutputTextState,
     keepalive_frame: SseKeepAliveFrame,
     request_started_at: Instant,
@@ -145,6 +146,7 @@ impl OpenAIResponsesPassthroughSseReader {
             observer: OpenAIResponsesSidecarObserver::new(sidecar_upstream),
             out_cursor: Cursor::new(Vec::new()),
             usage_collector,
+            terminal_delivery: TerminalDeliveryTracker::default(),
             usage_text_state: OpenAIResponsesOutputTextState::default(),
             keepalive_frame,
             request_started_at,
@@ -214,6 +216,38 @@ impl OpenAIResponsesPassthroughSseReader {
         }
     }
 
+    fn terminal_error_chunk(&mut self) -> Vec<u8> {
+        self.finished = true;
+        let message = self.usage_collector.lock().ok().and_then(|collector| {
+            (!collector.terminal_delivered)
+                .then(|| collector.terminal_error.clone())
+                .flatten()
+        });
+        let Some(message) = message else {
+            return Vec::new();
+        };
+
+        // Codex ignores most generic error events. Deliver the upstream failure
+        // as a Responses terminal event instead of an unexplained disconnect.
+        let payload = serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_proxy",
+                "object": "response",
+                "status": "failed",
+                "error": {
+                    "type": "server_error",
+                    "code": "upstream_error",
+                    "message": message
+                }
+            }
+        });
+        // End a possibly truncated upstream frame before emitting a new event.
+        let chunk = format!("\n\nevent: response.failed\ndata: {payload}\n\n").into_bytes();
+        mark_terminal_delivered(&self.usage_collector, &mut self.terminal_delivery, &chunk);
+        chunk
+    }
+
     async fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
         self.drain_sidecar_events();
         match self
@@ -226,7 +260,7 @@ impl OpenAIResponsesPassthroughSseReader {
                 mark_first_response_ms(&self.usage_collector, self.request_started_at);
                 self.drain_sidecar_events();
                 let bytes = bytes.to_vec();
-                mark_terminal_delivered(&self.usage_collector, &bytes);
+                mark_terminal_delivered(&self.usage_collector, &mut self.terminal_delivery, &bytes);
                 Ok(bytes)
             }
             Ok(GatewayByteStreamItem::Eof) => {
@@ -239,8 +273,7 @@ impl OpenAIResponsesPassthroughSseReader {
                         });
                     }
                 }
-                self.finished = true;
-                Ok(Vec::new())
+                Ok(self.terminal_error_chunk())
             }
             Ok(GatewayByteStreamItem::Error(err)) => {
                 self.last_upstream_activity = Instant::now();
@@ -250,8 +283,7 @@ impl OpenAIResponsesPassthroughSseReader {
                         .terminal_error
                         .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
                 }
-                self.finished = true;
-                Ok(Vec::new())
+                Ok(self.terminal_error_chunk())
             }
             Err(RecvTimeoutError::Timeout) => {
                 self.drain_sidecar_events();
@@ -261,8 +293,7 @@ impl OpenAIResponsesPassthroughSseReader {
                             .terminal_error
                             .get_or_insert_with(stream_idle_timeout_message);
                     }
-                    self.finished = true;
-                    return Ok(Vec::new());
+                    return Ok(self.terminal_error_chunk());
                 }
                 if crate::gateway::current_sse_keepalive_enabled() {
                     Ok(self.keepalive_frame.bytes().to_vec())
@@ -278,8 +309,7 @@ impl OpenAIResponsesPassthroughSseReader {
                         hint.unwrap_or_else(stream_reader_disconnected_message)
                     });
                 }
-                self.finished = true;
-                Ok(Vec::new())
+                Ok(self.terminal_error_chunk())
             }
         }
     }
@@ -371,5 +401,118 @@ mod async_finish_tests {
             assert_eq!(collected.usage.input_tokens, Some(11));
             assert_eq!(collected.usage.output_tokens, Some(7));
         });
+    }
+}
+
+#[cfg(test)]
+mod terminal_error_tests {
+    use super::*;
+    use bytes::Bytes;
+
+    fn read_fixture(sse: &[u8]) -> (String, PassthroughSseCollector) {
+        let usage = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+        let response = GatewayStreamResponse::new(
+            reqwest::StatusCode::OK,
+            reqwest::header::HeaderMap::new(),
+            GatewayByteStream::from_bytes(Bytes::copy_from_slice(sse)),
+        );
+        let mut reader = OpenAIResponsesPassthroughSseReader::from_stream_response(
+            response,
+            usage.clone(),
+            SseKeepAliveFrame::Comment,
+            Instant::now(),
+        );
+        let mut body = String::new();
+        reader.read_to_string(&mut body).unwrap();
+        let collected = usage.lock().unwrap().clone();
+        (body, collected)
+    }
+
+    #[test]
+    fn native_truncated_frame_keeps_synthetic_failure_parseable() {
+        let upstream = b"event: response.output_text.delta\ndata: {\"delta\":\"unfinished";
+        let (body, _) = read_fixture(upstream);
+        let events = upstream_runtime().unwrap().block_on(async {
+            futures_util::stream::iter([Ok::<_, String>(Bytes::from(body))])
+                .eventsource()
+                .collect::<Vec<_>>()
+                .await
+        });
+        let failure = events
+            .into_iter()
+            .filter_map(Result::ok)
+            .find(|event| event.event == "response.failed")
+            .expect("failure event");
+        let payload: serde_json::Value =
+            serde_json::from_str(&failure.data).expect("valid failure JSON");
+        assert_eq!(payload["type"], "response.failed");
+    }
+
+    #[test]
+    fn native_terminal_words_in_text_do_not_suppress_failure() {
+        let payload = serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "response.completed response.failed response.incomplete response.done data: [DONE]"
+        });
+        let upstream = format!("event: response.output_text.delta\ndata: {payload}\n\n");
+        let (body, collected) = read_fixture(upstream.as_bytes());
+        assert!(body.starts_with(&upstream));
+        assert!(body.contains("event: response.failed\n"));
+        assert!(collected.terminal_delivered);
+        assert!(collected.terminal_error.is_some());
+    }
+
+    #[test]
+    fn native_generic_error_is_normalized_to_response_failed() {
+        let upstream = b"event: error\ndata: {\"type\":\"error\",\"code\":\"internal_error\",\"message\":\"response protection is unavailable\",\"param\":null}\n\n";
+        let (body, collected) = read_fixture(upstream);
+
+        assert!(body.starts_with(std::str::from_utf8(upstream).unwrap()));
+        assert!(body.contains("event: response.failed\n"));
+        assert!(body.contains("\"type\":\"response.failed\""));
+        assert!(body.contains("response protection is unavailable"));
+        assert!(!body.contains("response.completed"));
+        assert!(collected.saw_terminal);
+        assert!(collected.terminal_delivered);
+        assert_eq!(collected.last_event_type.as_deref(), Some("error"));
+        assert!(collected
+            .terminal_error
+            .as_deref()
+            .is_some_and(|message| message.contains("response protection is unavailable")));
+    }
+
+    #[test]
+    fn native_long_terminal_frames_are_not_duplicated() {
+        for terminal in [
+            "response.failed",
+            "response.incomplete",
+            "response.completed",
+        ] {
+            let response =
+                serde_json::json!({"error": {"message": "upstream failure ".repeat(100)}});
+            let payload = format!(r#"{{"type":"{terminal}","response":{response}}}"#);
+            let upstream = format!("event: {terminal}\ndata: {payload}\n\n");
+            let (body, collected) = read_fixture(upstream.as_bytes());
+            assert_eq!(
+                body, upstream,
+                "terminal event {terminal} must pass through unchanged"
+            );
+            assert!(collected.terminal_delivered);
+        }
+    }
+
+    #[test]
+    fn native_response_failed_is_not_duplicated() {
+        let upstream = b"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream failure\"}}}\n\n";
+        let (body, collected) = read_fixture(upstream);
+
+        assert_eq!(body.as_bytes(), upstream);
+        assert_eq!(body.matches("response.failed").count(), 2);
+        assert!(collected.saw_terminal);
+        assert!(collected.terminal_delivered);
+        assert_eq!(
+            collected.terminal_error.as_deref(),
+            Some("code=server_error upstream failure")
+        );
     }
 }

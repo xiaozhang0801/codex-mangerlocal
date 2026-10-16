@@ -5,6 +5,34 @@
 
 ## [Unreleased]
 
+### CodexManagerLocal
+
+- 仪表盘实时 IP 请求改为显示实际选中的账号与团队，移除来源列；团队优先显示账号分组名称，无名称时显示 workspace ID。未选定账号显示“待分配”。
+- 等待账号并发名额时显示“排队中”，获得名额后显示“运行中”；切换账号或重复排队时保留累计等待、运行时长。并发仍按账号限制，不按团队合并。
+- 请求日志完整显示单行 IP，长 IPv6 不换行、不省略，表格宽度不足时可横向滚动。
+
+## [0.6.4] - 2026-10-15
+
+### Added
+
+- 请求日志新增请求内容详情，可查看已捕获的客户端请求、上游请求与响应内容，便于排查协议转换和工具调用问题（#489）。
+- 设置页新增存储空间查看与清理入口；网关本地文本输入上限支持通过环境配置调整（#488、#494）。
+- 账号池按账号与模型记录明确的不支持结果，在粘性选择前过滤不适用账号，并在记忆过期后恢复候选（#492）。
+
+### Changed
+
+- 请求内容日志改用有界后台写入队列、批量提交和磁盘溢写，减少日志持久化对请求转发的影响；写入丢弃时在日志页提示（#495、#496）。
+- 日志清理改为分批删除和增量空间回收，按清理代次限定范围，减少阻塞并保护清理后新增的数据（#494、#498）。
+- 设置页可控制是否移除 Codex 配置中的旧 requires_openai_auth 标记；默认保持清理行为，关闭后保留已有值（#464）。
+- 同步 workspace、前端、Tauri 桌面端和锁文件版本至 0.6.4。
+
+### Fixed
+
+- 修复上游流中断或读取失败未正确传递给客户端的问题，覆盖 Chat Completions、透传与原生 Responses；原生 Responses 失败以 response.failed 事件通知（#487、#491、#502）。
+- 改进 WebSocket 工具调用恢复，兼容 Chat 工具结果的数组内容，并为重放的网页搜索历史补齐 web_search 工具声明（#490、#504）。
+- 修复日志溢写清理竞态，优化 SQLite 连接复用和 last_insert_rowid 读取（#491、#493）。
+- 界面语言支持自动检测系统或浏览器语言；修复 Linux AppImage 缺失图标元数据，以及额度重置对话框布局（#461）。
+
 ## [0.6.3] - 2026-09-30
 
 ### Added
@@ -591,7 +619,8 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.4
 [0.6.3]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.3
 [0.6.2]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.2
 [0.6.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...v0.6.1

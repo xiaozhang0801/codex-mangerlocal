@@ -5,6 +5,16 @@ import test from "node:test";
 
 const appsRoot = path.resolve(import.meta.dirname, "..");
 
+test("client IP remains complete on one line in a content-sized table", async () => {
+  const source = await readSource("src/app/logs/page-cells.tsx");
+  const cell = source.slice(source.indexOf("export function ClientIpCell"), source.indexOf("export function AccountKeyInfoCell"));
+  assert.doesNotMatch(cell, /truncate|break-all|break-words|max-w-/);
+  assert.match(cell, /whitespace-nowrap/);
+  const table = await readSource("src/app/logs/page-sections.tsx");
+  assert.match(table, /overflow-x-auto/);
+  assert.doesNotMatch(table, /table-fixed/);
+});
+
 async function readSource(relativePath) {
   return fs.readFile(path.join(appsRoot, relativePath), "utf8");
 }

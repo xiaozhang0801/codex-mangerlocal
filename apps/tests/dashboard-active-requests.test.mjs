@@ -5,6 +5,16 @@ import test from "node:test";
 
 const appsRoot = path.resolve(import.meta.dirname, "..");
 
+test("active request table shows account and team instead of source", async () => {
+  const source = await readSource("src/app/page.tsx");
+  const card = source.slice(source.indexOf("function AdminActiveRequestsCard"), source.indexOf("function AdminUsageAnalyticsCard"));
+  assert.match(card, /t\("账号"\)/);
+  assert.match(card, /t\("团队"\)/);
+  assert.match(card, /item\.accountLabel/);
+  assert.match(card, /item\.teamName/);
+  assert.doesNotMatch(card, /t\("来源"\)|activeRequestSourceLabel/);
+});
+
 async function readSource(relativePath) {
   return fs.readFile(path.join(appsRoot, relativePath), "utf8");
 }

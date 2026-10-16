@@ -145,8 +145,14 @@ fn api_available_model_slugs_preserves_catalog_sort_order() {
 
     assert_eq!(models.len(), 11);
     assert_eq!(
-        &models[..4],
-        ["gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"]
+        &models[..5],
+        [
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6.1-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol"
+        ]
     );
     assert!(!models.iter().any(|model| model == "codex-auto-review"));
     for slug in [

@@ -3,6 +3,9 @@
 import type { MessageCatalog } from "../types";
 
 export const EN_DASHBOARD_MESSAGES: MessageCatalog = {
+  "团队": "Team",
+  "待分配": "Pending assignment",
+  "未设置团队": "No team set",
   "本机 Codex 的直连请求不会经过网关；下方仍展示 CodexManager 已记录的网关流量。":
     "Direct requests from Codex on this machine bypass the gateway; the data below still shows gateway traffic recorded by CodexManager.",
   "OpenAI 账号今日消耗": "OpenAI account usage today",

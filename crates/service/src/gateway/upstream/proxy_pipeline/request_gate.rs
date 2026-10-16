@@ -12,6 +12,7 @@ pub(in super::super) async fn acquire_account_request_gate_async(
     account_id: &str,
     request_deadline: Option<Instant>,
 ) -> Result<super::super::super::RequestGateGuard, AccountRequestGateError> {
+    crate::gateway::mark_request_activity_queued(trace_id, "account_gate");
     let lock = super::super::super::account_request_gate_lock(
         account_id,
         super::super::super::account_max_concurrent_limit(),
@@ -41,6 +42,7 @@ pub(in super::super) async fn acquire_account_request_gate_async(
     };
     match crate::http::gateway_request::with_response_cancellation(wait).await {
         Ok(Ok(Some(guard))) => {
+            crate::gateway::mark_request_activity_running(trace_id, "account_gate");
             log::debug!(
                 "event=account_request_gate_acquired trace_id={} account_id={} wait_ms={}",
                 trace_id,

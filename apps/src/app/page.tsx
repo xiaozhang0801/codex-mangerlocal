@@ -91,7 +91,6 @@ import {
 } from "recharts";
 import type {
   DashboardActiveRequestIpGroup,
-  DashboardActiveRequestItem,
   DashboardActiveRequests,
   DashboardAdminUsageSummary,
   DashboardDailyUsagePoint,
@@ -308,16 +307,6 @@ function formatActiveRequestDuration(ms: number | null | undefined): string {
   if (minutes < 60) return `${minutes}m ${restSeconds}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
-}
-
-function activeRequestSourceLabel(item: DashboardActiveRequestItem): string {
-  if (item.sourceKind && item.sourceId) {
-    return `${item.sourceKind}:${item.sourceId}`;
-  }
-  if (item.routeKind) {
-    return item.routeKind;
-  }
-  return "--";
 }
 
 function MetricCard({
@@ -603,7 +592,7 @@ function ActiveRequestIpGroupCard({
   return (
     <div className="mission-panel rounded-lg border border-border/60 bg-background/35 px-3 py-2.5">
       <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0 truncate font-mono text-sm font-semibold">
+        <div className="min-w-0 overflow-x-auto whitespace-nowrap font-mono text-sm font-semibold">
           {group.clientIp}
         </div>
         <Badge variant="outline" className="shrink-0">
@@ -645,14 +634,15 @@ function AdminActiveRequestsCard({
 }) {
   const { t } = useI18n();
   const [filter, setFilter] = useState<ActiveRequestFilter>("all");
-  const items = data?.items ?? [];
   const ipGroups = data?.ipGroups ?? [];
   const visibleItems = useMemo(
-    () =>
-      filter === "all"
+    () => {
+      const items = data?.items ?? [];
+      return filter === "all"
         ? items
-        : items.filter((item) => item.status === filter),
-    [filter, items],
+        : items.filter((item) => item.status === filter);
+    },
+    [filter, data?.items],
   );
 
   return (
@@ -725,7 +715,8 @@ function AdminActiveRequestsCard({
                 <TableHead>{t("状态")}</TableHead>
                 <TableHead>{t("客户端 IP")}</TableHead>
                 <TableHead>{t("模型 / 路径")}</TableHead>
-                <TableHead>{t("来源")}</TableHead>
+                <TableHead>{t("账号")}</TableHead>
+                <TableHead>{t("团队")}</TableHead>
                 <TableHead className="text-right">{t("等待 / 运行")}</TableHead>
               </TableRow>
             </TableHeader>
@@ -738,7 +729,7 @@ function AdminActiveRequestsCard({
                         {t(activeRequestStatusLabel(item.status))}
                       </Badge>
                     </TableCell>
-                    <TableCell className="font-mono">
+                    <TableCell className="whitespace-nowrap font-mono">
                       {item.clientIp ?? t("未知 IP")}
                     </TableCell>
                     <TableCell>
@@ -749,8 +740,11 @@ function AdminActiveRequestsCard({
                         {item.method} {item.path}
                       </div>
                     </TableCell>
-                    <TableCell className="max-w-[220px] truncate text-xs text-muted-foreground">
-                      {activeRequestSourceLabel(item)}
+                    <TableCell className="min-w-[160px] max-w-[260px] whitespace-normal break-all text-xs">
+                      {item.accountLabel || item.accountId || (item.sourceKind ? "--" : t("待分配"))}
+                    </TableCell>
+                    <TableCell className="min-w-[120px] max-w-[220px] whitespace-normal break-words text-xs text-muted-foreground">
+                      {item.teamName || item.workspaceId || (item.accountId ? t("未设置团队") : "--")}
                     </TableCell>
                     <TableCell className="text-right font-mono text-xs tabular-nums">
                       {formatActiveRequestDuration(item.waitMs)} /{" "}
@@ -761,7 +755,7 @@ function AdminActiveRequestsCard({
               ) : (
                 <TableRow>
                   <TableCell
-                    colSpan={5}
+                    colSpan={6}
                     className="h-20 text-center text-sm text-muted-foreground"
                   >
                     {isLoading ? t("正在读取实时请求") : t("没有匹配的实时请求")}

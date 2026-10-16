@@ -426,7 +426,7 @@ export function RequestLogsTabContent({
         </CardHeader>
         <CardContent className="px-0">
           <div className="overflow-x-auto">
-            <Table className="min-w-[1640px] table-fixed">
+            <Table className="min-w-[1640px] table-auto">
               <TableHeader>
                 <TableRow>
                   <TableHead className="h-12 w-[150px] px-4 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase">
@@ -480,7 +480,7 @@ export function RequestLogsTabContent({
                 ) : logs.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
+                      colSpan={10}
                       className="h-52 px-4 text-center text-sm text-muted-foreground"
                     >
                       {!serviceConnected

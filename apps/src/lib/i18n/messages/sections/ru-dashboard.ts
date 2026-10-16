@@ -3,6 +3,9 @@
 import type { MessageCatalog } from "../types";
 
 export const RU_DASHBOARD_MESSAGES: MessageCatalog = {
+  "团队": "Команда",
+  "待分配": "Ожидает назначения",
+  "未设置团队": "Команда не задана",
   "本机 Codex 的直连请求不会经过网关；下方仍展示 CodexManager 已记录的网关流量。":
     "Прямые запросы Codex на этом компьютере обходят шлюз; ниже по-прежнему отображается трафик шлюза, записанный CodexManager.",
   "OpenAI 账号今日消耗": "Расход аккаунтов OpenAI сегодня",

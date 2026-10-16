@@ -79,6 +79,10 @@ export interface DashboardActiveRequestItem {
   routeKind: string;
   sourceKind: string | null;
   sourceId: string | null;
+  accountId: string | null;
+  accountLabel: string | null;
+  teamName: string | null;
+  workspaceId: string | null;
   createdAtMs: number;
   queuedAtMs: number | null;
   runningAtMs: number | null;

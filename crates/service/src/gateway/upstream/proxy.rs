@@ -899,10 +899,6 @@ pub(in super::super) async fn proxy_validated_request(
         None
     };
     request.hold_until_complete(client_ip_gate_guard);
-    super::super::mark_request_activity_running(
-        trace_id.as_str(),
-        route_kind_label(execution_plan.route_kind),
-    );
 
     if should_try_provider_executor_aggregate_route(execution_plan, configured_model.as_ref()) {
         let (aggregate_path, aggregate_body) = if is_hybrid_passthrough_route(execution_plan) {

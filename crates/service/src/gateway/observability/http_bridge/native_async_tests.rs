@@ -85,6 +85,7 @@ fn native_disconnect_preserves_usage_from_forwarded_responses_frame() {
 
 #[test]
 fn deferred_disconnect_drain_keeps_request_gate_until_accounting_completes() {
+    let _guard = crate::test_env_guard();
     crate::gateway::response_test_runtime()
         .unwrap()
         .block_on(async {

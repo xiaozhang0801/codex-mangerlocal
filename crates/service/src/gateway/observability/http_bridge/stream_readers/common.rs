@@ -1,8 +1,13 @@
 use super::{Arc, Mutex, UpstreamResponseUsage};
 use crate::gateway::upstream::attempt_flow::transport::runtime::upstream_runtime;
 use crate::gateway::upstream::{GatewayByteStream, GatewayByteStreamItem};
+use bytes::Bytes;
+use eventsource_stream::{Event, EventStreamError, Eventsource};
+use futures_util::{FutureExt, Stream, StreamExt};
+use std::convert::Infallible;
 #[cfg(test)]
 use std::io::{BufRead, BufReader, Read};
+use std::pin::Pin;
 use std::sync::mpsc::RecvTimeoutError;
 #[cfg(test)]
 use std::thread;
@@ -20,39 +25,76 @@ pub(crate) struct PassthroughSseCollector {
     pub(crate) usage: UpstreamResponseUsage,
     pub(crate) saw_terminal: bool,
     pub(crate) terminal_delivered: bool,
-    #[allow(dead_code)]
-    pub(crate) terminal_delivery_tail: Vec<u8>,
     pub(crate) terminal_error: Option<String>,
     pub(crate) upstream_error_hint: Option<String>,
     pub(crate) last_event_type: Option<String>,
 }
 
+type DeliveryEvents =
+    Pin<Box<dyn Stream<Item = Result<Event, EventStreamError<Infallible>>> + Send>>;
+
+pub(crate) struct TerminalDeliveryTracker {
+    sender: tokio::sync::mpsc::UnboundedSender<Result<Bytes, Infallible>>,
+    events: DeliveryEvents,
+}
+
+impl Default for TerminalDeliveryTracker {
+    fn default() -> Self {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let bytes = futures_util::stream::poll_fn(move |cx| receiver.poll_recv(cx));
+        Self {
+            sender,
+            events: Box::pin(bytes.eventsource()),
+        }
+    }
+}
+
+fn is_response_terminal(kind: &str) -> bool {
+    matches!(
+        kind,
+        "response.completed" | "response.failed" | "response.incomplete" | "response.done"
+    )
+}
+
 pub(crate) fn mark_terminal_delivered(
     usage_collector: &Arc<Mutex<PassthroughSseCollector>>,
+    tracker: &mut TerminalDeliveryTracker,
     chunk: &[u8],
 ) {
-    let Ok(mut collector) = usage_collector.lock() else {
+    let Ok(collector) = usage_collector.lock() else {
         return;
     };
     if collector.terminal_delivered {
         return;
     }
-    collector.terminal_delivery_tail.extend_from_slice(chunk);
-    const TAIL_LIMIT: usize = 256;
-    if collector.terminal_delivery_tail.len() > TAIL_LIMIT {
-        let keep_from = collector.terminal_delivery_tail.len() - TAIL_LIMIT;
-        collector.terminal_delivery_tail.drain(..keep_from);
+    drop(collector);
+    // Parse only bytes being returned downstream, not the potentially ahead
+    // usage sidecar. Poll locally so timeout handling cannot race the parser.
+    let _ = tracker.sender.send(Ok(Bytes::copy_from_slice(chunk)));
+    while let Some(Some(event)) = tokio::task::unconstrained(tracker.events.next()).now_or_never() {
+        let Ok(event) = event else { continue };
+        let delivered = if event.data.trim() == "[DONE]" || is_response_terminal(&event.event) {
+            true
+        } else if event.event == "message" {
+            #[derive(serde::Deserialize)]
+            struct EventType {
+                #[serde(rename = "type")]
+                kind: Option<String>,
+            }
+            serde_json::from_str::<EventType>(&event.data)
+                .ok()
+                .and_then(|value| value.kind)
+                .is_some_and(|kind| is_response_terminal(&kind))
+        } else {
+            false
+        };
+        if delivered {
+            if let Ok(mut collector) = usage_collector.lock() {
+                collector.terminal_delivered = true;
+            }
+            break;
+        }
     }
-    let text = String::from_utf8_lossy(&collector.terminal_delivery_tail).to_ascii_lowercase();
-    if !text.contains("response.completed")
-        && !text.contains("response.failed")
-        && !text.contains("response.incomplete")
-        && !text.contains("response.done")
-        && !text.contains("data: [done]")
-    {
-        return;
-    }
-    collector.terminal_delivered = true;
 }
 
 fn elapsed_ms_since(started_at: Instant) -> i64 {
