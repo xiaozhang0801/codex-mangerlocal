@@ -9,6 +9,15 @@ async function readSource(relativePath) {
   return fs.readFile(path.join(appsRoot, relativePath), "utf8");
 }
 
+test("LAN IP usage shares personnel labels without truncating addresses", async () => {
+  const pageSource = await readSource("src/app/apikeys/page.tsx");
+  const rows = pageSource.slice(pageSource.indexOf("sortedClientIpUsageRows.map"));
+  const ipCell = rows.slice(0, rows.indexOf("</TableCell>"));
+  assert.match(ipCell, /<ClientIpLabel ip=\{item\.clientIp\}/);
+  assert.match(ipCell, /whitespace-nowrap/);
+  assert.doesNotMatch(ipCell, /truncate|max-w-/);
+});
+
 test("API Keys page reads token usage as one row per client IP", async () => {
   const pageSource = await readSource("src/app/apikeys/page.tsx");
   const serviceClientSource = await readSource("src/lib/api/service-client.ts");

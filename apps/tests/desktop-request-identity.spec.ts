@@ -51,6 +51,12 @@ async function mockDesktop(page: Page) {
           case "service_requestlog_list":
           case "service_requestlog_list_with_summary":
             return { items: logs, total: 2, page: 1, pageSize: 10, summary: { totalCount: 2, filteredCount: 2, successCount: 2, errorCount: 0 } };
+          case "service_requestlog_client_ip_usage":
+            return { items: [ipv6, ipv4].map((clientIp, index) => ({
+              clientIp, requestCount: 10, successCount: 9, errorCount: 1,
+              totalTokens: (index + 1) * 100, estimatedCostUsd: (index + 1) * 0.25,
+              lastSeenAt: 1792000000,
+            })) };
           case "service_startup_snapshot":
           case "service_dashboard_admin_usage_summary":
           case "service_requestlog_summary":
@@ -64,7 +70,7 @@ async function mockDesktop(page: Page) {
           case "service_account_list":
           case "service_apikey_list":
           case "service_aggregate_api_list":
-          case "service_requestlog_client_ip_usage":
+          case "service_apikey_usage_stats":
             return { items: [], total: 0 };
           default:
             throw new Error(`Unhandled desktop command: ${command}`);
@@ -95,6 +101,27 @@ async function expectFullSingleLineIp(cell: Locator, ip: string) {
 }
 
 for (const width of [1440, 640]) {
+  test(`LAN IP usage personnel labels stay complete at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await mockDesktop(page);
+    await page.goto("/apikeys/");
+    const table = page.getByRole("table").filter({ has: page.getByRole("columnheader", { name: "客户端 IP", exact: true }) });
+    for (const [ip, name] of [[IPV6, "Alice"], [IPV4, "未绑定"]]) {
+      await expectFullSingleLineIp(table.getByRole("cell").filter({ hasText: ip }), `${ip}（${name}）`);
+    }
+    const rows = table.locator("tbody tr");
+    await expect(rows.first()).toContainText(IPV4);
+    for (const index of [1, 2, 3]) {
+      await expect(rows.first().locator("td").nth(index)).toContainText("200");
+      await expect(rows.first().locator("td").nth(index)).toContainText("$0.50");
+    }
+    const scroller = table.locator("..");
+    expect(await scroller.evaluate(el => getComputedStyle(el).overflowX)).toBe("auto");
+    if (width === 640) expect(await scroller.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+    await table.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `test-results/desktop-ip-usage-${width}.png`, fullPage: true, animations: "disabled" });
+  });
+
   test(`desktop request identity and full single-line IP at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1000 });
     await mockDesktop(page);
@@ -156,12 +183,17 @@ test("personnel XLSX preview, failed save, replace, reload and clear", async ({ 
   await page.goto("/logs/");
   await expect(page.getByText(`${IPV4}（Bob）`, { exact: true })).toBeVisible();
   await expect(page.getByText(`${IPV6}（未绑定）`, { exact: true })).toBeVisible();
+  await page.goto("/apikeys/");
+  await expect(page.getByText(`${IPV4}（Bob）`, { exact: true })).toBeVisible();
+  await expect(page.getByText(`${IPV6}（未绑定）`, { exact: true })).toBeVisible();
   await page.goto("/settings/");
   await section.getByRole("button", { name: "清空绑定" }).click();
   await dialog.getByRole("button", { name: "确定", exact: true }).click();
   await expect(dialog).toBeHidden();
   await page.reload();
   await expect(section).toContainText("已绑定 0");
+  await page.goto("/apikeys/");
+  await expect(page.getByText(`${IPV4}（未绑定）`, { exact: true })).toBeVisible();
 });
 
 test("invalid or empty imports never replace existing bindings", async ({ page }) => {

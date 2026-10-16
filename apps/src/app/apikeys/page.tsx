@@ -16,6 +16,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { ClientIpLabel } from "@/components/client-ip-label";
 import { ApiKeyModal } from "@/components/modals/api-key-modal";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import {
@@ -939,8 +940,8 @@ export default function ApiKeysPage() {
                 sortedClientIpUsageRows.map((item) => (
                   <TableRow key={item.clientIp}>
                     <TableCell>
-                      <code className="inline-block max-w-[180px] truncate whitespace-nowrap rounded border border-primary/5 bg-muted/50 px-2 py-1 font-mono text-[10px] leading-4 text-primary">
-                        {item.clientIp}
+                      <code className="inline-block whitespace-nowrap rounded border border-primary/5 bg-muted/50 px-2 py-1 font-mono text-[10px] leading-4 text-primary">
+                        <ClientIpLabel ip={item.clientIp} />
                       </code>
                     </TableCell>
                     <TableCell className="text-xs tabular-nums">
