@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { personnelWorkbook } from "./support/personnel-workbook.cjs";
 
 const IPV6 = "2001:0db8:1234:5678:9abc:def0:1234:5678";
 const IPV4 = "192.168.123.234";
@@ -6,6 +7,8 @@ const IPV4 = "192.168.123.234";
 async function mockDesktop(page: Page) {
   await page.addInitScript(({ ipv6, ipv4 }) => {
     const runtime = window as unknown as Record<string, unknown>;
+    const settings = () => ({ locale: "zh-CN", theme: "tech", appearancePreset: "classic", serviceAddr: "localhost:48760", codexCliGuideDismissed: true, updateAutoCheck: false, lowTransparency: true,
+      clientIpNames: JSON.parse(sessionStorage.getItem("fixture-ip-names") ?? JSON.stringify({ [ipv6]: "Alice" })) });
     const active = [
       { id: "selected", clientIp: ipv6, status: "running", accountId: "account-a", accountLabel: "owner@example.com", teamName: "软件组", workspaceId: "workspace-a", sourceKind: "openai_account" },
       { id: "waiting", clientIp: ipv4, status: "queued" },
@@ -24,11 +27,18 @@ async function mockDesktop(page: Page) {
       metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
       transformCallback: () => ++callbackId,
       unregisterCallback: () => {},
-      invoke: async (command: string) => {
+      invoke: async (command: string, args?: { patch?: { clientIpNames?: Record<string, string> } }) => {
         if (command.startsWith("plugin:")) return null;
         switch (command) {
           case "app_settings_get":
-            return { locale: "zh-CN", theme: "tech", appearancePreset: "classic", serviceAddr: "localhost:48760", codexCliGuideDismissed: true, updateAutoCheck: false, lowTransparency: true };
+            return settings();
+          case "app_settings_set":
+            if (runtime.__failBindingSave) throw new Error("fixture save failed");
+            if (args?.patch?.clientIpNames) sessionStorage.setItem("fixture-ip-names", JSON.stringify(args.patch.clientIpNames));
+            return settings();
+          case "app_desktop_diagnostics":
+          case "app_storage_space_summary":
+            return {};
           case "service_initialize":
             return { version: "0.6.4", userAgent: "codex_cli_rs/test", codexHome: "C:/Test/.codex", platformFamily: "windows", platformOs: "windows" };
           case "service_account_manager_session_current":
@@ -96,7 +106,8 @@ for (const width of [1440, 640]) {
     const selected = table.getByRole("row").filter({ hasText: "owner@example.com" });
     await expect(selected).toContainText("软件组");
     await expect(selected).toContainText("2s / 3s");
-    await expectFullSingleLineIp(selected.locator("td").nth(1), IPV6);
+    await expectFullSingleLineIp(selected.locator("td").nth(1), `${IPV6}（Alice）`);
+    await expect(table.getByRole("cell").filter({ hasText: `${IPV4}（未绑定）` })).toHaveCount(4);
     await expect(table.getByText("待分配", { exact: true })).toBeVisible();
     await expect(table.getByText("未设置团队", { exact: true })).toBeVisible();
     await expect(table.getByText("workspace-c", { exact: true })).toBeVisible();
@@ -109,11 +120,63 @@ for (const width of [1440, 640]) {
     await page.goto("/logs/");
     const logs = page.getByRole("table").filter({ has: page.getByRole("columnheader", { name: "客户端 IP" }) });
     for (const ip of [IPV6, IPV4]) {
-      await expectFullSingleLineIp(logs.getByRole("cell").filter({ hasText: ip }), ip);
+      await expectFullSingleLineIp(logs.getByRole("cell").filter({ hasText: ip }), `${ip}（${ip === IPV6 ? "Alice" : "未绑定"}）`);
     }
     const scroller = logs.locator("..");
     expect(await scroller.evaluate(el => el.scrollWidth > el.clientWidth && getComputedStyle(el).overflowX === "auto")).toBe(true);
-    await logs.getByText(IPV6, { exact: true }).scrollIntoViewIfNeeded();
+    await logs.getByText(`${IPV6}（Alice）`, { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: `test-results/desktop-request-logs-${width}.png`, fullPage: true, animations: "disabled" });
   });
 }
+
+test("personnel XLSX preview, failed save, replace, reload and clear", async ({ page }) => {
+  await mockDesktop(page);
+  await page.goto("/settings/");
+  const section = page.getByRole("region", { name: "IP 人员绑定" });
+  await expect(section).toBeVisible();
+  await expect(section).toContainText("Alice");
+  await section.locator('input[type="file"]').setInputFiles({
+    name: "people.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    buffer: personnelWorkbook([["Personnel"], ["姓名", "IPv4 地址(IP)"], ["Bob", IPV4], ["Missing", ""]]),
+  });
+  await expect(section).toContainText("Bob");
+  await expect(section).toContainText("跳过 1");
+  await page.evaluate(() => { (window as unknown as Record<string, unknown>).__failBindingSave = true; });
+  await section.getByRole("button", { name: "确认替换" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "确定", exact: true }).click();
+  await expect(page.getByText("保存失败，原有绑定未更改", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem("fixture-ip-names"))).toBeNull();
+  await page.evaluate(() => { (window as unknown as Record<string, unknown>).__failBindingSave = false; });
+  await dialog.getByRole("button", { name: "确定", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(section.getByText("Bob", { exact: true })).toBeVisible();
+  await page.goto("/");
+  await expect(page.getByRole("cell", { name: `${IPV4}（Bob）`, exact: true })).toHaveCount(4);
+  await page.goto("/logs/");
+  await expect(page.getByText(`${IPV4}（Bob）`, { exact: true })).toBeVisible();
+  await expect(page.getByText(`${IPV6}（未绑定）`, { exact: true })).toBeVisible();
+  await page.goto("/settings/");
+  await section.getByRole("button", { name: "清空绑定" }).click();
+  await dialog.getByRole("button", { name: "确定", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await page.reload();
+  await expect(section).toContainText("已绑定 0");
+});
+
+test("invalid or empty imports never replace existing bindings", async ({ page }) => {
+  await mockDesktop(page);
+  await page.goto("/settings/");
+  const section = page.getByRole("region", { name: "IP 人员绑定" });
+  for (const rows of [
+    [["姓名", "IP"], ["Bob", "bad-ip"]],
+    [["姓名", "IP"], ["Bob", ""]],
+    [["姓名", "IP"], ["Bob", "192.0.2.1"], ["Eve", "192.0.2.1"]],
+  ]) {
+    await section.locator('input[type="file"]').setInputFiles({ name: "bad.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: personnelWorkbook(rows) });
+    await expect(section.getByRole("alert")).toBeVisible();
+    await expect(section).toContainText("Alice");
+    await expect(section.getByRole("button", { name: "确认替换" })).toHaveCount(0);
+  }
+  expect(await page.evaluate(() => sessionStorage.getItem("fixture-ip-names"))).toBeNull();
+});

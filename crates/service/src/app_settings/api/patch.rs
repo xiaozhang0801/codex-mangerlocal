@@ -1,6 +1,7 @@
+use crate::app_settings::client_ip_names;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::author_links::{
     normalize_author_link_items, serialize_author_link_items, AuthorLinkItem,
@@ -29,6 +30,8 @@ use super::{
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AppSettingsPatch {
+    #[serde(default, deserialize_with = "client_ip_names::deserialize_patch")]
+    client_ip_names: Option<BTreeMap<String, String>>,
     update_auto_check: Option<bool>,
     remove_requires_openai_auth: Option<bool>,
     auto_start_enabled: Option<bool>,
@@ -267,6 +270,10 @@ pub(super) fn apply_app_settings_patch(patch: AppSettingsPatch) -> Result<(), St
     }
     if let Some(enabled) = patch.distribution_enabled {
         let _ = crate::set_distribution_enabled(enabled)?;
+    }
+
+    if let Some(names) = patch.client_ip_names {
+        client_ip_names::save(&names)?;
     }
 
     Ok(())

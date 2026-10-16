@@ -1,5 +1,6 @@
 "use client";
 
+import { ClientIpLabel } from "@/components/client-ip-label";
 import {
   useEffect,
   useMemo,
@@ -593,7 +594,7 @@ function ActiveRequestIpGroupCard({
     <div className="mission-panel rounded-lg border border-border/60 bg-background/35 px-3 py-2.5">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 overflow-x-auto whitespace-nowrap font-mono text-sm font-semibold">
-          {group.clientIp}
+          <ClientIpLabel ip={group.clientIp} />
         </div>
         <Badge variant="outline" className="shrink-0">
           {group.totalCount}
@@ -730,7 +731,7 @@ function AdminActiveRequestsCard({
                       </Badge>
                     </TableCell>
                     <TableCell className="whitespace-nowrap font-mono">
-                      {item.clientIp ?? t("未知 IP")}
+                      <ClientIpLabel ip={item.clientIp} emptyLabel={t("未知 IP")} />
                     </TableCell>
                     <TableCell>
                       <div className="max-w-[240px] truncate font-medium">

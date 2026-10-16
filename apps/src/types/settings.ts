@@ -84,6 +84,7 @@ export interface AppSettings extends GatewayTransportValues {
   accountMaxConcurrent: number;
   clientIpSingleMaxConcurrent: number;
   clientIpMultiMaxConcurrent: number;
+  clientIpNames: Record<string, string>;
   threadAwareAccountDistributionEnabled: boolean;
   requestLogPayloadRedactionEnabled: boolean;
   requestLogPayloadPreviewEnabled: boolean;

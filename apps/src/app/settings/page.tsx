@@ -76,6 +76,7 @@ import {
   ServiceListenCard,
 } from "@/app/settings/components/general-tab-cards";
 import { GeneralBasicsCard } from "@/app/settings/components/general-basics-card";
+import { ClientIpNamesSettings } from "@/app/settings/components/client-ip-names-settings";
 import { DesktopDiagnosticsCard } from "@/app/settings/components/desktop-diagnostics-card";
 import { StorageSpaceCard } from "@/app/settings/components/storage-space-card";
 import { TasksTabContent } from "@/app/settings/components/tasks-tab-content";
@@ -1429,6 +1430,10 @@ function AdminSettingsPage() {
             canCloseToTray={canCloseToTray}
             updateSettings={updateSettings}
           />
+          {isDesktopRuntime ? (
+            <ClientIpNamesSettings names={snapshot.clientIpNames} saving={updateSettings.isPending}
+              onSave={clientIpNames => updateSettings.mutateAsync({ clientIpNames })} />
+          ) : null}
           {isDesktopRuntime ? (
             <DesktopDiagnosticsCard t={t} active={isPageActive} />
           ) : null}

@@ -1,6 +1,8 @@
 use super::*;
 #[path = "account_reset_warmup_rpc_tests.rs"]
 mod account_reset_warmup_rpc_tests;
+#[path = "client_ip_names_rpc_tests.rs"]
+mod client_ip_names_rpc_tests;
 use codexmanager_core::rpc::types::{
     JsonRpcMessage, JsonRpcResponse, ModelGroupModelUpsertParams, ModelGroupModelsSetParams,
     ModelGroupUsersSetParams,
@@ -118,6 +120,9 @@ fn unknown_method_returns_jsonrpc_error() {
 
 #[test]
 fn member_actor_cannot_call_admin_only_rpc() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-member-admin-rpc-denied");
+    set_web_auth_mode("accounts").expect("enable accounts mode");
     for method in [
         "accountManager/users/list",
         "codexProfile/repairHistory",
@@ -159,6 +164,7 @@ fn member_actor_cannot_call_admin_only_rpc() {
             .unwrap_or("");
         assert!(err.contains("permission_denied"), "{method}: {err}");
     }
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[test]

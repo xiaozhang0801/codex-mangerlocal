@@ -11,8 +11,21 @@ use codexmanager_core::rpc::types::{JsonRpcRequest, JsonRpcResponse};
 ///
 /// # 返回
 /// 返回函数执行结果
-pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
-    let result = match req.method.as_str() {
+pub(super) fn try_handle(req: &JsonRpcRequest, actor: &crate::RpcActor) -> Option<JsonRpcResponse> {
+    if req.method == "appSettings/set"
+        && !actor.is_admin()
+        && req
+            .params
+            .as_ref()
+            .and_then(|params| params.get("clientIpNames"))
+            .is_some()
+    {
+        return Some(super::response(
+            req,
+            super::value_or_error::<()>(Err(super::permission_denied(&req.method))),
+        ));
+    }
+    let mut result = match req.method.as_str() {
         "appSettings/get" => super::value_or_error(crate::app_settings_get()),
         "appSettings/set" => super::value_or_error(crate::app_settings_set(req.params.as_ref())),
         "authorContent/get" => super::value_or_error(crate::author_content_get()),
@@ -31,5 +44,10 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
         _ => return None,
     };
 
+    if !actor.is_admin() {
+        if let Some(settings) = result.as_object_mut() {
+            settings.remove("clientIpNames");
+        }
+    }
     Some(super::response(req, result))
 }

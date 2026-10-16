@@ -8,6 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod support;
 use support::{test_env_guard, EnvGuard};
 
+#[path = "app_settings/client_ip_names.rs"]
+mod client_ip_names;
+
 const LEGACY_COMPACT_MODEL_FORWARD_RULES_SETTING_KEY: &str = "gateway.compact_model_forward_rules";
 
 const ISOLATED_RUNTIME_ENV_KEYS: &[&str] = &[

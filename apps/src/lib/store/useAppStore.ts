@@ -111,6 +111,7 @@ export const useAppStore = create<AppState>((set) => ({
     accountMaxConcurrent: 3,
     clientIpSingleMaxConcurrent: 3,
     clientIpMultiMaxConcurrent: 2,
+    clientIpNames: {},
     threadAwareAccountDistributionEnabled: true,
     requestLogPayloadRedactionEnabled: true,
     requestLogPayloadPreviewEnabled: true,

@@ -1,6 +1,7 @@
 "use client";
 
 import { normalizeAccountProxySummaryFields } from "./account-proxy-normalize";
+import { normalizeClientIpNames } from "../client-ip-names";
 
 import {
   Account,
@@ -1992,6 +1993,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     accountMaxConcurrent: asInteger(source.accountMaxConcurrent, 3, 1),
     clientIpSingleMaxConcurrent: asInteger(source.clientIpSingleMaxConcurrent, 3, 1),
     clientIpMultiMaxConcurrent: asInteger(source.clientIpMultiMaxConcurrent, 2, 1),
+    clientIpNames: normalizeClientIpNames(source.clientIpNames),
     threadAwareAccountDistributionEnabled: asBoolean(
       source.threadAwareAccountDistributionEnabled,
       true

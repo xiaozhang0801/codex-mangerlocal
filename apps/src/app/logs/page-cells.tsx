@@ -2,6 +2,7 @@
 
 import { Database, Network, Shield, Zap } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { ClientIpLabel } from "@/components/client-ip-label";
 import {
   Tooltip,
   TooltipContent,
@@ -43,8 +44,8 @@ export function ClientIpCell({ log }: { log: RequestLog }) {
   return (
     <div className="flex w-max items-center gap-1.5 whitespace-nowrap">
       <Network className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <span className="shrink-0 whitespace-nowrap font-mono text-[11px]" title={clientIp}>
-        {clientIp}
+      <span className="shrink-0 whitespace-nowrap font-mono text-[11px]">
+        <ClientIpLabel ip={clientIp} />
       </span>
     </div>
   );

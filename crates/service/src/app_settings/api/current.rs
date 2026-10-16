@@ -1,4 +1,4 @@
-use crate::app_settings::{list_app_settings_map, listener_bind_addr_for_mode};
+use crate::app_settings::{client_ip_names, list_app_settings_map, listener_bind_addr_for_mode};
 use crate::initialize_storage_if_needed;
 use crate::{current_web_auth_mode, distribution_enabled, web_access_password_configured};
 use chrono::Local;
@@ -157,6 +157,7 @@ fn current_app_settings_value_inner(
     initialize_storage_if_needed()?;
     sync_runtime_settings_from_storage();
     let settings = list_app_settings_map();
+    let client_ip_names = client_ip_names::load(&settings)?;
     let background_tasks = current_background_tasks_snapshot_value()?;
     let runtime_time_zone = current_runtime_time_zone_value();
     let update_auto_check = setting_bool(&settings, APP_SETTING_UPDATE_AUTO_CHECK_KEY, true);
@@ -397,6 +398,10 @@ fn current_app_settings_value_inner(
         "webAccessPasswordConfigured": web_access_password_configured(),
     });
     if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "clientIpNames".to_string(),
+            serde_json::json!(client_ip_names),
+        );
         object.insert(
             "removeRequiresOpenaiAuth".to_string(),
             remove_requires_openai_auth.into(),
