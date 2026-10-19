@@ -183,3 +183,98 @@ fn binding_changes_leave_concurrency_settings_unchanged() {
         }
     });
 }
+
+#[test]
+fn invalid_late_field_preserves_local_settings_and_storage() {
+    with_temp_db(|path| {
+        app_settings_set(Some(&json!({
+            "clientIpNames": {"192.0.2.1": "Original Example"},
+            "accountMaxConcurrent": 7,
+            "clientIpSingleMaxConcurrent": 5,
+            "clientIpMultiMaxConcurrent": 4
+        })))
+        .unwrap();
+        let before = Storage::open(path).unwrap().list_app_settings().unwrap();
+        let result = app_settings_set(Some(&json!({
+            "clientIpNames": {"192.0.2.2": "Replacement Example"},
+            "accountMaxConcurrent": 9,
+            "clientIpSingleMaxConcurrent": 8,
+            "clientIpMultiMaxConcurrent": 6,
+            "sseKeepaliveIntervalMs": 0
+        })));
+        assert!(result.is_err());
+        let after = Storage::open(path).unwrap().list_app_settings().unwrap();
+        assert_eq!(before, after, "failed patch must not persist any fields");
+    });
+}
+
+#[test]
+fn environment_changes_preserve_local_concurrency_without_read_reload() {
+    with_temp_db(|_| {
+        app_settings_set(Some(&json!({
+            "accountMaxConcurrent": 7,
+            "clientIpSingleMaxConcurrent": 5,
+            "clientIpMultiMaxConcurrent": 4
+        })))
+        .unwrap();
+        let response = app_settings_set(Some(&json!({
+            "envOverrides": {"CODEXMANAGER_UPSTREAM_CONNECT_TIMEOUT_SECS": "11"}
+        })))
+        .unwrap();
+        assert_eq!(response["accountMaxConcurrent"], 7);
+        assert_eq!(response["clientIpSingleMaxConcurrent"], 5);
+        assert_eq!(response["clientIpMultiMaxConcurrent"], 4);
+        let response = app_settings_set(Some(&json!({
+            "envOverrides": {}, "accountMaxConcurrent": 8,
+            "clientIpSingleMaxConcurrent": 6, "clientIpMultiMaxConcurrent": 5
+        })))
+        .unwrap();
+        assert_eq!(response["accountMaxConcurrent"], 8);
+        assert_eq!(response["clientIpSingleMaxConcurrent"], 6);
+        assert_eq!(response["clientIpMultiMaxConcurrent"], 5);
+    });
+}
+
+#[test]
+fn failed_local_persistence_rolls_back_names_concurrency_and_runtime() {
+    with_temp_db(|path| {
+        let before = app_settings_set(Some(&json!({
+            "clientIpNames": {"192.0.2.1": "Original Example"},
+            "accountMaxConcurrent": 7, "clientIpSingleMaxConcurrent": 5,
+            "clientIpMultiMaxConcurrent": 4
+        })))
+        .unwrap();
+        let connection = rusqlite::Connection::open(path).unwrap();
+        for event in ["INSERT", "UPDATE"] {
+            connection
+                .execute(
+                    &format!(
+                        "CREATE TRIGGER reject_names_{event} BEFORE {event} ON app_settings \
+                 WHEN NEW.key = 'app.client_ip_names' \
+                 BEGIN SELECT RAISE(ABORT, 'injected personnel write failure'); END"
+                    ),
+                    [],
+                )
+                .unwrap();
+        }
+        let persisted = Storage::open(path).unwrap().list_app_settings().unwrap();
+        assert!(app_settings_set(Some(&json!({
+            "clientIpNames": {}, "accountMaxConcurrent": 9,
+            "clientIpSingleMaxConcurrent": 8, "clientIpMultiMaxConcurrent": 6
+        })))
+        .is_err());
+        assert_eq!(
+            Storage::open(path).unwrap().list_app_settings().unwrap(),
+            persisted
+        );
+        let after = app_settings_set(None).unwrap();
+        for key in [
+            "clientIpNames",
+            "accountMaxConcurrent",
+            "clientIpSingleMaxConcurrent",
+            "clientIpMultiMaxConcurrent",
+        ] {
+            assert_eq!(after[key], before[key], "{key}");
+        }
+    });
+}

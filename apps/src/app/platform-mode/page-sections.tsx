@@ -412,6 +412,9 @@ export function DirectAggregateCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-2.5">
+        <p className="text-xs leading-5 text-muted-foreground">
+          {t("仅更新 config.toml，聚合 API 密钥也保存在该文件；保留现有 auth.json。")}
+        </p>
         {candidates.length === 0 && !isLoading ? (
           <div className="grid gap-2 rounded-md border border-dashed border-border/70 bg-muted/25 p-2.5 text-sm text-muted-foreground">
             <p>
@@ -547,6 +550,9 @@ export function DirectAccountCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-2.5">
+        <p className="text-xs leading-5 text-muted-foreground">
+          {t("应用后会更新 auth.json，切换为所选 OpenAI 账号。")}
+        </p>
         {candidates.length === 0 && !isLoading ? (
           <div className="grid gap-2 rounded-md border border-dashed border-border/70 bg-muted/25 p-2.5 text-sm text-muted-foreground">
             <p>{t("没有可用于直接连接 OpenAI 的 active 账号。")}</p>
@@ -673,6 +679,9 @@ export function GatewayModeCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-2.5">
+        <p className="text-xs leading-5 text-muted-foreground">
+          {t("通过 CodexManager 接入只需可用的平台密钥。应用网关配置会保留 auth.json，兼容现有 ChatGPT 或 API key 认证，仅更新 config.toml。")}
+        </p>
         {candidates.length === 0 && !isLoading ? (
           <div className="grid gap-2 rounded-md border border-dashed border-border/70 bg-muted/25 p-2.5 text-sm text-muted-foreground">
             <p>{t("没有可用于 CodexManager 转发的平台密钥。")}</p>

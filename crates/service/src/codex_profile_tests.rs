@@ -127,6 +127,54 @@ fn set_test_db(dir: &Path) -> EnvGuard {
     EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref())
 }
 
+fn write_chatgpt_auth_fixture(dir: &Path) -> Vec<u8> {
+    let auth = concat!(
+        "{\r\n",
+        "  \"auth_mode\" : \"chatgpt\",\r\n",
+        "  \"OPENAI_API_KEY\" : null,\r\n",
+        "  \"tokens\" : {\r\n",
+        "    \"id_token\": \"id-token\",\r\n",
+        "    \"access_token\": \"access-token\",\r\n",
+        "    \"refresh_token\": \"refresh-token\",\r\n",
+        "    \"account_id\": \"chatgpt-account\"\r\n",
+        "  },\r\n",
+        "  \"custom_field\": \"preserve original formatting\"\r\n",
+        "}\r\n"
+    );
+    fs::write(dir.join(AUTH_FILE), auth).expect("write ChatGPT login fixture");
+    auth.as_bytes().to_vec()
+}
+
+fn profile_auth_fixtures(dir: &Path) -> [(&'static str, Option<Vec<u8>>); 4] {
+    [
+        ("chatgpt", Some(write_chatgpt_auth_fixture(dir))),
+        (
+            "apikey-only",
+            Some(
+                b"{\r\n  \"auth_mode\": \"apikey\",\r\n  \"OPENAI_API_KEY\": \"user-owned-key\"\r\n}\r\n"
+                    .to_vec(),
+            ),
+        ),
+        (
+            "legacy-tokens",
+            Some(
+                br#"{
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "id_token": "legacy-id-token",
+    "access_token": "legacy-access-token",
+    "refresh_token": "legacy-refresh-token",
+    "account_id": "legacy-chatgpt-account"
+  }
+}
+"#
+                .to_vec(),
+            ),
+        ),
+        ("missing-file", None),
+    ]
+}
+
 #[test]
 fn managed_model_selection_changes_rename_remove_and_deduplicate() {
     let mut slugs = vec![
@@ -203,6 +251,83 @@ fn test_token(account_id: &str, access_token: &str, refresh_token: &str) -> Toke
     }
 }
 
+async fn assert_switch_to_account_writes_auth(storage: &Storage, profile_dir: &Path) {
+    let auth_before = fs::read(profile_dir.join(AUTH_FILE)).ok();
+    let server = tiny_http::Server::http("127.0.0.1:0").expect("bind local OAuth fixture");
+    let issuer = format!("http://{}", server.server_addr());
+    let _refresh_url_guard = EnvGuard::set(
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+        &format!("{issuer}/oauth/token"),
+    );
+    let oauth = std::thread::spawn(move || {
+        let mut request = server
+            .recv_timeout(Duration::from_secs(5))
+            .expect("local OAuth fixture timeout")
+            .expect("receive account refresh");
+        let mut body = String::new();
+        std::io::Read::read_to_string(request.as_reader(), &mut body).unwrap();
+        request
+            .respond(
+                tiny_http::Response::from_string(
+                    r#"{"access_token":"switched-account-access","refresh_token":"switched-account-refresh"}"#,
+                )
+                .with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
+                ),
+            )
+            .unwrap();
+        body
+    });
+    let account_id = format!(
+        "switched-account-{}",
+        profile_dir.file_name().unwrap().to_string_lossy()
+    );
+    let mut account = test_account(&account_id, "active");
+    account.issuer = issuer;
+    storage.insert_account(&account).unwrap();
+    storage
+        .insert_token(&test_token(
+            &account_id,
+            "account-access-before-switch",
+            "account-refresh-before-switch",
+        ))
+        .unwrap();
+
+    let applied = apply_direct_account_async(
+        Some(&account_id),
+        Some(profile_dir.to_string_lossy().as_ref()),
+        false,
+    )
+    .await;
+    let request_body = oauth.join().expect("join local OAuth fixture");
+    assert!(request_body.contains("refresh_token=account-refresh-before-switch"));
+    let status = applied.expect("switch provider profile to selected account");
+    assert!(matches!(status.mode, CodexProfileMode::DirectAccount));
+    assert_eq!(
+        status.selected_account_id.as_deref(),
+        Some(account_id.as_str())
+    );
+    let auth_bytes = fs::read(profile_dir.join(AUTH_FILE)).expect("account auth written");
+    assert_ne!(Some(auth_bytes.clone()), auth_before);
+    let auth: serde_json::Value = serde_json::from_slice(&auth_bytes).unwrap();
+    assert!(auth["OPENAI_API_KEY"].is_null());
+    assert_eq!(auth["tokens"]["id_token"], "id-token");
+    assert_eq!(auth["tokens"]["access_token"], "switched-account-access");
+    assert_eq!(auth["tokens"]["refresh_token"], "switched-account-refresh");
+    assert_eq!(
+        auth["tokens"]["account_id"].as_str(),
+        account.chatgpt_account_id.as_deref()
+    );
+    let config = parse_config(&fs::read_to_string(profile_dir.join(CONFIG_FILE)).unwrap()).unwrap();
+    assert!(config.get("model_provider").is_none());
+    assert!(config["model_providers"]
+        .get(DIRECT_AGGREGATE_PROVIDER_ID)
+        .is_none());
+    let state = load_state().expect("account state persisted");
+    assert!(matches!(state.mode, CodexProfileMode::DirectAccount));
+    assert_eq!(state.account_id.as_deref(), Some(account_id.as_str()));
+}
+
 fn write_test_rollout(dir: &Path, thread_id: &str, provider: &str) -> (PathBuf, String) {
     let rollout_dir = dir.join("sessions").join("2026").join("06").join("06");
     fs::create_dir_all(&rollout_dir).expect("mkdir rollout");
@@ -259,6 +384,12 @@ wire_api = "responses"
 experimental_bearer_token = "must-be-removed"
 custom_header = "must-also-be-removed"
 
+[model_providers.cm_aggregate]
+experimental_bearer_token = "aggregate-secret-to-remove"
+
+[model_providers.cm_aggregate.http_headers]
+X-Aggregate-Key = "aggregate-header-to-remove"
+
 [model_providers.other]
 name = "Other"
 base_url = "https://example.test/v1"
@@ -268,7 +399,13 @@ base_url = "https://example.test/v1"
     let output = patch_config_for_direct(Some(input.to_string()), &managed_catalog, None)
         .expect("patch direct");
 
-    assert!(output.contains("model_provider = \"openai\""));
+    assert!(parse_config(&output)
+        .unwrap()
+        .get("model_provider")
+        .is_none());
+    assert!(!output.contains("[model_providers.cm_aggregate"));
+    assert!(!output.contains("aggregate-secret-to-remove"));
+    assert!(!output.contains("aggregate-header-to-remove"));
     assert!(output.contains("[model_providers.cm]"));
     assert!(output.contains("wire_api = \"responses\""));
     assert!(output.contains("requires_openai_auth = true"));
@@ -295,16 +432,15 @@ name = "Other"
         &managed_catalog,
         true,
         "cm-managed-key",
-        true,
     )
     .expect("patch gateway");
 
     assert!(output.contains("model_provider = \"cm\""));
     assert!(output.contains("[model_providers.cm]"));
-    assert!(output.contains("name = \"CodexManager\""));
+    assert!(output.contains("name = \"cm\""));
     assert!(output.contains("base_url = \"http://127.0.0.1:48770/v1\""));
     assert!(output.contains("wire_api = \"responses\""));
-    assert!(!output.contains("requires_openai_auth"));
+    assert!(output.contains("requires_openai_auth = true"));
     assert!(output.contains("supports_websockets = true"));
     assert!(output.contains("experimental_bearer_token = \"cm-managed-key\""));
     assert!(!output.contains("[model_providers.cm.auth]"));
@@ -337,7 +473,6 @@ name = "Other"
         &managed_catalog,
         false,
         "cm-managed-key",
-        true,
     )
     .expect("disable gateway websocket");
     assert!(without_websocket.contains("supports_websockets = false"));
@@ -383,6 +518,11 @@ async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reloa
     storage
         .upsert_api_key_secret(&api_key.id, "cm-reapply-secret")
         .expect("insert platform key secret");
+    let original_auth = write_chatgpt_auth_fixture(&dir);
+    let original_auth_modified = fs::metadata(dir.join(AUTH_FILE))
+        .unwrap()
+        .modified()
+        .unwrap();
 
     let codex_home = dir.to_string_lossy().to_string();
     let first = apply_gateway_async(
@@ -394,6 +534,14 @@ async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reloa
     )
     .await
     .expect("apply gateway profile");
+    assert_eq!(fs::read(dir.join(AUTH_FILE)).unwrap(), original_auth);
+    assert_eq!(
+        fs::metadata(dir.join(AUTH_FILE))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        original_auth_modified
+    );
     assert_eq!(
         first.selected_api_key_id.as_deref(),
         Some(api_key.id.as_str())
@@ -436,6 +584,14 @@ async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reloa
     )
     .await
     .expect("reapply gateway profile");
+    assert_eq!(fs::read(dir.join(AUTH_FILE)).unwrap(), original_auth);
+    assert_eq!(
+        fs::metadata(dir.join(AUTH_FILE))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        original_auth_modified
+    );
 
     let catalog: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(&paths.gateway_model_catalog_path).expect("read refreshed catalog"),
@@ -510,6 +666,14 @@ async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reloa
             .and_then(Item::as_str),
         Some(paths.gateway_model_catalog_path.to_string_lossy().as_ref())
     );
+    assert_eq!(fs::read(dir.join(AUTH_FILE)).unwrap(), original_auth);
+    assert_eq!(
+        fs::metadata(dir.join(AUTH_FILE))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        original_auth_modified
+    );
 
     cleanup_profile(&dir);
 }
@@ -554,6 +718,11 @@ async fn service_startup_reconciles_stale_gateway_model_selection() {
     storage
         .upsert_api_key_secret(&api_key.id, "cm-startup-stale-secret")
         .expect("insert platform key secret");
+    let original_auth = write_chatgpt_auth_fixture(&dir);
+    let original_auth_modified = fs::metadata(dir.join(AUTH_FILE))
+        .unwrap()
+        .modified()
+        .unwrap();
 
     let codex_home = dir.to_string_lossy().to_string();
     apply_gateway(
@@ -596,6 +765,46 @@ async fn service_startup_reconciles_stale_gateway_model_selection() {
     assert!(catalog["models"].as_array().is_some_and(|models| {
         !models.is_empty() && models.iter().all(|model| model["slug"] != stale_slug)
     }));
+    assert_eq!(fs::read(dir.join(AUTH_FILE)).unwrap(), original_auth);
+    assert_eq!(
+        fs::metadata(dir.join(AUTH_FILE))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        original_auth_modified
+    );
+
+    for auth in [
+        None,
+        Some("{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"user-owned-key\"}\n"),
+        Some("{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"partial-login\"}}\n"),
+    ] {
+        if let Some(auth) = auth {
+            fs::write(dir.join(AUTH_FILE), auth).unwrap();
+        } else {
+            fs::remove_file(dir.join(AUTH_FILE)).unwrap();
+        }
+        let auth_before = fs::read(dir.join(AUTH_FILE)).ok();
+        let auth_modified_before = fs::metadata(dir.join(AUTH_FILE))
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+        fs::write(&paths.gateway_model_catalog_path, "stale catalog").unwrap();
+
+        crate::lifecycle::startup::reconcile_active_gateway_profile_after_startup_async().await;
+
+        assert_eq!(fs::read(dir.join(AUTH_FILE)).ok(), auth_before);
+        assert_eq!(
+            fs::metadata(dir.join(AUTH_FILE))
+                .ok()
+                .and_then(|metadata| metadata.modified().ok()),
+            auth_modified_before
+        );
+        assert_ne!(
+            fs::read_to_string(&paths.gateway_model_catalog_path).unwrap(),
+            "stale catalog",
+            "startup still reconciles config/catalog without modifying auth"
+        );
+    }
 
     cleanup_profile(&dir);
 }
@@ -1115,7 +1324,7 @@ async fn first_apply_models_failure_removes_new_managed_state() {
 }
 
 #[test]
-fn gateway_config_preserves_requires_openai_auth_when_removal_is_disabled() {
+fn gateway_config_sets_provider_openai_auth() {
     let input = r#"
 model_provider = "cm"
 
@@ -1130,9 +1339,8 @@ requires_openai_auth = true
         Path::new("/tmp/gateway-models.json"),
         false,
         "cm-managed-key",
-        false,
     )
-    .expect("patch gateway without removing auth requirement");
+    .expect("patch gateway with provider OpenAI auth");
     let doc = parse_config(&output).expect("parse patched gateway config");
     let provider = doc
         .get("model_providers")
@@ -1170,7 +1378,6 @@ http_headers = { "x-existing-header" = "keep", "x-openai-actor-authorization" = 
         &managed_catalog,
         true,
         "cm-managed-key",
-        true,
     )
     .expect("patch gateway");
     let doc = parse_config(&output).expect("parse patched gateway config");
@@ -1181,10 +1388,7 @@ http_headers = { "x-existing-header" = "keep", "x-openai-actor-authorization" = 
         .and_then(Item::as_table)
         .expect("managed provider");
 
-    assert_eq!(
-        provider.get("name").and_then(Item::as_str),
-        Some("Custom Gateway")
-    );
+    assert_eq!(provider.get("name").and_then(Item::as_str), Some("cm"));
     assert_eq!(
         provider
             .get("experimental_bearer_token")
@@ -1203,7 +1407,10 @@ http_headers = { "x-existing-header" = "keep", "x-openai-actor-authorization" = 
         provider.get("wire_api").and_then(Item::as_str),
         Some("responses")
     );
-    assert!(provider.get("requires_openai_auth").is_none());
+    assert_eq!(
+        provider.get("requires_openai_auth").and_then(Item::as_bool),
+        Some(true)
+    );
     assert!(provider.get("auth").is_none());
     assert_eq!(
         provider.get("supports_websockets").and_then(Item::as_bool),
@@ -1253,7 +1460,9 @@ fn direct_config_only_removes_manager_owned_catalog() {
 
 #[test]
 fn direct_mode_preserves_previous_catalog_from_config_and_state() {
+    let _env_lock = crate::test_env_guard();
     let dir = temp_profile("previous-direct-catalog");
+    let _db_guard = set_test_db(&dir);
     fs::create_dir_all(&dir).expect("create profile dir");
     let config = "model_catalog_json = \"C:/user-models.json\"\n";
     assert_eq!(
@@ -1292,13 +1501,141 @@ fn invalid_toml_is_rejected() {
         Path::new("/tmp/gateway-models.json"),
         false,
         "cm-managed-key",
-        false,
     )
     .is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn gateway_auth_cleanup_setting_covers_apply_reapply_and_startup_sync() {
+async fn gateway_apply_preserves_auth_until_account_switch() {
+    let _lock = crate::test_env_guard();
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    let dir = temp_profile("gateway-auth-compatibility");
+    let _db_guard = set_test_db(&dir);
+    let _managed_root_guard = EnvGuard::set(
+        "CODEXMANAGER_TEST_DB_DIR",
+        dir.join("managed").to_string_lossy().as_ref(),
+    );
+    let storage = Storage::open(dir.join("codexmanager.db")).expect("open test storage");
+    storage.init().expect("init test storage");
+    let key = ApiKey {
+        id: "auth-compatibility-key".into(),
+        name: None,
+        model_slug: None,
+        reasoning_effort: None,
+        service_tier: None,
+        rotation_strategy: crate::apikey_profile::ROTATION_HYBRID.into(),
+        aggregate_api_id: None,
+        account_plan_filter: None,
+        aggregate_api_url: None,
+        client_type: crate::apikey_profile::CLIENT_CODEX.into(),
+        protocol_type: crate::apikey_profile::PROTOCOL_OPENAI_COMPAT.into(),
+        auth_scheme: crate::apikey_profile::AUTH_BEARER.into(),
+        upstream_base_url: None,
+        static_headers_json: None,
+        key_hash: "auth-compatibility-hash".into(),
+        status: "active".into(),
+        created_at: now_ts(),
+        last_used_at: None,
+    };
+    storage.insert_api_key(&key).expect("insert platform key");
+    storage
+        .upsert_api_key_secret(&key.id, "cm-auth-compatibility-secret")
+        .expect("insert platform key secret");
+    for (name, auth) in profile_auth_fixtures(&dir) {
+        let profile_dir = dir.join(name);
+        fs::create_dir_all(&profile_dir).expect("create profile");
+        let auth_path = profile_dir.join(AUTH_FILE);
+        if let Some(auth) = &auth {
+            fs::write(&auth_path, auth).expect("write existing auth fixture");
+        }
+        let auth_modified = auth.as_ref().map(|_| {
+            fs::metadata(&auth_path)
+                .expect("existing auth metadata")
+                .modified()
+                .expect("existing auth modification time")
+        });
+        fs::write(
+            profile_dir.join(CONFIG_FILE),
+            "model_provider = \"external\"\ncustom_setting = true\n",
+        )
+        .unwrap();
+        let paths = managed_profile_paths(&profile_dir).expect("managed profile paths");
+        let profile_path = profile_dir.to_string_lossy().to_string();
+
+        for apply_count in 0..2 {
+            if apply_count > 0 {
+                fs::write(&paths.gateway_model_catalog_path, "stale catalog\n").unwrap();
+            }
+            let status = apply_gateway_async(
+                Some(&key.id),
+                Some(&profile_path),
+                Some("http://127.0.0.1:48760"),
+                Some(false),
+                false,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("case {name}, apply {apply_count}: {error}"));
+            assert_eq!(auth_path.exists(), auth.is_some());
+            assert_eq!(
+                fs::read(&auth_path).ok(),
+                auth,
+                "auth contents changed for {name}, apply {apply_count}"
+            );
+            assert_eq!(
+                fs::metadata(&auth_path)
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok()),
+                auth_modified,
+                "auth modification time changed for {name}, apply {apply_count}"
+            );
+            assert!(matches!(status.mode, CodexProfileMode::Gateway));
+            assert_eq!(status.selected_api_key_id.as_deref(), Some(key.id.as_str()));
+            assert!(status.managed_catalog_active);
+
+            let config = parse_config(
+                &fs::read_to_string(profile_dir.join(CONFIG_FILE)).expect("read gateway config"),
+            )
+            .expect("parse gateway config");
+            assert_eq!(config["model_provider"].as_str(), Some(PROVIDER_ID));
+            assert_eq!(config["custom_setting"].as_bool(), Some(true));
+            assert_eq!(
+                config["model_providers"][PROVIDER_ID]["experimental_bearer_token"].as_str(),
+                Some("cm-auth-compatibility-secret")
+            );
+            assert_eq!(
+                config["model_catalog_json"].as_str(),
+                Some(paths.gateway_model_catalog_path.to_string_lossy().as_ref())
+            );
+            let catalog: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(&paths.gateway_model_catalog_path).expect("read model catalog"),
+            )
+            .expect("parse refreshed model catalog");
+            assert!(catalog["models"]
+                .as_array()
+                .is_some_and(|models| !models.is_empty()));
+
+            let state = load_state().expect("gateway state persisted");
+            assert!(matches!(state.mode, CodexProfileMode::Gateway));
+            assert_eq!(state.profile_dir, profile_path);
+            assert_eq!(state.api_key_id.as_deref(), Some(key.id.as_str()));
+            assert_eq!(
+                state.gateway_base_url.as_deref(),
+                Some("http://127.0.0.1:48760/v1")
+            );
+            let marker = read_marker(&paths.marker_path).expect("gateway marker persisted");
+            assert!(matches!(marker.mode, CodexProfileMode::Gateway));
+            assert_eq!(marker.api_key_id.as_deref(), Some(key.id.as_str()));
+        }
+        assert_switch_to_account_writes_auth(&storage, &profile_dir).await;
+        cleanup_profile(&profile_dir);
+    }
+    drop(storage);
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn gateway_ignores_legacy_auth_cleanup_setting_and_preserves_chatgpt_login() {
     let _lock = crate::test_env_guard();
     let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
     let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
@@ -1321,10 +1658,6 @@ async fn gateway_auth_cleanup_setting_covers_apply_reapply_and_startup_sync() {
                     )
                     .unwrap();
             }
-            assert_eq!(
-                remove_requires_openai_auth_enabled(),
-                setting.unwrap_or(true)
-            );
             let key = ApiKey {
                 id: "auth-setting-key".into(),
                 name: None,
@@ -1355,11 +1688,11 @@ async fn gateway_auth_cleanup_setting_covers_apply_reapply_and_startup_sync() {
             let input = format!(
                 "model_provider = \"cm\"\n[model_providers.cm]\nname = \"Keep name\"\n{auth_field}\n[model_providers.other]\nrequires_openai_auth = true\nbase_url = \"https://other.example/v1\"\n"
             );
-            let expected = if setting.unwrap_or(true) {
-                None
-            } else {
-                existing
-            };
+            let original_auth = write_chatgpt_auth_fixture(&dir);
+            let original_auth_modified = fs::metadata(dir.join(AUTH_FILE))
+                .unwrap()
+                .modified()
+                .unwrap();
             let check = || {
                 let config =
                     parse_config(&fs::read_to_string(dir.join(CONFIG_FILE)).unwrap()).unwrap();
@@ -1367,9 +1700,17 @@ async fn gateway_auth_cleanup_setting_covers_apply_reapply_and_startup_sync() {
                 let provider = providers[PROVIDER_ID].as_table().unwrap();
                 assert_eq!(
                     provider.get("requires_openai_auth").and_then(Item::as_bool),
-                    expected
+                    Some(true)
                 );
-                assert_eq!(provider["name"].as_str(), Some("Keep name"));
+                assert_eq!(provider["name"].as_str(), Some("cm"));
+                assert_eq!(fs::read(dir.join(AUTH_FILE)).unwrap(), original_auth);
+                assert_eq!(
+                    fs::metadata(dir.join(AUTH_FILE))
+                        .unwrap()
+                        .modified()
+                        .unwrap(),
+                    original_auth_modified
+                );
                 assert_eq!(
                     provider["experimental_bearer_token"].as_str(),
                     Some("cm-test-secret")
@@ -1405,7 +1746,7 @@ async fn gateway_auth_cleanup_setting_covers_apply_reapply_and_startup_sync() {
                 .unwrap();
                 check();
             }
-            // Startup sync must read the setting again instead of inheriting an old patch result.
+            // Startup sync must repair legacy config without changing the ChatGPT login.
             fs::write(dir.join(CONFIG_FILE), &input).unwrap();
             assert!(sync_active_gateway_profile_from_storage_async(&storage)
                 .await
@@ -1684,12 +2025,7 @@ async fn direct_aggregate_profile_writes_upstream_provider_and_tracks_selection(
         "direct aggregate switching must not synchronously rewrite full history"
     );
 
-    let auth: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(dir.join(AUTH_FILE)).expect("read direct aggregate auth"),
-    )
-    .expect("parse direct aggregate auth");
-    assert_eq!(auth["auth_mode"], "apikey");
-    assert_eq!(auth["OPENAI_API_KEY"], "aggregate-secret");
+    assert!(!dir.join(AUTH_FILE).exists());
 
     let config = parse_config(
         &fs::read_to_string(dir.join(CONFIG_FILE)).expect("read direct aggregate config"),
@@ -1747,6 +2083,99 @@ async fn direct_aggregate_profile_writes_upstream_provider_and_tracks_selection(
         marker.aggregate_api_id.as_deref(),
         Some(aggregate.id.as_str())
     );
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn direct_aggregate_profiles_preserve_auth_until_account_switch() {
+    let _lock = crate::test_env_guard();
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    let dir = temp_profile("direct-aggregate-auth-compatibility");
+    let _db_guard = set_test_db(&dir);
+    let _managed_root_guard = EnvGuard::set(
+        "CODEXMANAGER_TEST_DB_DIR",
+        dir.join("managed").to_string_lossy().as_ref(),
+    );
+    let storage = Storage::open(dir.join("codexmanager.db")).expect("open test storage");
+    storage.init().expect("init test storage");
+    for header_auth in [false, true] {
+        let mut aggregate = test_aggregate_api(
+            if header_auth { "header" } else { "bearer" },
+            "compatible",
+            "active",
+        );
+        aggregate.model_override = Some("aggregate-model".into());
+        if header_auth {
+            aggregate.auth_params_json = Some(
+                serde_json::json!({
+                    "location": "header",
+                    "name": "X-Aggregate-Key",
+                    "headerValueFormat": "raw"
+                })
+                .to_string(),
+            );
+        }
+        storage.insert_aggregate_api(&aggregate).unwrap();
+        storage
+            .upsert_aggregate_api_secret(&aggregate.id, "aggregate-secret")
+            .unwrap();
+
+        for (name, auth) in profile_auth_fixtures(&dir) {
+            let profile_dir = dir.join(format!("{}-{name}", aggregate.id));
+            fs::create_dir_all(&profile_dir).unwrap();
+            let auth_path = profile_dir.join(AUTH_FILE);
+            if let Some(auth) = &auth {
+                fs::write(&auth_path, auth).unwrap();
+            }
+            let auth_modified = auth
+                .as_ref()
+                .map(|_| fs::metadata(&auth_path).unwrap().modified().unwrap());
+            let profile_path = profile_dir.to_string_lossy().to_string();
+            for apply_count in 0..2 {
+                let status =
+                    apply_direct_aggregate_async(Some(&aggregate.id), Some(&profile_path), false)
+                        .await
+                        .unwrap_or_else(|error| {
+                            panic!("{} {name}, apply {apply_count}: {error}", aggregate.id)
+                        });
+                assert!(matches!(status.mode, CodexProfileMode::DirectAggregate));
+                assert_eq!(auth_path.exists(), auth.is_some());
+                assert_eq!(fs::read(&auth_path).ok(), auth);
+                assert_eq!(
+                    fs::metadata(&auth_path)
+                        .ok()
+                        .and_then(|metadata| metadata.modified().ok()),
+                    auth_modified
+                );
+                let config =
+                    parse_config(&fs::read_to_string(profile_dir.join(CONFIG_FILE)).unwrap())
+                        .unwrap();
+                let provider = config["model_providers"][DIRECT_AGGREGATE_PROVIDER_ID]
+                    .as_table()
+                    .unwrap();
+                assert_eq!(
+                    provider["experimental_bearer_token"].as_str(),
+                    Some("aggregate-secret")
+                );
+                if header_auth {
+                    assert_eq!(
+                        provider_http_header(provider, "X-Aggregate-Key"),
+                        Some("aggregate-secret")
+                    );
+                }
+                let state = load_state().expect("aggregate state persisted");
+                assert!(matches!(state.mode, CodexProfileMode::DirectAggregate));
+                assert_eq!(
+                    state.aggregate_api_id.as_deref(),
+                    Some(aggregate.id.as_str())
+                );
+            }
+            assert_switch_to_account_writes_auth(&storage, &profile_dir).await;
+            cleanup_profile(&profile_dir);
+        }
+    }
+    drop(storage);
     cleanup_profile(&dir);
 }
 
@@ -1811,7 +2240,7 @@ async fn restore_waits_for_the_profile_mutation_lease() {
 }
 
 #[test]
-fn auth_json_shapes_match_codex_modes() {
+fn direct_account_auth_json_contains_selected_tokens() {
     let now = now_ts();
     let account = AccountDirectAuthProfile {
         id: "acc-1".to_string(),
@@ -1829,11 +2258,16 @@ fn auth_json_shapes_match_codex_modes() {
     };
 
     let direct = build_direct_auth_json(&account, &token).expect("direct auth");
-    let gateway = build_gateway_auth_json("cm-key").expect("gateway auth");
+    let apikey_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"user-owned-key"}"#;
 
     assert!(auth_json_has_tokens(&direct));
     assert!(!auth_json_is_gateway(&direct));
-    assert!(auth_json_is_gateway(&gateway));
+    assert!(auth_json_is_gateway(apikey_auth));
+    let auth: serde_json::Value = serde_json::from_str(&direct).unwrap();
+    assert_eq!(auth["tokens"]["id_token"], "id-token");
+    assert_eq!(auth["tokens"]["access_token"], "access-token");
+    assert_eq!(auth["tokens"]["refresh_token"], "refresh-token");
+    assert_eq!(auth["tokens"]["account_id"], "chatgpt-1");
 }
 
 fn detect_login_mode_for_config(name: &str, config: &str) -> CodexProfileMode {

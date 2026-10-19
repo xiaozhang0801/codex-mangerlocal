@@ -52,6 +52,25 @@ fn set_auto_start_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), S
     Ok(())
 }
 
+/// OS settings cannot participate in the settings database transaction. Apply
+/// them only after a successful save and make a failed application explicit so
+/// callers do not interpret it as a rolled-back database write.
+fn finish_settings_save<F>(
+    saved_settings: Result<serde_json::Value, String>,
+    apply_saved_settings: F,
+) -> Result<serde_json::Value, String>
+where
+    F: FnOnce(&mut serde_json::Value) -> Result<(), String>,
+{
+    let mut settings = saved_settings?;
+    apply_saved_settings(&mut settings).map_err(|err| {
+        format!(
+            "settings_persisted_runtime_apply_failed: 设置已保存，但 autoStartEnabled 系统登录启动设置应用失败，需要重试：{err}"
+        )
+    })?;
+    Ok(settings)
+}
+
 fn sync_main_window_zoom(app: &tauri::AppHandle, settings: &serde_json::Value) {
     let Some(zoom_factor) = settings
         .get("zoomFactor")
@@ -175,27 +194,84 @@ pub async fn app_settings_set(
     patch: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     apply_runtime_storage_env(&app);
-    if let Some(enabled) = patch
+    let requested_auto_start = patch
         .get("autoStartEnabled")
-        .and_then(serde_json::Value::as_bool)
-    {
-        set_auto_start_enabled(&app, enabled)?;
-    }
-    let mut settings = tauri::async_runtime::spawn_blocking(move || {
-        codexmanager_service::app_settings_set(Some(&patch))
+        .and_then(serde_json::Value::as_bool);
+    tauri::async_runtime::spawn_blocking(move || {
+        // Keep desktop publication in the same order as desktop commits. A
+        // delayed completion must not apply an older autostart request last.
+        static DESKTOP_SETTINGS_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _write = DESKTOP_SETTINGS_WRITES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let saved_settings = codexmanager_service::app_settings_set(Some(&patch));
+        finish_settings_save(saved_settings, |settings| {
+            sync_window_runtime_state_from_settings(settings);
+            sync_main_window_zoom(&app, settings);
+            sync_window_ui_mount_state(&app);
+            let auto_start_result = match requested_auto_start {
+                Some(_) => set_auto_start_enabled(
+                    &app,
+                    codexmanager_service::current_auto_start_enabled_setting(),
+                ),
+                None => Ok(()),
+            };
+            annotate_auto_start_settings(&app, settings);
+            auto_start_result
+        })
     })
     .await
-    .map_err(|err| format!("app_settings_set task failed: {err}"))??;
-    sync_window_runtime_state_from_settings(&mut settings);
-    sync_main_window_zoom(&app, &settings);
-    sync_window_ui_mount_state(&app);
-    annotate_auto_start_settings(&app, &mut settings);
-    Ok(settings)
+    .map_err(|err| format!("app_settings_set task failed: {err}"))?
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{auto_start_sync_action, AutoStartSyncAction};
+    use super::{auto_start_sync_action, finish_settings_save, AutoStartSyncAction};
+    use std::cell::Cell;
+
+    #[test]
+    fn failed_settings_save_does_not_apply_os_settings() {
+        let applied = Cell::new(false);
+        let result = finish_settings_save(Err("invalid route strategy".to_string()), |_| {
+            applied.set(true);
+            Ok(())
+        });
+
+        assert_eq!(result.unwrap_err(), "invalid route strategy");
+        assert!(!applied.get());
+    }
+
+    #[test]
+    fn failed_os_application_reports_committed_settings_and_retry() {
+        let applied = Cell::new(false);
+        let result =
+            finish_settings_save(Ok(serde_json::json!({ "autoStartEnabled": true })), |_| {
+                applied.set(true);
+                Err("mock OS failure".to_string())
+            });
+
+        let error = result.unwrap_err();
+        assert!(applied.get());
+        assert!(error.starts_with("settings_persisted_runtime_apply_failed:"));
+        assert!(error.contains("设置已保存"));
+        assert!(error.contains("需要重试"));
+        assert!(error.contains("autoStartEnabled"));
+        assert!(error.contains("mock OS failure"));
+    }
+
+    #[test]
+    fn successful_settings_save_applies_os_settings_and_returns_saved_value() {
+        let saved = serde_json::json!({ "autoStartEnabled": true, "theme": "dark" });
+        let applied = Cell::new(false);
+        let result = finish_settings_save(Ok(saved.clone()), |settings| {
+            assert_eq!(settings["autoStartEnabled"], true);
+            applied.set(true);
+            Ok(())
+        });
+
+        assert!(applied.get());
+        assert_eq!(result.unwrap(), saved);
+    }
 
     #[test]
     fn auto_start_sync_enables_missing_runtime_entry_when_configured() {

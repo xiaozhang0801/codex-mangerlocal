@@ -93,6 +93,12 @@ pub trait SettingsPluginsStore: Send + Sync {
     fn setting(&self, key: String) -> StorageFuture<'_, Option<String>>;
     fn save_setting(&self, key: String, value: String, now: i64) -> StorageFuture<'_, ()>;
     fn remove_setting(&self, key: String) -> StorageFuture<'_, ()>;
+    /// Atomically commit the supplied values/removals without replacing other keys.
+    fn save_settings(
+        &self,
+        changes: Vec<(String, Option<String>)>,
+        now: i64,
+    ) -> StorageFuture<'_, ()>;
     fn plugins(&self) -> StorageFuture<'_, Vec<PluginInstallListSummary>>;
     fn plugin_tasks(&self, id: Option<String>) -> StorageFuture<'_, Vec<PluginTaskListSummary>>;
     /// Update an installed plugin and repair enabled interval schedules in

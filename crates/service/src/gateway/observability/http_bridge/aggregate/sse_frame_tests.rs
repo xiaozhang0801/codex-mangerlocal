@@ -3,6 +3,29 @@ use super::{
     PassthroughSseProtocol, SseTerminal,
 };
 
+#[test]
+fn first_line_bom_is_ignored_for_event_name_and_data_payload() {
+    let header = vec![
+        "\u{feff}event: response.completed\r\n".to_string(),
+        "data: {\"response\":{\"id\":\"resp_bom_header\"}}\r\n".to_string(),
+        "\r\n".to_string(),
+    ];
+    let data = vec![
+        "\u{feff}data: {\"type\":\"response.completed\"}\r\n".to_string(),
+        "\r\n".to_string(),
+    ];
+
+    let value = super::parse_sse_frame_json(&header).expect("BOM event frame");
+    assert_eq!(value["type"], "response.completed");
+    assert_eq!(value["response"]["id"], "resp_bom_header");
+    assert_eq!(
+        super::parse_sse_frame_json(&data).expect("BOM data frame")["type"],
+        "response.completed"
+    );
+    assert!(header[0].starts_with('\u{feff}'));
+    assert!(data[0].starts_with('\u{feff}'));
+}
+
 /// 函数 `inspect_sse_frame_keeps_last_event_type_from_header`
 ///
 /// 作者: gaohongshun

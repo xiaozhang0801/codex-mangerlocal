@@ -1944,7 +1944,6 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
   );
   return {
     updateAutoCheck: asBoolean(source.updateAutoCheck, true),
-    removeRequiresOpenaiAuth: asBoolean(source.removeRequiresOpenaiAuth, true),
     autoStartEnabled: asBoolean(source.autoStartEnabled, false),
     autoStartSupported: asBoolean(source.autoStartSupported, false),
     showMainWindowOnStartup: asBoolean(source.showMainWindowOnStartup, true),

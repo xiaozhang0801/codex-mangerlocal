@@ -202,7 +202,8 @@ use self::runner::{
 };
 use self::settings::ensure_background_tasks_config_loaded;
 pub(crate) use self::settings::{
-    background_tasks_settings, reload_background_tasks_runtime_from_env,
+    background_tasks_settings, prepare_background_tasks_settings,
+    publish_background_tasks_settings, reload_background_tasks_runtime_from_env,
     set_background_tasks_settings, validate_background_tasks_settings_patch,
     BackgroundTasksSettingsPatch,
 };

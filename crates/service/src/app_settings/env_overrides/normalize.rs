@@ -88,9 +88,44 @@ pub(super) fn normalize_env_overrides_patch(
     let mut normalized = BTreeMap::new();
     for (raw_key, raw_value) in overrides {
         let key = normalize_env_override_key(&raw_key)?;
+        if raw_value.contains('\0') {
+            return Err(format!("{key} environment variable value contains NUL"));
+        }
         normalized.insert(key, normalize_env_override_patch_value(Some(&raw_value)));
     }
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn environment_override_rejects_nul_before_process_publication() {
+        let result = normalize_env_overrides_patch(HashMap::from([(
+            "CODEXMANAGER_Q03_CUSTOM".to_string(),
+            "before\0after".to_string(),
+        )]));
+        assert!(result.expect_err("NUL must be rejected").contains("NUL"));
+    }
+
+    #[test]
+    fn environment_override_preserves_reserved_and_startup_boundaries() {
+        for key in [
+            "CODEXMANAGER_DB_PATH",
+            "CODEXMANAGER_RPC_TOKEN",
+            "CODEXMANAGER_UPSTREAM_PROXY_URL",
+        ] {
+            assert!(
+                normalize_env_overrides_patch(HashMap::from([(
+                    key.to_string(),
+                    "changed".to_string(),
+                )]))
+                .is_err(),
+                "{key} must not be overridden"
+            );
+        }
+    }
 }
 
 /// 函数 `parse_saved_env_override_value`

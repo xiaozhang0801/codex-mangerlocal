@@ -173,7 +173,7 @@ fn rpc_call_falls_back_to_next_socket_after_empty_response() {
         if let Ok((mut stream, _)) = good_listener.accept() {
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf);
-            let body = r#"{"result":{"version":"test","userAgent":"codex_cli_rs/test","codexHome":"C:/Users/test/AppData/Roaming/com.codexmanager.desktop","platformFamily":"unix","platformOs":"windows"}}"#;
+            let body = r#"{"result":{"items":[]}}"#;
             let response = format!(
           "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
           body.len(),
@@ -184,17 +184,13 @@ fn rpc_call_falls_back_to_next_socket_after_empty_response() {
     });
 
     let res = rpc_call_with_sockets(
-        "initialize",
+        "account/list",
         "localhost:48760",
         &[bad_addr, good_addr],
         None,
     )
     .expect("rpc_call_with_sockets");
-    let user_agent = res
-        .get("result")
-        .and_then(|v| v.get("userAgent").or_else(|| v.get("user_agent")))
-        .and_then(|v| v.as_str());
-    assert_eq!(user_agent, Some("codex_cli_rs/test"));
+    assert_eq!(res["result"]["items"], serde_json::json!([]));
 }
 
 #[test]

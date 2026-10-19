@@ -37,6 +37,7 @@ function normalizeKnownAppErrorMessage(message: string): string {
   }
 
   const normalized = trimmed.toLowerCase();
+  if (normalized.includes("rpc_result_unknown:")) return trimmed;
   if (
     normalized === "request or response body error" ||
     normalized === "stream read failed" ||
@@ -215,6 +216,9 @@ export function getAppErrorMessage(
  */
 export function isCommandMissingError(err: unknown): boolean {
   const message = getAppErrorMessage(err, "").toLowerCase();
+  // A lost write response must never trigger invokeFirst's command-alias fallback,
+  // even when the nested HTTP/parser detail contains "not found".
+  if (message.includes("rpc_result_unknown:")) return false;
   return (
     message.includes("unknown command") ||
     message.includes("not found") ||

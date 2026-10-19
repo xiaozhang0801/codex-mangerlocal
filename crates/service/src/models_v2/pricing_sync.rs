@@ -9,6 +9,8 @@ use reqwest::header::ACCEPT;
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
 
+use super::official_pricing::{is_official_model, local_provider_aliases, source_provider};
+
 pub(crate) const BASELLM_PRICE_SOURCE_URL: &str =
     "https://basellm.github.io/llm-metadata/api/all.json";
 pub(crate) const MODELS_DEV_PRICE_SOURCE_URL: &str = "https://models.dev/api.json";
@@ -61,8 +63,6 @@ struct SourceProvider {
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
     subscription: bool,
     #[serde(default)]
     models: BTreeMap<String, SourceModel>,
@@ -72,6 +72,8 @@ struct SourceProvider {
 struct SourceModel {
     #[serde(default)]
     id: Option<String>,
+    #[serde(default)]
+    canonical_model_id: Option<String>,
     #[serde(default)]
     cost: Option<SourceCost>,
 }
@@ -189,6 +191,17 @@ impl PriceIndex {
     }
 
     fn resolve_candidates(&self, candidates: BTreeSet<usize>) -> MatchResult {
+        let mut regions = HashMap::new();
+        for candidate in &candidates {
+            if let Some(provider) = source_provider(&self.records[*candidate].provider) {
+                if regions
+                    .insert(provider.family, provider.region)
+                    .is_some_and(|region| region != provider.region)
+                {
+                    return MatchResult::Ambiguous;
+                }
+            }
+        }
         let Some(best_rank) = candidates
             .iter()
             .map(|index| self.records[*index].source_rank)
@@ -215,33 +228,45 @@ impl PriceIndex {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        let provider_hint =
-            explicit_provider.or_else(|| (model.origin == "builtin").then_some("openai"));
-        if let Some(provider) = provider_hint {
-            let exact = self.provider_matches(provider, &model.slug);
-            match self.resolve_candidates(exact) {
-                MatchResult::Missing => {}
-                result => return result,
-            }
+        // Local supplier names do not identify the model manufacturer. Only the
+        // stable official provider aliases constrain the official-only index.
+        let provider_hints = match explicit_provider {
+            Some(provider) => local_provider_aliases(provider),
+            None if model.origin == "builtin" => local_provider_aliases("openai"),
+            None => Vec::new(),
+        };
+        let has_known_provider = explicit_provider.is_some() && !provider_hints.is_empty();
+        let exact = provider_hints
+            .iter()
+            .flat_map(|provider| self.provider_matches(provider.id, &model.slug))
+            .collect();
+        match self.resolve_candidates(exact) {
+            MatchResult::Missing => {}
+            result => return result,
         }
 
         let mut provider_candidates = BTreeSet::new();
         let mut global_candidates = BTreeSet::new();
+        if explicit_provider.is_some() && !has_known_provider {
+            global_candidates.extend(self.global_matches(&model.slug));
+        }
         for route in model.routes.iter().filter(|route| route.enabled) {
             let upstream = route.upstream_model.trim();
             if upstream.is_empty() {
                 continue;
             }
-            if let Some(provider) = provider_hint {
-                provider_candidates.extend(self.provider_matches(provider, upstream));
+            for provider in &provider_hints {
+                provider_candidates.extend(self.provider_matches(provider.id, upstream));
             }
             if let Some((provider, provider_model)) = upstream.split_once('/') {
-                provider_candidates.extend(self.provider_matches(provider, provider_model));
+                if let Some(provider) = source_provider(provider) {
+                    provider_candidates.extend(self.provider_matches(provider.id, provider_model));
+                }
             }
             global_candidates.extend(self.global_matches(upstream));
         }
         match self.resolve_candidates(provider_candidates) {
-            MatchResult::Missing if explicit_provider.is_none() => {
+            MatchResult::Missing if !has_known_provider => {
                 self.resolve_candidates(global_candidates)
             }
             MatchResult::Missing => MatchResult::Missing,
@@ -419,7 +444,7 @@ fn parse_source_body_with_limit(
             name: name.to_string(),
             url: url.to_string(),
             status: "ok".to_string(),
-            providers: providers.len(),
+            providers: 0,
             models_seen: 0,
             priced_models: 0,
             skipped_non_usd: 0,
@@ -431,25 +456,19 @@ fn parse_source_body_with_limit(
     };
 
     for (provider_key, provider) in providers {
-        let canonical_provider = normalize_provider(
-            provider
-                .id
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(&provider_key),
-        );
-        if canonical_provider.is_empty() {
+        let Some(official_provider) = source_provider(&provider_key) else {
+            continue;
+        };
+        if provider.id.as_deref().is_some_and(|id| {
+            !id.trim().is_empty() && source_provider(id) != Some(official_provider)
+        }) {
             continue;
         }
-        let mut provider_aliases = BTreeSet::from([canonical_provider.clone()]);
-        provider_aliases.insert(normalize_provider(&provider_key));
-        if let Some(provider_name) = provider.name.as_deref() {
-            provider_aliases.insert(normalize_provider(provider_name));
-        }
-        provider_aliases.retain(|value| !value.is_empty());
+        parsed.summary.providers += 1;
+        let canonical_provider = official_provider.id.to_string();
+        let provider_aliases = BTreeSet::from([normalize_provider(official_provider.id)]);
 
         for (model_key, model) in provider.models {
-            parsed.summary.models_seen += 1;
             let canonical_model = normalize_model(
                 model
                     .id
@@ -457,6 +476,14 @@ fn parse_source_body_with_limit(
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or(&model_key),
             );
+            if !is_official_model(
+                official_provider,
+                &canonical_model,
+                model.canonical_model_id.as_deref(),
+                false,
+            ) {
+                continue;
+            }
             if canonical_model.is_empty() {
                 parsed.summary.skipped_missing_text_price += 1;
                 continue;
@@ -467,6 +494,9 @@ fn parse_source_body_with_limit(
                 parsed.blocked_keys.insert(key);
                 continue;
             }
+            // Only accepted manufacturer records make this source complete enough
+            // to participate in withdrawing an old external estimate.
+            parsed.summary.models_seen += 1;
             let Some(cost) = model.cost else {
                 parsed.summary.skipped_missing_text_price += 1;
                 continue;
@@ -928,7 +958,7 @@ mod tests {
     #[test]
     fn overflowing_context_boundary_is_skipped() {
         let body = br#"{
-          "openai":{"models":{"overflow":{"cost":{"input":1,"output":2,
+          "openai":{"models":{"overflow":{"canonical_model_id":"openai/overflow-fixture","cost":{"input":1,"output":2,
             "tiers":[{"input":2,"output":4,"tier":{"type":"context","size":9223372036854775807}}]}}}}
         }"#;
         let parsed = parse_source_body("fixture", "https://fixture.invalid", body).unwrap();
@@ -961,11 +991,201 @@ mod tests {
         assert_eq!(result.updated, 0);
         assert_eq!(result.unmatched, 1);
 
-        let explicit_route = model("local-gpt-alpha", Some("anthropic"), "aggregator/gpt-alpha");
+        let explicit_route = model("local-gpt-alpha", Some("anthropic"), "moonshotai/gpt-alpha");
         let MatchResult::Found(record) = index.match_model(&explicit_route) else {
             panic!("route provider should remain authoritative");
         };
-        assert_eq!(index.records[record].provider, "aggregator");
+        assert_eq!(index.records[record].provider, "moonshotai");
+    }
+
+    #[test]
+    fn custom_provider_labels_match_exact_model_slugs() {
+        let (index, sources) = parsed_sources();
+        let local = model("gpt-alpha", Some("董哥"), "");
+        let MatchResult::Found(record) = index.match_model(&local) else {
+            panic!("a custom supplier label must not block an exact model match");
+        };
+        assert_eq!(index.records[record].provider, "openai");
+        assert_eq!(index.records[record].source_rank, 0);
+        let (updates, result) = build_update_plan(&[local], &index, sources);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].slug, "gpt-alpha");
+        assert_eq!(result.unmatched, 0);
+
+        assert_eq!(
+            index.match_model(&model("gpt-alpha-custom", Some("董哥"), "")),
+            MatchResult::Missing,
+            "custom supplier matching must not strip or guess model suffixes"
+        );
+    }
+
+    #[test]
+    fn custom_provider_labels_match_enabled_route_aliases() {
+        let (index, _) = parsed_sources();
+        for upstream in ["gpt-alpha", "openai/gpt-alpha"] {
+            let local = model("local-alias", Some("董哥"), upstream);
+            let MatchResult::Found(record) = index.match_model(&local) else {
+                panic!("an enabled exact upstream alias should match: {upstream}");
+            };
+            assert_eq!(index.records[record].provider, "openai");
+        }
+        let mut disabled = model("local-alias", Some("董哥"), "gpt-alpha");
+        disabled.routes[0].enabled = false;
+        assert_eq!(index.match_model(&disabled), MatchResult::Missing);
+    }
+
+    #[test]
+    fn custom_provider_labels_preserve_ambiguous_matches() {
+        let (index, _) = parsed_sources();
+        for local in [
+            model("shared-model", Some("董哥"), ""),
+            model("local-shared", Some("董哥"), "shared-model"),
+        ] {
+            assert_eq!(index.match_model(&local), MatchResult::Ambiguous);
+        }
+        let mut conflicting = model("gpt-alpha", Some("董哥"), "context-model");
+        assert_eq!(index.match_model(&conflicting), MatchResult::Ambiguous);
+        conflicting.routes[0].enabled = false;
+        assert!(matches!(
+            index.match_model(&conflicting),
+            MatchResult::Found(_)
+        ));
+    }
+
+    #[test]
+    fn known_provider_aliases_still_block_other_vendors() {
+        let (index, _) = parsed_sources();
+        for provider in ["Anthropic", "Mistral AI"] {
+            assert_eq!(
+                index.match_model(&model("gpt-alpha", Some(provider), "gpt-alpha")),
+                MatchResult::Missing,
+                "a recognized provider alias must remain a vendor constraint: {provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn official_providers_without_usable_prices_still_constrain_matching() {
+        let declarations = br#"{
+            "xai": {"models":{}},
+            "deepseek": {"models":{"gpt-alpha":{"canonical_model_id":"deepseek/fixture","cost":{"currency":"CNY","input":1,"output":2}}}},
+            "cohere": {"subscription":true,"models":{"gpt-alpha":{"canonical_model_id":"cohere/fixture","cost":{"input":0,"output":0}}}}
+        }"#;
+        let (index, _) = merge_source_results(
+            parse_source_body("basellm", BASELLM_PRICE_SOURCE_URL, PRIMARY_FIXTURE),
+            parse_source_body("models.dev", MODELS_DEV_PRICE_SOURCE_URL, declarations),
+        )
+        .unwrap();
+        for provider in ["xai", "Grok", "deepseek", "深度求索", "cohere", "AI21"] {
+            assert_eq!(
+                index.match_model(&model("gpt-alpha", Some(provider), "gpt-alpha")),
+                MatchResult::Missing,
+                "an official provider must not borrow another vendor's price: {provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn sources_only_index_original_manufacturers_and_validate_declared_identity() {
+        let body = br#"{
+          "openai":{"models":{"gpt-official":{"cost":{"input":1,"output":2}},
+            "gpt-foreign":{"canonical_model_id":"anthropic/claude-fixture","cost":{"input":9,"output":18}}}},
+          "volcengine":{"models":{"seed-official":{"canonical_model_id":"bytedance-seed/seed-fixture","cost":{"input":1,"output":2}},
+            "deepseek-hosted":{"canonical_model_id":"deepseek/deepseek-fixture","cost":{"input":9,"output":18}}}},
+          "mistral":{"models":{"glm-hosted":{"cost":{"input":9,"output":18}}}},
+          "openrouter":{"id":"openai","name":"OpenAI","models":{"gpt-resold":{"cost":{"input":9,"output":18}}}},
+          "anthropic":{"id":"openrouter","models":{"claude-resold":{"cost":{"input":9,"output":18}}}}
+        }"#;
+        let parsed = parse_source_body("fixture", "https://fixture.invalid", body).unwrap();
+        assert_eq!(parsed.summary.models_seen, 2);
+        assert_eq!(parsed.summary.priced_models, 2);
+        assert_eq!(parsed.records.len(), 2);
+        assert!(parsed
+            .records
+            .contains_key(&("openai".into(), "gpt-official".into())));
+        assert!(parsed
+            .records
+            .contains_key(&("volcengine".into(), "seed-official".into())));
+    }
+
+    #[test]
+    fn reseller_route_prefixes_do_not_select_prices() {
+        let (index, _) = parsed_sources();
+        for prefix in [
+            "openrouter",
+            "azure",
+            "google-vertex",
+            "nvidia",
+            "aggregator",
+        ] {
+            let upstream = format!("{prefix}/gpt-alpha");
+            assert_eq!(
+                index.match_model(&model("local-alias", Some("董哥"), &upstream)),
+                MatchResult::Missing,
+                "reseller prefixes must not be interpreted as official routes: {prefix}"
+            );
+        }
+        assert!(matches!(
+            index.match_model(&model("gpt-alpha", Some("OpenRouter"), "")),
+            MatchResult::Found(_)
+        ));
+    }
+
+    #[test]
+    fn regional_catalogs_remain_ambiguous_across_different_sources() {
+        let primary = br#"{"zai":{"models":{"glm-fixture":{"cost":{"input":1,"output":2}}}}}"#;
+        let fallback = br#"{"zhipuai":{"models":{"glm-fixture":{"cost":{"input":3,"output":6}}}}}"#;
+        let (index, _) = merge_source_results(
+            parse_source_body("basellm", BASELLM_PRICE_SOURCE_URL, primary),
+            parse_source_body("models.dev", MODELS_DEV_PRICE_SOURCE_URL, fallback),
+        )
+        .unwrap();
+        for provider in ["GLM", "智谱", "董哥"] {
+            assert_eq!(
+                index.match_model(&model("glm-fixture", Some(provider), "glm-fixture")),
+                MatchResult::Ambiguous,
+                "source precedence must not choose a vendor region: {provider}"
+            );
+        }
+        for provider in ["zai", "zhipuai"] {
+            let MatchResult::Found(record) =
+                index.match_model(&model("glm-fixture", Some(provider), "glm-fixture"))
+            else {
+                panic!("an exact official region should select its own record: {provider}");
+            };
+            assert_eq!(index.records[record].provider, provider);
+        }
+        let MatchResult::Found(record) =
+            index.match_model(&model("local-alias", Some("zai"), "zhipuai/glm-fixture"))
+        else {
+            panic!("an explicit official route should retain its authority");
+        };
+        assert_eq!(index.records[record].provider, "zhipuai");
+    }
+
+    #[test]
+    fn sources_with_only_resellers_or_foreign_hosts_do_not_invalidate_prices() {
+        let body = br#"{
+          "openrouter":{"models":{"gpt-alpha":{"cost":{"input":1,"output":2}}}},
+          "volcengine":{"models":{"deepseek-hosted":{"canonical_model_id":"deepseek/deepseek-fixture","cost":{"input":1,"output":2}}}}
+        }"#;
+        let (index, sources) = merge_source_results(
+            parse_source_body("basellm", BASELLM_PRICE_SOURCE_URL, body),
+            parse_source_body("models.dev", MODELS_DEV_PRICE_SOURCE_URL, body),
+        )
+        .unwrap();
+        assert!(index.records.is_empty());
+        assert!(sources.iter().all(|source| source.models_seen == 0));
+        let mut existing = model("withdrawn-model", Some("openai"), "withdrawn-model");
+        existing.price.price_status = "estimated".to_string();
+        existing.price.price_source =
+            Some(format!("{BASELLM_PRICE_SOURCE_URL}#openai/withdrawn-model"));
+        existing.price.input_microusd_per_1m = Some(1_000_000);
+        existing.price.output_microusd_per_1m = Some(2_000_000);
+        let (updates, result) = build_update_plan(&[existing], &index, sources);
+        assert!(updates.is_empty());
+        assert_eq!(result.unmatched, 1);
+        assert_eq!(result.updated, 0);
     }
 
     #[test]
@@ -979,11 +1199,11 @@ mod tests {
         assert_eq!(index.records[primary].source_rank, 0);
 
         let MatchResult::Found(fallback) =
-            index.match_model(&model("local-gpt-alpha", None, "aggregator/gpt-alpha"))
+            index.match_model(&model("local-gpt-alpha", None, "moonshotai/gpt-alpha"))
         else {
             panic!("explicit provider route should use matching fallback-source price");
         };
-        assert_eq!(index.records[fallback].provider, "aggregator");
+        assert_eq!(index.records[fallback].provider, "moonshotai");
         assert_eq!(index.records[fallback].source_rank, 1);
     }
 
@@ -1004,10 +1224,10 @@ mod tests {
             "models.dev",
             MODELS_DEV_PRICE_SOURCE_URL,
             br#"{
-              "subscription-plan": {
-                "id": "subscription-plan",
+              "openai": {
+                "id": "openai",
                 "models": {
-                  "free-looking": {"cost": {"input": 0, "output": 0}}
+                  "gpt-free-looking": {"cost": {"input": 0, "output": 0}}
                 }
               }
             }"#,
@@ -1019,9 +1239,9 @@ mod tests {
         let (index, _) = merge_source_results(Err("primary offline".into()), Ok(fallback)).unwrap();
         assert_eq!(
             index.match_model(&model(
-                "free-looking",
-                Some("subscription-plan"),
-                "free-looking"
+                "gpt-free-looking",
+                Some("openai"),
+                "gpt-free-looking"
             )),
             MatchResult::Missing
         );
@@ -1281,7 +1501,7 @@ mod tests {
             MatchResult::Found(_)
         ));
 
-        let (updates, result) = build_update_plan(&models, &index, sources);
+        let (updates, result) = build_update_plan(&models, &index, sources.clone());
         assert_eq!(result.scanned_models, models.len());
         assert_eq!(result.catalog_prices, index.records.len());
         let applied = storage.update_managed_model_prices_v2(&updates).unwrap();
@@ -1290,6 +1510,54 @@ mod tests {
             let updated = storage.get_managed_model_v2(&slug).unwrap().unwrap();
             assert_eq!(updated.price.price_status, "estimated");
             assert!(updated.price.price_source.is_some());
+        }
+
+        let snapshot_storage = Storage::open_in_memory().unwrap();
+        snapshot_storage.init().unwrap();
+        let snapshot = [
+            "gpt-6.1-sol",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ]
+        .map(|slug| {
+            if snapshot_storage
+                .get_managed_model_v2(slug)
+                .unwrap()
+                .is_some()
+            {
+                snapshot_storage.delete_managed_model_v2(slug).unwrap();
+            }
+            let mut custom = model(slug, Some("董哥"), slug);
+            custom.routes[0].source_kind = "aggregate_api".to_string();
+            custom.routes[0].source_id = "isolated-supplier".to_string();
+            snapshot_storage
+                .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                    previous_slug: None,
+                    model: custom.clone(),
+                })
+                .unwrap();
+            custom
+        });
+        let (updates, result) = build_update_plan(&snapshot, &index, sources);
+        assert_eq!(result.scanned_models, 7);
+        assert_eq!(result.updated, 7);
+        assert_eq!(result.unmatched, 0);
+        assert_eq!(result.ambiguous, 0);
+        let applied = snapshot_storage
+            .update_managed_model_prices_v2(&updates)
+            .unwrap();
+        assert_eq!(applied.len(), 7);
+        for slug in applied {
+            let updated = snapshot_storage
+                .get_managed_model_v2(&slug)
+                .unwrap()
+                .unwrap();
+            assert_eq!(updated.price.price_status, "estimated");
+            assert_eq!(updated.provider.as_deref(), Some("董哥"));
         }
     }
 

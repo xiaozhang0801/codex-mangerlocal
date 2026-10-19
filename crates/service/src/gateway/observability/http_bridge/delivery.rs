@@ -341,7 +341,7 @@ pub(crate) async fn respond_with_stream_upstream(
         );
         match response_adapter {
             ResponseAdapter::AnthropicMessagesFromResponses => {
-                let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
+                let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
                 let response_body: Box<
                     dyn crate::http::gateway_response_body::GatewayResponseBody,
                 > = Box::new(AnthropicSseReader::from_stream_response(
@@ -351,7 +351,7 @@ pub(crate) async fn respond_with_stream_upstream(
                     tool_name_restore_map.cloned(),
                     request_started_at,
                 ));
-                return Ok(respond_usage_collector_stream(
+                return Ok(respond_passthrough_collector_stream(
                     request,
                     status,
                     headers,

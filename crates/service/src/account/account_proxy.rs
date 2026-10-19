@@ -1573,6 +1573,9 @@ mod storage_authority_tests {
 
     #[test]
     fn stored_proxy_test_does_not_read_sqlite_when_remote_configuration_is_incomplete() {
+        if crate::loopback_proxy_test::run_proxy_control_in_isolated_process() {
+            return;
+        }
         let _guard = crate::test_env_guard();
         let _restore = RestoreEnv(
             ["CODEXMANAGER_STORAGE_BACKEND", "CODEXMANAGER_DATABASE_URL"]

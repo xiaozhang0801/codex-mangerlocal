@@ -36,7 +36,9 @@ pwsh -NoLogo -NoProfile -File scripts/rebuild.ps1 -Bundle nsis -CleanDist -Porta
 ./scripts/rebuild-macos.sh --bundles "dmg" --clean-dist
 ```
 
-Linux packaging requires `squashfs-tools` and checks that each AppImage contains a valid root `.DirIcon`, repairing the bundle when needed. The interface language defaults to **Auto-detect**, following the system language in the desktop app or the browser language in Web mode. Chinese, English, Russian, and Korean are supported; other languages fall back to English. Choose Auto-detect or a fixed language in Settings or the header; the choice applies immediately and remains saved.
+Linux packaging requires `squashfs-tools`. The release workflow pins Tauri CLI 2.11.4 and checks that each AppImage's root `.DirIcon` resolves entirely inside the bundle, repairing missing, dangling, or build-machine links. Bundle permissions are also normalized so ordinary users can traverse directories, execute launchers, and read resources. Verify the launcher as an unprivileged user; access by the build account or root is insufficient. Repacking after repairs uses runtime-compatible gzip compression and verifies a fresh extraction. Before publishing, also check the artifact's own `--appimage-extract` on its native architecture. Successful `unsquashfs` extraction or files remaining on the build machine do not prove runtime compatibility. Run the regression suite with `bash scripts/release/tests/ensure-appimage-diricon.test.sh`.
+
+The interface language defaults to **Auto-detect**, following the system language in the desktop app or the browser language in Web mode. Chinese, English, Russian, and Korean are supported; other languages fall back to English. Choose Auto-detect or a fixed language in Settings or the header; the choice applies immediately and remains saved.
 
 ## GitHub Actions
 The unified release workflow is `.github/workflows/release-all.yml`. Pushing a `v*` tag automatically runs `build-and-publish`; `workflow_dispatch` also supports manual runs in `build-and-publish`, `build-artifacts`, or `publish-artifacts` mode.

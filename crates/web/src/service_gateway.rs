@@ -4,6 +4,15 @@ const ENV_WEB_NO_SPAWN_SERVICE: &str = "CODEXMANAGER_WEB_NO_SPAWN_SERVICE";
 const RPC_TOKEN_MISMATCH: &str = "rpc_token_mismatch";
 const SERVICE_VERSION_MISMATCH: &str = "service_version_mismatch";
 
+pub(super) fn build_service_proxy_client() -> reqwest::Result<reqwest::Client> {
+    // A 307/308 can resend the RPC body after its original request committed.
+    // Keep redirects visible to callers instead of replaying through the proxy.
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
 /// 函数 `should_spawn_service`
 ///
 /// 作者: gaohongshun

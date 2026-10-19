@@ -25,6 +25,7 @@
         }
       },
       "context-model": {
+        "canonical_model_id": "openai/context-fixture",
         "cost": {
           "input": 2,
           "output": 8,
@@ -36,9 +37,11 @@
         }
       },
       "fallback-candidate": {
+        "canonical_model_id": "openai/fallback-fixture",
         "cost": { "per_image": 0.04 }
       },
       "cny-model": {
+        "canonical_model_id": "openai/currency-fixture",
         "cost": { "currency": "CNY", "input": 1, "output": 2 }
       }
     }
@@ -48,6 +51,7 @@
     "name": "Anthropic",
     "models": {
       "shared-model": {
+        "canonical_model_id": "anthropic/shared-fixture",
         "cost": { "input": 3, "output": 15, "cache_read": 0.3 }
       }
     }
@@ -57,6 +61,7 @@
     "name": "Google",
     "models": {
       "shared-model": {
+        "canonical_model_id": "google/shared-fixture",
         "cost": { "input": 0.5, "output": 2 }
       }
     }

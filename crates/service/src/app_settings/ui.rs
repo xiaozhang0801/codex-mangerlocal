@@ -197,8 +197,10 @@ pub fn current_keep_window_ui_mounted_setting() -> bool {
 }
 
 pub fn set_keep_window_ui_mounted_setting(enabled: bool) -> Result<bool, String> {
-    save_persisted_bool_setting(APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY, enabled)?;
-    save_persisted_bool_setting(APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, !enabled)?;
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"keepWindowUiMounted": enabled}),
+        APP_SETTING_KEEP_WINDOW_UI_MOUNTED_KEY,
+    )?;
     Ok(enabled)
 }
 

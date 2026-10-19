@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::MutexGuard;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tiny_http::{Header, Response, Server, StatusCode};
 
 mod support;
@@ -29,19 +29,24 @@ static RPC_TEST_DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
 /// # 返回
 /// 返回函数执行结果
 fn new_test_dir(prefix: &str) -> PathBuf {
-    // 中文注释：用进程号 + 自增序号构造临时目录，避免 Windows 复用旧目录导致脏数据串用。
+    // Include a timestamp so a later process cannot reuse a previous test directory.
     let seq = RPC_TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before UNIX epoch")
+        .as_nanos();
     let mut dir = std::env::temp_dir();
-    dir.push(format!("{prefix}-{}-{seq}", std::process::id()));
-    let _ = fs::create_dir_all(&dir);
+    dir.push(format!("{prefix}-{}-{timestamp}-{seq}", std::process::id()));
+    fs::create_dir(&dir).expect("create isolated RPC test directory");
     dir
 }
 
 struct RpcTestContext {
-    _env_lock: MutexGuard<'static, ()>,
     _db_path_guard: EnvGuard,
     _auto_usage_refresh_guard: EnvGuard,
     dir: PathBuf,
+    // Fields drop in declaration order: restore the environment before unlocking.
+    _env_lock: MutexGuard<'static, ()>,
 }
 
 impl RpcTestContext {
@@ -60,15 +65,21 @@ impl RpcTestContext {
         let env_lock = test_env_guard();
         let dir = new_test_dir(prefix);
         let db_path = dir.join("codexmanager.db");
+        // Complete migrations privately before background work can observe this path.
+        let storage = Storage::open(&db_path).expect("open isolated RPC test database");
+        storage
+            .init()
+            .expect("initialize isolated RPC test database");
+        drop(storage);
         let db_path_guard =
             EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
         let auto_usage_refresh_guard =
             EnvGuard::set("CODEXMANAGER_AUTO_USAGE_REFRESH_AFTER_ACCOUNT_ADD", "0");
         Self {
-            _env_lock: env_lock,
             _db_path_guard: db_path_guard,
             _auto_usage_refresh_guard: auto_usage_refresh_guard,
             dir,
+            _env_lock: env_lock,
         }
     }
 
@@ -260,6 +271,93 @@ fn rpc_gateway_transport_round_trips_sse_keepalive_enabled() {
     );
     codexmanager_service::set_gateway_sse_keepalive_enabled(previous_enabled)
         .expect("restore sse keepalive setting");
+}
+
+#[test]
+fn rpc_gateway_transport_invalid_interval_preserves_all_settings_and_runtime() {
+    let ctx = RpcTestContext::new("rpc-gateway-transport-atomic-validation");
+    let _backend = EnvGuard::set("CODEXMANAGER_STORAGE_BACKEND", "sqlite");
+    let _database_url = EnvGuard::set("CODEXMANAGER_DATABASE_URL", "");
+    std::env::remove_var("CODEXMANAGER_DATABASE_URL");
+    let previous_enabled = codexmanager_service::current_gateway_sse_keepalive_enabled();
+    let previous_interval = codexmanager_service::current_gateway_sse_keepalive_interval_ms();
+    let _enabled_env = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_ENABLED", "");
+    let _interval_env = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS", "");
+    let storage = Storage::open(ctx.db_path()).expect("open temporary db");
+    storage.init().expect("init temporary schema");
+    storage
+        .save_app_settings(
+            &[
+                (
+                    codexmanager_service::APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY.into(),
+                    Some(if previous_enabled { "1" } else { "0" }.into()),
+                ),
+                (
+                    codexmanager_service::APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY.into(),
+                    Some(previous_interval.to_string()),
+                ),
+            ],
+            now_ts(),
+        )
+        .expect("seed persisted transport baseline");
+
+    let before_server =
+        codexmanager_service::start_one_shot_server().expect("start baseline server");
+    let before = post_rpc_method(&before_server.addr, 1, "gateway/transport/get", None);
+    before_server.join();
+    let before_enabled = before["result"]["sseKeepaliveEnabled"]
+        .as_bool()
+        .expect("baseline keepalive enabled");
+    let before_interval = before["result"]["sseKeepaliveIntervalMs"]
+        .as_u64()
+        .expect("baseline keepalive interval");
+    let before_settings = storage
+        .list_app_settings()
+        .expect("read persisted baseline");
+
+    let set_server =
+        codexmanager_service::start_one_shot_server().expect("start validation server");
+    let rejected = post_rpc_method(
+        &set_server.addr,
+        2,
+        "gateway/transport/set",
+        Some(serde_json::json!({
+            "sseKeepaliveEnabled": !before_enabled,
+            "sseKeepaliveIntervalMs": 0,
+        })),
+    );
+    set_server.join();
+    let error = rejected["result"]["error"]
+        .as_str()
+        .expect("invalid interval error");
+    assert!(error.contains("greater than 0"), "{error}");
+    // Check the live state before another server startup can reload settings.
+    assert_eq!(
+        codexmanager_service::current_gateway_sse_keepalive_enabled(),
+        before_enabled
+    );
+    assert_eq!(
+        codexmanager_service::current_gateway_sse_keepalive_interval_ms(),
+        before_interval
+    );
+    assert_eq!(
+        storage
+            .list_app_settings()
+            .expect("read after rejected patch"),
+        before_settings
+    );
+
+    let after_server =
+        codexmanager_service::start_one_shot_server().expect("start final get server");
+    let after = post_rpc_method(&after_server.addr, 3, "gateway/transport/get", None);
+    after_server.join();
+    assert_eq!(after["result"], before["result"]);
+    assert_eq!(
+        storage
+            .list_app_settings()
+            .expect("read final persisted settings"),
+        before_settings
+    );
 }
 
 // A mock provider finishing its response only proves transport completion.
@@ -3034,6 +3132,7 @@ fn rpc_chatgpt_auth_tokens_login_read_logout_roundtrip() {
     let login_json = serde_json::to_string(&login_req).expect("serialize login");
     let login_server = codexmanager_service::start_one_shot_server().expect("start server");
     let login_resp = post_rpc(&login_server.addr, &login_json);
+    login_server.join();
     let login_result = login_resp.get("result").expect("login result");
     assert_eq!(
         login_result.get("type").and_then(|value| value.as_str()),
@@ -3049,6 +3148,7 @@ fn rpc_chatgpt_auth_tokens_login_read_logout_roundtrip() {
     let read_json = serde_json::to_string(&read_req).expect("serialize read");
     let read_server = codexmanager_service::start_one_shot_server().expect("start server");
     let read_resp = post_rpc(&read_server.addr, &read_json);
+    read_server.join();
     let read_result = read_resp.get("result").expect("read result");
     let account = read_result.get("account").expect("current account");
     assert!(read_result.get("authMode").is_none());
@@ -3076,6 +3176,7 @@ fn rpc_chatgpt_auth_tokens_login_read_logout_roundtrip() {
     let logout_json = serde_json::to_string(&logout_req).expect("serialize logout");
     let logout_server = codexmanager_service::start_one_shot_server().expect("start server");
     let logout_resp = post_rpc(&logout_server.addr, &logout_json);
+    logout_server.join();
     let logout_result = logout_resp.get("result").expect("logout result");
     assert!(logout_result
         .as_object()
@@ -3084,6 +3185,7 @@ fn rpc_chatgpt_auth_tokens_login_read_logout_roundtrip() {
     let read_after_logout_server =
         codexmanager_service::start_one_shot_server().expect("start server");
     let read_after_logout = post_rpc(&read_after_logout_server.addr, &read_json);
+    read_after_logout_server.join();
     let read_after_logout_result = read_after_logout.get("result").expect("read result");
     assert!(read_after_logout_result.get("account").unwrap().is_null());
 

@@ -1,3 +1,4 @@
+#[cfg(test)]
 use super::attempt_flow::transport::runtime::upstream_runtime;
 use bytes::Bytes;
 use std::collections::VecDeque;
@@ -13,6 +14,7 @@ use tokio::sync::mpsc::{channel, Receiver};
 
 #[cfg(test)]
 const GATEWAY_STREAM_READ_CHUNK_BYTES: usize = 8 * 1024;
+#[cfg(test)]
 const GATEWAY_STREAM_CHANNEL_CAPACITY: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -271,7 +273,7 @@ impl GatewayByteStream {
         self.replay.clear();
     }
 
-    fn close_input(&mut self) {
+    pub(crate) fn close_input(&mut self) {
         self.rx.close();
         if let Some(cancel) = self.cancel.take() {
             let _ = cancel.send(());
@@ -280,6 +282,7 @@ impl GatewayByteStream {
 
     /// The left consumer owns provider cancellation. Closing it stops new
     /// provider bytes, while the observer receives every already queued item.
+    #[cfg(test)]
     pub(crate) fn tee(mut self) -> (Self, Self) {
         let (left_tx, left_rx) = channel(GATEWAY_STREAM_CHANNEL_CAPACITY);
         let (right_tx, right_rx) = channel(GATEWAY_STREAM_CHANNEL_CAPACITY);

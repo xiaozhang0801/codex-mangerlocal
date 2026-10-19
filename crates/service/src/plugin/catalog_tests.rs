@@ -109,6 +109,8 @@ fn request_market_mode_normalizes_private_to_custom() {
 /// 无
 #[test]
 fn custom_market_with_unreachable_source_returns_empty_items() {
+    let lock = crate::test_env_guard();
+    let _client = super::super::runtime::test_support::PluginHttpClientGuard::enter(&lock);
     let request = catalog_request(serde_json::json!({
         "marketMode": "custom",
         "sourceUrl": "http://127.0.0.1:9/unreachable-plugin-market.json"
@@ -141,6 +143,7 @@ fn custom_market_with_unreachable_source_returns_empty_items() {
 /// 无
 #[test]
 fn custom_market_without_source_returns_empty_items() {
+    let _env_lock = crate::test_env_guard();
     let request = catalog_request(serde_json::json!({
         "marketMode": "custom"
     }));
@@ -193,7 +196,11 @@ fn builtin_market_never_uses_custom_source() {
 
 #[test]
 fn native_catalog_download_install_update_and_script_run_persist_results() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+
     let _guard = crate::test_env_guard();
+    let _client = super::super::runtime::test_support::PluginHttpClientGuard::enter(&_guard);
     struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -242,25 +249,30 @@ fn native_catalog_download_install_update_and_script_run_persist_results() {
                 }]})) }
             }
         })).route("/script", axum::routing::get(|| async { "fn run(context) { #{ accepted: true } }" }));
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
-        let mut req = catalog_request(serde_json::json!({
-            "marketMode": "custom", "sourceUrl": format!("{base}/catalog"), "pluginId": "native-plugin"
-        }));
-        let catalog = super::handle_catalog_list_async(&req).await;
-        assert_eq!(catalog.result["items"][0]["version"], "1");
-        req.method = "plugin/install".to_string();
-        let installed = super::handle_install_async(&req, false).await;
-        assert_eq!(installed.result["plugin"]["version"], "1");
-        version.store(2, std::sync::atomic::Ordering::SeqCst);
-        req.method = "plugin/update".to_string();
-        let updated = super::handle_install_async(&req, true).await;
-        assert_eq!(updated.result["plugin"]["version"], "2");
-        assert_eq!(catalog_hits.load(std::sync::atomic::Ordering::SeqCst), 3);
-        req.method = "plugin/tasks/run".to_string();
-        req.params = Some(serde_json::json!({"taskId": "native-plugin::run"}));
-        let ran = super::super::runtime::handle_task_run_async(&req).await;
-        assert_eq!(ran.result["output"]["accepted"], true);
-        server.abort();
+        let mut server = super::super::runtime::test_support::AbortOnDrop::new(tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); }));
+        let outcome = AssertUnwindSafe(async {
+            let mut req = catalog_request(serde_json::json!({
+                "marketMode": "custom", "sourceUrl": format!("{base}/catalog"), "pluginId": "native-plugin"
+            }));
+            let catalog = super::handle_catalog_list_async(&req).await;
+            assert_eq!(catalog.result["items"][0]["version"], "1");
+            req.method = "plugin/install".to_string();
+            let installed = super::handle_install_async(&req, false).await;
+            assert_eq!(installed.result["plugin"]["version"], "1");
+            version.store(2, std::sync::atomic::Ordering::SeqCst);
+            req.method = "plugin/update".to_string();
+            let updated = super::handle_install_async(&req, true).await;
+            assert_eq!(updated.result["plugin"]["version"], "2");
+            assert_eq!(catalog_hits.load(std::sync::atomic::Ordering::SeqCst), 3);
+            req.method = "plugin/tasks/run".to_string();
+            req.params = Some(serde_json::json!({"taskId": "native-plugin::run"}));
+            let ran = super::super::runtime::handle_task_run_async(&req).await;
+            assert_eq!(ran.result["output"]["accepted"], true);
+        })
+        .catch_unwind()
+        .await;
+        let cleanup = server.abort_and_join().await;
+        super::super::runtime::test_support::finish_fixture(outcome, cleanup);
     });
     let storage = crate::storage_helpers::open_storage().unwrap();
     let plugin = storage

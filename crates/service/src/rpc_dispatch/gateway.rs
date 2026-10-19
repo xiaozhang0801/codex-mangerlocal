@@ -95,38 +95,32 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let requested_sse_keepalive_interval_ms = u64_param(req, "sseKeepaliveIntervalMs");
             let requested_upstream_stream_timeout_ms = u64_param(req, "upstreamStreamTimeoutMs");
             let requested_upstream_total_timeout_ms = u64_param(req, "upstreamTotalTimeoutMs");
-            super::value_or_error((|| {
-                let sse_keepalive_enabled = if let Some(value) = requested_sse_keepalive_enabled {
-                    crate::set_gateway_sse_keepalive_enabled(value)?
-                } else {
-                    crate::current_gateway_sse_keepalive_enabled()
-                };
-                let sse_keepalive_interval_ms =
-                    if let Some(value) = requested_sse_keepalive_interval_ms {
-                        crate::set_gateway_sse_keepalive_interval_ms(value)?
-                    } else {
-                        crate::current_gateway_sse_keepalive_interval_ms()
-                    };
-                let upstream_stream_timeout_ms =
-                    if let Some(value) = requested_upstream_stream_timeout_ms {
-                        crate::set_gateway_upstream_stream_timeout_ms(value)?
-                    } else {
-                        crate::current_gateway_upstream_stream_timeout_ms()
-                    };
-                let upstream_total_timeout_ms =
-                    if let Some(value) = requested_upstream_total_timeout_ms {
-                        crate::set_gateway_upstream_total_timeout_ms(value)?
-                    } else {
-                        crate::current_gateway_upstream_total_timeout_ms()
-                    };
-                Ok(serde_json::json!({
-                    "sseKeepaliveEnabled": sse_keepalive_enabled,
-                    "sseKeepaliveIntervalMs": sse_keepalive_interval_ms,
-                    "upstreamStreamTimeoutMs": upstream_stream_timeout_ms,
-                    "upstreamTotalTimeoutMs": upstream_total_timeout_ms,
-                    "requiresRestart": false,
-                }))
-            })())
+            // Retain this RPC's legacy coercion, but validate and commit all
+            // recognized fields through the single settings transaction.
+            let mut patch = serde_json::Map::new();
+            if let Some(value) = requested_sse_keepalive_enabled {
+                patch.insert("sseKeepaliveEnabled".into(), value.into());
+            }
+            if let Some(value) = requested_sse_keepalive_interval_ms {
+                patch.insert("sseKeepaliveIntervalMs".into(), value.into());
+            }
+            if let Some(value) = requested_upstream_stream_timeout_ms {
+                patch.insert("upstreamStreamTimeoutMs".into(), value.into());
+            }
+            if let Some(value) = requested_upstream_total_timeout_ms {
+                patch.insert("upstreamTotalTimeoutMs".into(), value.into());
+            }
+            super::value_or_error(crate::app_settings_set(Some(&Value::Object(patch))).map(
+                |settings| {
+                    serde_json::json!({
+                        "sseKeepaliveEnabled": settings["sseKeepaliveEnabled"],
+                        "sseKeepaliveIntervalMs": settings["sseKeepaliveIntervalMs"],
+                        "upstreamStreamTimeoutMs": settings["upstreamStreamTimeoutMs"],
+                        "upstreamTotalTimeoutMs": settings["upstreamTotalTimeoutMs"],
+                        "requiresRestart": false,
+                    })
+                },
+            ))
         }
         "gateway/backgroundTasks/set" => {
             let patch = crate::usage_refresh::BackgroundTasksSettingsPatch {

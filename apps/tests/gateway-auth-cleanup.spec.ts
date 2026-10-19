@@ -1,11 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-test("gateway auth cleanup defaults on and explicit preservation survives reload", async ({ page }) => {
+test("settings hides legacy auth cleanup and preserves unrelated preferences", async ({ page }) => {
   let settings: Record<string, unknown> = {
     locale: "en",
     codexCliGuideDismissed: true,
     serviceAddr: "localhost:48760",
     theme: "tech",
+    removeRequiresOpenaiAuth: true,
   };
   const patches: Record<string, unknown>[] = [];
   await page.route(/\/api\/runtime\/?(?:\?.*)?$/, (route) => route.fulfill({
@@ -27,15 +28,15 @@ test("gateway auth cleanup defaults on and explicit preservation survives reload
     await route.fulfill({ json: { jsonrpc: "2.0", id, result } });
   });
   await page.goto("/settings/");
-  const control = page.getByRole("switch", { name: "Remove requires_openai_auth", exact: true });
-  await expect(control).toBeChecked();
-  await expect(page.locator("#settings-remove-openai-auth-description")).toContainText("may disable image extensions");
-  await control.click();
-  await expect.poll(() => patches.some((patch) => patch.removeRequiresOpenaiAuth === false)).toBe(true);
+  const legacyControl = page.getByRole("switch", { name: "Remove requires_openai_auth", exact: true });
+  const performanceControl = page.getByRole("switch", { name: "Visual performance mode", exact: true });
+  await expect(performanceControl).toBeVisible();
+  await expect(legacyControl).toHaveCount(0);
+  await performanceControl.click();
+  await expect.poll(() => patches.some((patch) => patch.lowTransparency === true)).toBe(true);
+  expect(patches.every((patch) => !("removeRequiresOpenaiAuth" in patch))).toBe(true);
   await page.reload();
-  await expect(control).not.toBeChecked();
-  await control.click();
-  await expect.poll(() => patches.some((patch) => patch.removeRequiresOpenaiAuth === true)).toBe(true);
-  await page.reload();
-  await expect(control).toBeChecked();
+  await expect(performanceControl).toBeChecked();
+  await expect(legacyControl).toHaveCount(0);
+
 });

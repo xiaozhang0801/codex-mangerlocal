@@ -7,7 +7,7 @@ use super::{
     PassthroughSseCollector, Read, SseKeepAliveFrame, UpstreamSseFramePump,
     UpstreamSseFramePumpItem,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::time::Instant;
 
 pub(crate) struct ImagesFromResponsesSseReader {
@@ -224,15 +224,26 @@ impl ImagesFromResponsesSseReader {
                     return Ok(Vec::new());
                 }
                 Ok(UpstreamSseFramePumpItem::Error(err)) => {
+                    let message = classify_upstream_stream_read_error(&err);
                     if let Ok(mut collector) = self.usage_collector.lock() {
                         collector
                             .terminal_error
-                            .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
+                            .get_or_insert_with(|| message.clone());
                     }
                     self.finished = true;
-                    return Ok(Vec::new());
+                    return Ok(Self::sse_event(
+                        "error",
+                        json!({
+                            "error": { "type": "server_error", "code": "upstream_stream_read_error", "message": message }
+                        }),
+                    ));
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_upstream_activity = self.last_upstream_activity.max(
+                        self.upstream
+                            .last_activity()
+                            .unwrap_or(self.last_upstream_activity),
+                    );
                     if stream_idle_timed_out(self.last_upstream_activity) {
                         if let Ok(mut collector) = self.usage_collector.lock() {
                             collector

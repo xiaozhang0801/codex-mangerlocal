@@ -65,6 +65,7 @@ async fn cancelled_header_wait_logs_one_499_without_retrying_or_failing_over() {
     use tokio::io::AsyncReadExt;
 
     let _env_lock = crate::test_env_guard();
+    let _loopback = crate::loopback_proxy_test::LoopbackProxyGuard::enter(&_env_lock);
     let storage = Storage::open_in_memory().unwrap();
     storage.init().unwrap();
     let first = build_account("cancelled-header-first", now_ts());
@@ -159,27 +160,60 @@ async fn cancelled_header_wait_logs_one_499_without_retrying_or_failing_over() {
             disable_challenge_stateless_retry: false,
         },
     );
+    let diagnostic_started = Instant::now();
+    let phases = std::sync::Mutex::new(Vec::new());
+    let record_phase = |phase: &'static str| {
+        let elapsed_ms = diagnostic_started.elapsed().as_millis();
+        phases.lock().unwrap().push((phase, elapsed_ms));
+        eprintln!("cancelled_header_wait phase={phase} elapsed_ms={elapsed_ms}");
+    };
     let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
-        tokio::join!(scope_response_cancellation(cancellation, attempt), async {
-            let (mut connection, _) = listener.accept().await.unwrap();
-            let mut buffer = [0_u8; 1024];
-            assert!(connection.read(&mut buffer).await.unwrap() > 0);
-            drop(cancellation_guard);
-            while let Ok(read) = connection.read(&mut buffer).await {
-                if read == 0 {
-                    break;
+        record_phase("start");
+        tokio::join!(
+            async {
+                let outcome = scope_response_cancellation(cancellation, attempt).await;
+                record_phase("outcome");
+                outcome
+            },
+            async {
+                let (mut connection, _) = listener.accept().await.unwrap();
+                record_phase("accepted");
+                let mut buffer = [0_u8; 1024];
+                assert!(connection.read(&mut buffer).await.unwrap() > 0);
+                record_phase("read");
+                drop(cancellation_guard);
+                record_phase("cancel");
+                loop {
+                    match connection.read(&mut buffer).await {
+                        Ok(0) => {
+                            record_phase("socket_eof");
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            record_phase("socket_read_error");
+                            panic!("cancelled upstream must close with EOF: {error}");
+                        }
+                    }
                 }
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                        .await
+                        .is_err(),
+                    "a disconnected request cannot start another provider attempt"
+                );
+                record_phase("no_extra");
             }
-            assert!(
-                tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                    .await
-                    .is_err(),
-                "a disconnected request cannot start another provider attempt"
-            );
-        })
+        )
     })
     .await
-    .expect("silent header cancellation completes promptly");
+    .unwrap_or_else(|error| {
+        panic!(
+            "silent header cancellation completes promptly: {error:?}; elapsed_ms={}; phases={:?}",
+            diagnostic_started.elapsed().as_millis(),
+            phases.lock().unwrap(),
+        )
+    });
     assert!(matches!(
         outcome.unwrap(),
         CandidateExecutionResult::Handled

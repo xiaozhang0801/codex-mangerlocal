@@ -727,12 +727,64 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        paths_at_timestamp(id)
+    }
+
+    fn paths_at_timestamp(id: u128) -> (std::path::PathBuf, std::path::PathBuf) {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let source = std::env::temp_dir().join(format!(
-            "codexmanager-transfer-{}-{id}.sqlite",
+            "codexmanager-transfer-{}-{id}-{sequence}.sqlite",
             std::process::id()
         ));
+        // Clock readings can repeat across concurrent callers. Reserve the
+        // source before SQLite can open an existing fixture by accident.
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&source)
+            .expect("exclusively reserve transfer source fixture");
+        // export_sqlite exclusively creates the archive itself.
         let archive = source.with_extension("jsonl");
         (source, archive)
+    }
+
+    #[test]
+    fn concurrent_fixed_timestamp_paths_are_distinct_and_exclusively_reserved() {
+        const CALLERS: usize = 8;
+        let start = std::sync::Barrier::new(CALLERS);
+        let paths = std::thread::scope(|scope| {
+            let handles = (0..CALLERS)
+                .map(|_| {
+                    let start = &start;
+                    scope.spawn(move || {
+                        start.wait();
+                        paths_at_timestamp(1)
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("reserve fixture without a panic"))
+                .collect::<Vec<_>>()
+        });
+        let mut unique = std::collections::BTreeSet::new();
+        for (source, archive) in &paths {
+            assert!(unique.insert(source.clone()), "source path repeated");
+            assert!(unique.insert(archive.clone()), "archive path repeated");
+            assert_eq!(std::fs::metadata(source).unwrap().len(), 0);
+            assert!(!archive.exists(), "export must create its own archive");
+            let error = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(source)
+                .expect_err("source must already be exclusively reserved");
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        }
+        assert_eq!(unique.len(), CALLERS * 2);
+        for (source, _) in paths {
+            std::fs::remove_file(source).expect("remove owned empty reservation");
+        }
     }
 
     #[tokio::test]

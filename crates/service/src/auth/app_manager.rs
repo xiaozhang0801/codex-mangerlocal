@@ -10,9 +10,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::app_settings::{
-    get_persisted_app_setting, normalize_optional_text, parse_bool_with_default,
-    save_persisted_app_setting, APP_SETTING_DISTRIBUTION_ENABLED_KEY,
-    APP_SETTING_WEB_AUTH_MODE_KEY,
+    get_persisted_app_setting, list_app_settings_map, normalize_optional_text,
+    parse_bool_with_default, APP_SETTING_DISTRIBUTION_ENABLED_KEY,
+    APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY, APP_SETTING_WEB_AUTH_MODE_KEY,
 };
 use crate::storage_helpers::open_storage;
 use crate::RpcActor;
@@ -116,14 +116,27 @@ pub struct AppUserUpdateInput {
 }
 
 pub fn current_web_auth_mode() -> String {
-    if let Some(raw) = get_persisted_app_setting(APP_SETTING_WEB_AUTH_MODE_KEY) {
+    // Read the mode and password from one committed settings snapshot. Separate
+    // reads can combine an old password mode with a newer, cleared password.
+    let settings = list_app_settings_map();
+    let password_configured = normalize_optional_text(
+        settings
+            .get(APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY)
+            .map(String::as_str),
+    )
+    .is_some();
+    if let Some(raw) = normalize_optional_text(
+        settings
+            .get(APP_SETTING_WEB_AUTH_MODE_KEY)
+            .map(String::as_str),
+    ) {
         let mode = normalize_web_auth_mode(Some(&raw));
-        if mode == WEB_AUTH_MODE_PASSWORD && !super::web_access::web_access_password_configured() {
+        if mode == WEB_AUTH_MODE_PASSWORD && !password_configured {
             return WEB_AUTH_MODE_NONE.to_string();
         }
         return mode.to_string();
     }
-    if super::web_access::web_access_password_configured() {
+    if password_configured {
         WEB_AUTH_MODE_PASSWORD.to_string()
     } else {
         WEB_AUTH_MODE_NONE.to_string()
@@ -131,20 +144,73 @@ pub fn current_web_auth_mode() -> String {
 }
 
 pub fn set_web_auth_mode(mode: &str) -> Result<String, String> {
-    let normalized = normalize_web_auth_mode(Some(mode));
-    let current = current_web_auth_mode();
-    if current == WEB_AUTH_MODE_ACCOUNTS && normalized != WEB_AUTH_MODE_ACCOUNTS {
-        let lock = billing_mode_lock_status()?;
-        if lock.account_mode_locked {
-            return Err("account_billing_mode_locked".to_string());
+    crate::app_settings::api::apply_single_setting_patch(
+        serde_json::json!({"webAuthMode": mode}),
+        APP_SETTING_WEB_AUTH_MODE_KEY,
+    )
+}
+
+/// Validate the final security configuration before committing any patch keys.
+/// Password hashing is preparation only; plaintext never enters the setting map.
+pub(crate) fn prepare_web_settings_patch(
+    password: Option<&str>,
+    mode: Option<&str>,
+    distribution: Option<bool>,
+    settings: &mut std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    if password.is_none() && mode.is_none() && distribution.is_none() {
+        return Ok(());
+    }
+    let current_mode = current_web_auth_mode();
+    let mut target_mode = mode
+        .map(|v| normalize_web_auth_mode(Some(v)).to_owned())
+        .unwrap_or_else(|| current_mode.clone());
+    let password_hash = password.map(|v| {
+        normalize_optional_text(Some(v))
+            .map(|v| super::web_access::hash_web_access_password(&v))
+            .unwrap_or_default()
+    });
+    let password_configured = password_hash
+        .as_ref()
+        .map(|v| !v.is_empty())
+        .unwrap_or_else(super::web_access::web_access_password_configured);
+    // The legacy password-clear API removes password protection when no mode
+    // was explicitly requested. An explicit password mode still requires a hash.
+    if mode.is_none() && target_mode == WEB_AUTH_MODE_PASSWORD && !password_configured {
+        target_mode = WEB_AUTH_MODE_NONE.to_owned();
+    }
+    let current_distribution = distribution_enabled();
+    let target_distribution = distribution.unwrap_or(current_distribution);
+    if current_mode == WEB_AUTH_MODE_ACCOUNTS && target_mode != WEB_AUTH_MODE_ACCOUNTS {
+        if billing_mode_lock_status()?.account_mode_locked {
+            return Err("account_billing_mode_locked".into());
         }
     }
-    if normalized == WEB_AUTH_MODE_PASSWORD && !super::web_access::web_access_password_configured()
-    {
-        return Err("启用访问密码模式前需要先设置访问密码".to_string());
+    if target_mode == WEB_AUTH_MODE_PASSWORD && !password_configured {
+        return Err("启用访问密码模式前需要先设置访问密码".into());
     }
-    save_persisted_app_setting(APP_SETTING_WEB_AUTH_MODE_KEY, Some(normalized))?;
-    Ok(normalized.to_string())
+    if target_distribution && target_mode != WEB_AUTH_MODE_ACCOUNTS {
+        return Err("distribution_requires_accounts_mode".into());
+    }
+    if current_distribution
+        && !target_distribution
+        && billing_mode_lock_status()?.distribution_locked
+    {
+        return Err("distribution_mode_locked".into());
+    }
+    if let Some(hash) = password_hash {
+        settings.insert(crate::APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY.into(), hash);
+    }
+    if mode.is_some() {
+        settings.insert(APP_SETTING_WEB_AUTH_MODE_KEY.into(), target_mode);
+    }
+    if let Some(enabled) = distribution {
+        settings.insert(
+            APP_SETTING_DISTRIBUTION_ENABLED_KEY.into(),
+            enabled.to_string(),
+        );
+    }
+    Ok(())
 }
 
 pub fn distribution_enabled() -> bool {
@@ -169,18 +235,9 @@ pub(crate) fn distribution_enabled_for_storage(storage: &Storage) -> bool {
 }
 
 pub fn set_distribution_enabled(enabled: bool) -> Result<bool, String> {
-    if enabled && current_web_auth_mode() != WEB_AUTH_MODE_ACCOUNTS {
-        return Err("distribution_requires_accounts_mode".to_string());
-    }
-    if !enabled && distribution_enabled() {
-        let lock = billing_mode_lock_status()?;
-        if lock.distribution_locked {
-            return Err("distribution_mode_locked".to_string());
-        }
-    }
-    save_persisted_app_setting(
+    crate::app_settings::api::apply_single_setting_patch(
+        serde_json::json!({"distributionEnabled": enabled}),
         APP_SETTING_DISTRIBUTION_ENABLED_KEY,
-        Some(if enabled { "true" } else { "false" }),
     )?;
     Ok(enabled)
 }

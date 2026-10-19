@@ -522,6 +522,17 @@ impl SettingsPluginsStore for SeaOrmStorage {
                 .map_err(|error| format!("storage operation failed: {error}"))
         })
     }
+    fn save_settings(
+        &self,
+        changes: Vec<(String, Option<String>)>,
+        now: i64,
+    ) -> StorageFuture<'_, ()> {
+        Box::pin(async move {
+            SettingsRepository::save(self.connection(), &changes, now)
+                .await
+                .map_err(|error| format!("storage operation failed: {error}"))
+        })
+    }
     fn plugins(&self) -> StorageFuture<'_, Vec<PluginInstallListSummary>> {
         Box::pin(async move {
             let db = self.connection();

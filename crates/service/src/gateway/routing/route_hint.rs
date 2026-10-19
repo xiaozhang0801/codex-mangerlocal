@@ -298,23 +298,40 @@ pub(crate) fn current_route_strategy() -> &'static str {
 ///
 /// # 返回
 /// 返回函数执行结果
+pub(crate) fn normalize_route_strategy(strategy: &str) -> Result<&'static str, String> {
+    parse_route_mode(strategy)
+        .map(route_mode_label)
+        .ok_or_else(|| {
+            "invalid strategy; use ordered or balanced (aliases: round_robin/round-robin/rr)"
+                .to_string()
+        })
+}
+
 pub(crate) fn set_route_strategy(strategy: &str) -> Result<&'static str, String> {
     ensure_route_config_loaded();
-    let Some(mode) = parse_route_mode(strategy) else {
-        return Err(
-            "invalid strategy; use ordered or balanced (aliases: round_robin/round-robin/rr)"
-                .to_string(),
-        );
+    let strategy = normalize_route_strategy(strategy)?;
+    let mode = if strategy == ROUTE_STRATEGY_BALANCED {
+        ROUTE_MODE_BALANCED_ROUND_ROBIN
+    } else {
+        ROUTE_MODE_ORDERED
     };
-    ROUTE_MODE.store(mode, Ordering::Relaxed);
-    if let Some(lock) = ROUTE_STATE.get() {
-        let mut state = crate::lock_utils::lock_recover(lock, "route_state");
-        state.next_start_by_key_model.clear();
-        state.account_cursor_by_key_model.clear();
-        state.p2c_nonce_by_key_model.clear();
-        state.maintenance_tick = 0;
-    }
+    apply_route_mode(mode);
     Ok(route_mode_label(mode))
+}
+
+fn apply_route_mode(mode: u8) {
+    let lock = ROUTE_STATE.get_or_init(|| Mutex::new(RouteRoundRobinState::default()));
+    let mut state = crate::lock_utils::lock_recover(lock, "route_state");
+    // Settings reads, saves and environment reloads can reapply the same mode.
+    // Compare normalized modes under the state lock so only a real switch
+    // resets the cursors, including when multiple setters run concurrently.
+    if ROUTE_MODE.swap(mode, Ordering::Relaxed) == mode {
+        return;
+    }
+    state.next_start_by_key_model.clear();
+    state.account_cursor_by_key_model.clear();
+    state.p2c_nonce_by_key_model.clear();
+    state.maintenance_tick = 0;
 }
 
 /// 函数 `get_manual_preferred_account`
@@ -842,7 +859,19 @@ fn key_model_key(key_id: &str, model: Option<&str>) -> String {
 pub(super) fn reload_from_env() {
     let raw = std::env::var(ROUTE_STRATEGY_ENV).unwrap_or_default();
     let mode = parse_route_mode(raw.as_str()).unwrap_or(ROUTE_MODE_ORDERED);
-    ROUTE_MODE.store(mode, Ordering::Relaxed);
+    apply_route_mode(mode);
+    reload_route_tuning_from_env();
+}
+
+/// Settings synchronization may reload unrelated environment values while the
+/// route strategy lives only in runtime/storage. Do not temporarily apply the
+/// environment default or restore an old mode over a concurrent strategy setter.
+pub(super) fn reload_from_env_preserving_strategy() {
+    ensure_route_config_loaded();
+    reload_route_tuning_from_env();
+}
+
+fn reload_route_tuning_from_env() {
     ROUTE_HEALTH_P2C_ENABLED.store(
         env_bool_or(
             ROUTE_HEALTH_P2C_ENABLED_ENV,
@@ -875,11 +904,7 @@ pub(super) fn reload_from_env() {
 
     if let Some(lock) = ROUTE_STATE.get() {
         let mut state = crate::lock_utils::lock_recover(lock, "route_state");
-        state.next_start_by_key_model.clear();
-        state.account_cursor_by_key_model.clear();
-        state.p2c_nonce_by_key_model.clear();
         state.manual_preferred_account_id = None;
-        state.maintenance_tick = 0;
     }
 }
 
@@ -1023,3 +1048,7 @@ fn clear_route_state_for_tests() {
 #[cfg(test)]
 #[path = "tests/route_hint_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/route_hint_settings_tests.rs"]
+mod settings_tests;

@@ -1,7 +1,50 @@
 #[path = "../support.rs"]
 mod shared;
 
-pub(super) use shared::{test_env_guard, EnvGuard};
+pub(super) use shared::EnvGuard;
+
+const LOCAL_FIXTURE_NO_PROXY: &str = "127.0.0.1,localhost,::1";
+
+// Later mutations must be restored first because Windows environment variable
+// names are case-insensitive. Struct fields drop in declaration order.
+pub(super) struct LoopbackProxyGuard {
+    _lowercase: EnvGuard,
+    _uppercase: EnvGuard,
+}
+
+impl LoopbackProxyGuard {
+    pub(super) fn enter() -> Self {
+        let destination = "http://127.0.0.1:1/".parse().expect("loopback URI");
+        let before = hyper_util::client::proxy::matcher::Matcher::from_system()
+            .intercept(&destination)
+            .is_some();
+        let uppercase = EnvGuard::set("NO_PROXY", LOCAL_FIXTURE_NO_PROXY);
+        let lowercase = EnvGuard::set("no_proxy", LOCAL_FIXTURE_NO_PROXY);
+        let after = hyper_util::client::proxy::matcher::Matcher::from_system()
+            .intercept(&destination)
+            .is_some();
+        eprintln!("gateway loopback system proxy intercept: before={before} after={after}");
+        Self {
+            _lowercase: lowercase,
+            _uppercase: uppercase,
+        }
+    }
+}
+
+pub(super) struct GatewayTestEnvGuard {
+    // Restore the proxy environment before releasing the shared environment lock.
+    _loopback_proxy: LoopbackProxyGuard,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+pub(super) fn test_env_guard() -> GatewayTestEnvGuard {
+    let lock = shared::test_env_guard();
+    let loopback_proxy = LoopbackProxyGuard::enter();
+    GatewayTestEnvGuard {
+        _loopback_proxy: loopback_proxy,
+        _lock: lock,
+    }
+}
 
 pub(super) use codexmanager_core::storage::{
     now_ts, Account, ApiKey, ApiKeyOwner, AppUser, ManagedModelV2Upsert, ModelRouteV2,
@@ -206,7 +249,13 @@ pub(super) fn post_http_raw_with_read_timeout(
         stream.write_all(request.as_bytes()).expect("write");
 
         let mut buf = String::new();
-        stream.read_to_string(&mut buf).expect("read");
+        let read_started = Instant::now();
+        if let Err(error) = stream.read_to_string(&mut buf) {
+            panic!(
+                "read failed: {error}; {}",
+                raw_response_read_diagnostic(&buf, read_started.elapsed())
+            );
+        }
         if let Some(status) = buf
             .lines()
             .next()
@@ -221,6 +270,128 @@ pub(super) fn post_http_raw_with_read_timeout(
         thread::sleep(Duration::from_millis(50));
     }
     panic!("status parse failed, raw response: {last_raw:?}");
+}
+
+// Failure-only metadata: never print response content or request credentials.
+fn raw_response_read_diagnostic(raw: &str, elapsed: Duration) -> String {
+    let status = raw
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok());
+    let header_end = raw.find("\r\n\r\n");
+    let mut content_length = None;
+    let mut chunked = false;
+    if let Some(header_end) = header_end {
+        for line in raw[..header_end].split("\r\n").skip(1) {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse::<usize>().ok();
+            }
+            if name.trim().eq_ignore_ascii_case("transfer-encoding") {
+                chunked |= value
+                    .split(',')
+                    .any(|coding| coding.trim().eq_ignore_ascii_case("chunked"));
+            }
+        }
+    }
+    let body = header_end.map(|end| &raw.as_bytes()[end + 4..]);
+    let body_bytes = body.map(|body| body.len());
+    let chunked_complete = if chunked {
+        body.map(diagnostic_chunked_complete)
+    } else {
+        None
+    };
+    let framing_complete = if chunked {
+        chunked_complete
+    } else {
+        content_length
+            .zip(body_bytes)
+            .map(|(expected, got)| expected == got)
+    };
+    let read_phase = if raw.is_empty() {
+        "no_response"
+    } else if header_end.is_none() {
+        "partial_headers"
+    } else if framing_complete == Some(true) {
+        "complete_framing_waiting_for_eof"
+    } else {
+        "partial_or_eof_delimited_body"
+    };
+    format!(
+        "read_phase={read_phase} read_elapsed={elapsed:?} received_bytes={} status={status:?} \
+         headers_complete={} content_length={content_length:?} body_bytes={body_bytes:?} \
+         chunked={chunked} chunked_complete={chunked_complete:?} \
+         framing_complete={framing_complete:?}",
+        raw.len(),
+        header_end.is_some()
+    )
+}
+
+#[test]
+fn gateway_response_read_diagnostics_distinguish_missing_partial_and_eof_waits() {
+    for (raw, phase) in [
+        ("", "no_response"),
+        ("HTTP/1.1 200", "partial_headers"),
+        (
+            "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nsecret",
+            "partial_or_eof_delimited_body",
+        ),
+        (
+            "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecret",
+            "complete_framing_waiting_for_eof",
+        ),
+        (
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nsecret\r\n0\r\n\r\n",
+            "complete_framing_waiting_for_eof",
+        ),
+        (
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nsecret\r\n0\r\n",
+            "partial_or_eof_delimited_body",
+        ),
+    ] {
+        let diagnostic = raw_response_read_diagnostic(raw, Duration::from_secs(2));
+        assert!(diagnostic.starts_with(&format!("read_phase={phase} ")));
+        assert!(!diagnostic.contains("secret"));
+    }
+}
+
+// Inspect framing without decoding or accepting a failed HTTP read as success.
+// Chunk extensions and trailer lines are permitted; incomplete framing is false.
+fn diagnostic_chunked_complete(mut body: &[u8]) -> bool {
+    loop {
+        let Some(line_end) = body.windows(2).position(|bytes| bytes == b"\r\n") else {
+            return false;
+        };
+        let Ok(size_line) = std::str::from_utf8(&body[..line_end]) else {
+            return false;
+        };
+        let size_text = size_line.split(';').next().unwrap_or("").trim();
+        let Ok(size) = usize::from_str_radix(size_text, 16) else {
+            return false;
+        };
+        body = &body[line_end + 2..];
+        if size == 0 {
+            loop {
+                let Some(trailer_end) = body.windows(2).position(|bytes| bytes == b"\r\n") else {
+                    return false;
+                };
+                if trailer_end == 0 {
+                    return body.len() == 2;
+                }
+                body = &body[trailer_end + 2..];
+            }
+        }
+        let Some(frame_end) = size.checked_add(2) else {
+            return false;
+        };
+        if body.get(size..frame_end) != Some(b"\r\n".as_slice()) {
+            return false;
+        }
+        body = &body[frame_end..];
+    }
 }
 
 /// 函数 `hash_platform_key_for_test`

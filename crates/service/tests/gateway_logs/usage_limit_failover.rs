@@ -113,6 +113,24 @@ fn gateway_usage_limit_in_initial_sse_fails_over_before_delivery() {
     let db_path: PathBuf = dir.join("codexmanager.db");
     let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
 
+    // The notice queues a real usage refresh. Keep fake credentials on a local
+    // fixture. A transient failure leaves account status untouched, so it cannot
+    // hide an incorrect persistent status change made by the gateway itself.
+    let usage_fixture_error = "isolated usage refresh fixture temporarily busy";
+    let (usage_addr, usage_rx, usage_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![(
+                503,
+                usage_fixture_error.to_string(),
+                "text/plain".to_string(),
+            )],
+            Duration::from_secs(3),
+        );
+    let _usage_base_guard = EnvGuard::set(
+        "CODEXMANAGER_USAGE_BASE_URL",
+        &format!("http://{usage_addr}"),
+    );
+
     let usage_limit_sse = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_limited_primary\"}}\n\n",
         "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"content\":[]}}\n\n",
@@ -148,7 +166,10 @@ fn gateway_usage_limit_in_initial_sse_fails_over_before_delivery() {
 
     // 两个候选账号都健康（10%），以保证 has_more_candidates=true 让
     // should_failover_for_gateway_error 返回 true，走 failover 标记分支。
-    for (id, sort) in [("acc_primary", 0_i64), ("acc_secondary", 1_i64)] {
+    for (id, sort) in [
+        ("acc_notice_primary", 0_i64),
+        ("acc_notice_secondary", 1_i64),
+    ] {
         storage
             .insert_account(&Account {
                 id: id.to_string(),
@@ -238,9 +259,34 @@ fn gateway_usage_limit_in_initial_sse_fails_over_before_delivery() {
         !response_body.contains("usage limit"),
         "首账号额度错误不得泄漏给客户端：{response_body}"
     );
+    let usage_request = usage_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive queued usage refresh");
+    assert_eq!(usage_request.path, "/accounts/check/v4-2023-04-27");
+    usage_join.join().expect("join usage refresh fixture");
+    let event_db = rusqlite::Connection::open(&db_path).expect("open usage refresh event db");
+    let refresh_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let refresh_recorded: bool = event_db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE account_id = ?1
+                 AND type = 'usage_refresh_failed' AND message LIKE ?2)",
+                ("acc_notice_primary", format!("%{usage_fixture_error}%")),
+                |row| row.get(0),
+            )
+            .expect("read queued usage refresh result");
+        if refresh_recorded {
+            break;
+        }
+        assert!(
+            Instant::now() < refresh_deadline,
+            "queued usage refresh did not finish against the local fixture"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(
         storage
-            .find_account_status_by_id("acc_primary")
+            .find_account_status_by_id("acc_notice_primary")
             .expect("read primary status")
             .as_deref(),
         Some("active"),
@@ -260,7 +306,7 @@ fn gateway_usage_limit_in_initial_sse_fails_over_before_delivery() {
         .map(String::as_str)
         .unwrap_or_default();
     assert!(
-        first_auth.contains("access_acc_primary"),
+        first_auth.contains("access_acc_notice_primary"),
         "首次应命中 sort=0 的 primary 账号，实际 auth 头：{first_auth}"
     );
     let second_auth = second
@@ -269,7 +315,7 @@ fn gateway_usage_limit_in_initial_sse_fails_over_before_delivery() {
         .map(String::as_str)
         .unwrap_or_default();
     assert!(
-        second_auth.contains("access_acc_secondary"),
+        second_auth.contains("access_acc_notice_secondary"),
         "额度耗尽后应在同一请求续切 secondary，实际 auth 头：{second_auth}"
     );
 
@@ -296,7 +342,7 @@ fn gateway_usage_limit_in_initial_sse_fails_over_before_delivery() {
     );
     assert_eq!(
         log.account_id.as_deref(),
-        Some("acc_secondary"),
+        Some("acc_notice_secondary"),
         "最终请求日志应记录真正完成响应的 secondary 账号"
     );
 }

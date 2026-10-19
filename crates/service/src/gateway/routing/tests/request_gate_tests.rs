@@ -2,6 +2,26 @@ use super::*;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[test]
+fn runtime_reload_keeps_active_local_gate_instances() {
+    let _guard = crate::test_env_guard();
+    for (key, limit) in [
+        (account_gate_key("reload-account"), 3),
+        (client_ip_gate_key("192.0.2.1"), 2),
+    ] {
+        let lock = gate_lock_for_key(key.clone(), limit);
+        let running = (0..limit)
+            .map(|_| lock.try_acquire().unwrap().unwrap())
+            .collect::<Vec<_>>();
+        clear_runtime_state();
+        let reloaded = gate_lock_for_key(key, limit);
+        assert!(Arc::ptr_eq(&lock, &reloaded));
+        assert!(reloaded.try_acquire().unwrap().is_none());
+        drop(running);
+        assert!(reloaded.try_acquire().unwrap().is_some());
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn async_waiters_release_and_cancel_without_blocking_runtime() {
     let lock = Arc::new(RequestGateLock::new());

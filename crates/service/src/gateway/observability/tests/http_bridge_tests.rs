@@ -480,7 +480,7 @@ fn anthropic_sse_reader_final_usage_contains_input_cache_and_output_tokens() {
             0,
         )],
     );
-    let usage_collector = Arc::new(Mutex::new(super::UpstreamResponseUsage::default()));
+    let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
     let mut reader = super::AnthropicSseReader::new(
         response,
         usage_collector,
@@ -517,7 +517,7 @@ fn anthropic_sse_reader_does_not_replay_completed_snapshot_after_tool_call() {
             0,
         )],
     );
-    let usage_collector = Arc::new(Mutex::new(super::UpstreamResponseUsage::default()));
+    let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
     let mut reader = AnthropicSseReader::new(
         response,
         Arc::clone(&usage_collector),
@@ -537,6 +537,7 @@ fn anthropic_sse_reader_does_not_replay_completed_snapshot_after_tool_call() {
     let usage = usage_collector
         .lock()
         .expect("lock usage collector")
+        .usage
         .clone();
     assert_eq!(usage.output_text.as_deref(), Some("hello before tool"));
     assert_eq!(usage.input_tokens, Some(3));
@@ -549,12 +550,12 @@ fn anthropic_sse_reader_uses_request_model_when_upstream_stream_omits_model() {
     let (response, server) = open_streaming_mock_http_response(
         "text/event-stream",
         &[(
-            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_missing_model_1\"}}\n\n\
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_missing_model_1\"}}\n\n\
              data: [DONE]\n\n",
             0,
         )],
     );
-    let usage_collector = Arc::new(Mutex::new(super::UpstreamResponseUsage::default()));
+    let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
     let mut reader = super::AnthropicSseReader::new(
         response,
         usage_collector,
@@ -765,6 +766,91 @@ fn collect_non_stream_json_from_sse_bytes_synthesizes_chat_completion_chunks() {
     assert_eq!(usage.input_tokens, Some(7));
     assert_eq!(usage.output_tokens, Some(3));
     assert_eq!(usage.total_tokens, Some(10));
+}
+
+#[test]
+fn collect_non_stream_chat_sse_keeps_tools_isolated_per_choice() {
+    let chunk = |choices: Value| {
+        json!({
+            "id": "chatcmpl_multi_tools",
+            "object": "chat.completion.chunk",
+            "created": 1720000000,
+            "model": "multi-tools-test",
+            "system_fingerprint": "fp_multi_tools",
+            "choices": choices
+        })
+    };
+    let chunks = [
+        chunk(json!([
+            {"index": 1, "delta": {"role": "assistant", "tool_calls": [
+                {"index": 0, "id": "call_choice1", "type": "function", "function": {"name": "look", "arguments": "{\"x\":\""}}
+            ]}, "finish_reason": null},
+            {"index": 0, "delta": {"role": "assistant", "content": "A", "tool_calls": [
+                {"index": 1, "id": "call_choice0_b", "type": "function", "function": {"name": "com", "arguments": "{\"n\":"}},
+                {"index": 0, "id": "call_choice0_a", "type": "function", "function": {"name": "echo", "arguments": "{\"s\":\""}}
+            ]}, "finish_reason": null}
+        ])),
+        chunk(json!([
+            {"index": 0, "delta": {"content": [{"type": "text", "text": "B"}], "tool_calls": [
+                {"index": 0, "function": {"arguments": "aa"}},
+                {"index": 1, "function": {"name": "pute", "arguments": "2}"}}
+            ]}, "finish_reason": null},
+            {"index": 1, "delta": {"tool_calls": [
+                {"index": 0, "function": {"name": "up", "arguments": "x\"}"}}
+            ]}, "finish_reason": null}
+        ])),
+        chunk(json!([
+            {"index": 1, "delta": {}, "finish_reason": "length"},
+            {"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "aa"}}
+            ]}, "finish_reason": null}
+        ])),
+        chunk(json!([
+            {"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "\"}"}}
+            ]}, "finish_reason": "tool_calls"}
+        ])),
+        json!({
+            "id": "chatcmpl_multi_tools",
+            "object": "chat.completion.chunk",
+            "choices": [],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 5, "total_tokens": 12}
+        }),
+    ];
+    // Choices and tool indices arrive out of order, and both choices use tool
+    // index 0. Repeated argument fragments must append without crossing choices.
+    let mut sse = chunks
+        .iter()
+        .map(|value| format!("data: {value}\r\n\r\n"))
+        .collect::<String>();
+    sse.push_str("data: [DONE]\r\n\r\n");
+    let (body, usage) = collect_non_stream_json_from_sse_bytes(sse.as_bytes());
+    let actual: Value = serde_json::from_slice(&body.expect("synthesized multi-choice Chat body"))
+        .expect("valid synthesized Chat JSON");
+    // This literal expectation is independent of the synthesis and input builder.
+    assert_eq!(
+        actual,
+        json!({
+            "id": "chatcmpl_multi_tools",
+            "object": "chat.completion",
+            "created": 1720000000,
+            "model": "multi-tools-test",
+            "system_fingerprint": "fp_multi_tools",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "AB", "tool_calls": [
+                    {"id": "call_choice0_a", "type": "function", "function": {"name": "echo", "arguments": "{\"s\":\"aaaa\"}"}},
+                    {"id": "call_choice0_b", "type": "function", "function": {"name": "compute", "arguments": "{\"n\":2}"}}
+                ]}, "finish_reason": "tool_calls"},
+                {"index": 1, "message": {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "call_choice1", "type": "function", "function": {"name": "lookup", "arguments": "{\"x\":\"x\"}"}}
+                ]}, "finish_reason": "length"}
+            ],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 5, "total_tokens": 12}
+        })
+    );
+    assert_eq!(usage.input_tokens, Some(7));
+    assert_eq!(usage.output_tokens, Some(5));
+    assert_eq!(usage.total_tokens, Some(12));
 }
 
 #[test]

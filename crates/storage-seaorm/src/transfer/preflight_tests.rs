@@ -217,16 +217,117 @@ async fn dry_run_missing_and_malformed_schema_remains_unmodified() {
 
 #[tokio::test]
 async fn failed_checksum_and_connection_preserve_source_and_allow_clean_restore() {
+    const WAL_KEY: &str = "transfer_wal_restore_fixture";
+    const WAL_VALUE: &str = "committed-wal-survives-failed-cutover";
+
+    async fn target_lock_rows(db: &DatabaseConnection) -> Vec<(String, i64)> {
+        db.query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT id, version FROM app_domain_locks ORDER BY id".to_owned(),
+        ))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row.try_get("", "id").unwrap(),
+                row.try_get("", "version").unwrap(),
+            )
+        })
+        .collect()
+    }
+
     let (source, archive) = tests::paths();
     tests::legacy_fixture(&source);
-    export_sqlite(&source, &archive).await.unwrap();
+    // Dropping the legacy facade does not await its SQLx pool shutdown. Keep
+    // one writer alive and pin an older read view so committed fixture rows
+    // deterministically remain in WAL throughout the failed cutover.
+    let source_connection = rusqlite::Connection::open(&source).unwrap();
+    source_connection
+        .execute_batch("PRAGMA wal_autocheckpoint=0;")
+        .unwrap();
+    let checkpoint: (i64, i64, i64) = source_connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(
+        checkpoint,
+        (0, 0, 0),
+        "fixture must start fully checkpointed"
+    );
+    let main_before = Sha256::digest(std::fs::read(&source).unwrap());
+    let pinned_reader = rusqlite::Connection::open(&source).unwrap();
+    pinned_reader.execute_batch("BEGIN DEFERRED").unwrap();
+    let pinned_count = || {
+        pinned_reader
+            .query_row(
+                "SELECT COUNT(*) FROM app_settings WHERE key = ?",
+                [WAL_KEY],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(pinned_count(), 0);
+    source_connection
+        .execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, 2)",
+            [WAL_KEY, WAL_VALUE],
+        )
+        .unwrap();
+    assert_eq!(pinned_count(), 0, "reader must retain its pre-commit view");
+    let assert_source_intact = || {
+        let source_db = codexmanager_core::storage::Storage::open(&source).unwrap();
+        assert_eq!(
+            source_db
+                .get_app_setting("transfer_fixture")
+                .unwrap()
+                .as_deref(),
+            Some("retained")
+        );
+        assert_eq!(
+            source_db.get_app_setting(WAL_KEY).unwrap().as_deref(),
+            Some(WAL_VALUE),
+            "a new legacy reader must observe the committed WAL row"
+        );
+        let integrity: String = source_connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
+        let main = std::fs::read(&source).unwrap();
+        assert_eq!(Sha256::digest(&main), main_before);
+        assert!(
+            !main
+                .windows(WAL_VALUE.len())
+                .any(|bytes| bytes == WAL_VALUE.as_bytes()),
+            "the committed sentinel must still be absent from the main file"
+        );
+        assert!(
+            std::fs::metadata(source.with_extension("sqlite-wal"))
+                .unwrap()
+                .len()
+                > 32,
+            "the source must retain committed WAL frames"
+        );
+    };
+    assert_source_intact();
+    let expected = export_sqlite(&source, &archive).await.unwrap();
     let original = std::fs::read_to_string(&archive).unwrap();
     let target = empty_target().await;
+    let initial_target_locks = target_lock_rows(target.connection()).await;
     std::fs::write(&archive, original.replace("retained", "tampered-secret")).unwrap();
-    assert!(has(
-        &dry_run(&archive, target.connection()).await,
-        "snapshot_checksum_mismatch"
-    ));
+    let failed_preflight = dry_run(&archive, target.connection()).await;
+    assert!(has(&failed_preflight, "snapshot_checksum_mismatch"));
+    assert!(!failed_preflight.target_modified);
+    assert!(import_snapshot(&archive, target.connection())
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("checksum"));
+    assert!(SettingsRepository::list(target.connection())
+        .await
+        .unwrap()
+        .is_empty());
     std::fs::write(&archive, &original).unwrap();
     let missing = source.with_extension("missing-target.sqlite");
     let config = read_only_target_config(crate::StorageConfig {
@@ -241,10 +342,30 @@ async fn failed_checksum_and_connection_preserve_source_and_allow_clean_restore(
     .unwrap();
     assert!(SeaOrmStorage::connect_with_config(config).await.is_err());
     assert!(!missing.exists());
-    // A physical backup is safe after the fixture connection is closed. Restore
-    // to a new pathname and verify through the legacy adapter after failed cutover.
+    assert_source_intact();
+    let after_failure_archive = source.with_extension("after-failure.jsonl");
+    assert_eq!(
+        export_sqlite(&source, &after_failure_archive)
+            .await
+            .unwrap(),
+        expected,
+        "failed checksum and connection paths must preserve every archived source row"
+    );
+
+    // SQLite's backup API reads a consistent SQL view including WAL. A raw
+    // main-file copy here would omit WAL_VALUE despite its committed state.
     let restored = source.with_extension("restored.sqlite");
-    std::fs::copy(&source, &restored).unwrap();
+    let mut restored_connection = rusqlite::Connection::open(&restored).unwrap();
+    rusqlite::backup::Backup::new(&source_connection, &mut restored_connection)
+        .unwrap()
+        .run_to_completion(64, std::time::Duration::ZERO, None)
+        .unwrap();
+    let restored_checkpoint: (i64, i64, i64) = restored_connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(restored_checkpoint, (0, 0, 0));
     let restored_db = codexmanager_core::storage::Storage::open(&restored).unwrap();
     assert_eq!(
         restored_db
@@ -253,25 +374,94 @@ async fn failed_checksum_and_connection_preserve_source_and_allow_clean_restore(
             .as_deref(),
         Some("retained")
     );
-    drop(restored_db);
-    assert!(dry_run(&archive, target.connection()).await.success);
-    import_snapshot(&archive, target.connection())
+    assert_eq!(
+        restored_db.get_app_setting(WAL_KEY).unwrap().as_deref(),
+        Some(WAL_VALUE)
+    );
+    let restored_integrity: String = restored_connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(restored_integrity, "ok");
+    let restored_archive = source.with_extension("restored.jsonl");
+    assert_eq!(
+        export_sqlite(&restored, &restored_archive).await.unwrap(),
+        expected,
+        "the independently restored legacy database must contain the complete snapshot"
+    );
+    let clean_preflight = dry_run(&archive, target.connection()).await;
+    assert!(clean_preflight.success);
+    // Reports may include unmapped empty source tables with no target count.
+    // Inspect every actual target table instead so failed imports cannot leave
+    // rows in a mapped or an unexpected target table. Migration initializes
+    // domain lock rows; those must retain their exact initial values.
+    let target_tables = target
+        .connection()
+        .query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                .to_owned(),
+        ))
         .await
         .unwrap();
-    let source_db = codexmanager_core::storage::Storage::open(&source).unwrap();
-    assert_eq!(
-        source_db
-            .get_app_setting("transfer_fixture")
-            .unwrap()
-            .as_deref(),
-        Some("retained")
+    assert!(
+        !target_tables.is_empty(),
+        "the migrated target must have schema"
     );
-    drop(source_db);
-    std::fs::remove_file(restored).unwrap();
-    std::fs::remove_file(archive).unwrap();
-    // See the note above about the legacy facade's WAL handle on Windows.
+    for table in target_tables {
+        let name: String = table.try_get("", "name").unwrap();
+        let count = target
+            .connection()
+            .query_one(Statement::from_string(
+                DbBackend::Sqlite,
+                format!("SELECT COUNT(*) AS row_count FROM {}", quote(&name)),
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get::<i64>("", "row_count")
+            .unwrap();
+        if name == "app_domain_locks" {
+            assert_eq!(count, initial_target_locks.len() as i64);
+            assert_eq!(
+                target_lock_rows(target.connection()).await,
+                initial_target_locks,
+                "failed cutover must preserve the initialized target locks"
+            );
+        } else {
+            assert_eq!(
+                count, 0,
+                "failed cutover must leave target table {name} empty"
+            );
+        }
+    }
+    assert_eq!(
+        import_snapshot(&archive, target.connection())
+            .await
+            .unwrap(),
+        expected
+    );
+    for (key, value) in [("transfer_fixture", "retained"), (WAL_KEY, WAL_VALUE)] {
+        assert_eq!(
+            SettingsRepository::get(target.connection(), key)
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            value
+        );
+    }
+    assert_source_intact();
+    pinned_reader.execute_batch("ROLLBACK").unwrap();
+    drop(restored_db);
+    drop(restored_connection);
+    drop(pinned_reader);
+    drop(source_connection);
+    for snapshot in [archive, after_failure_archive, restored_archive] {
+        std::fs::remove_file(snapshot).unwrap();
+    }
+    // Keep both legacy database paths until process exit: dropping the facade
+    // does not synchronously close the shared SQLx pool's Windows file handles.
 }
-
 async fn remote_dry_run(backend: StorageBackendKind, variable: &str) {
     let (source, archive) = tests::paths();
     tests::legacy_fixture(&source);

@@ -21,8 +21,8 @@ fn header_runtime_scope() -> (MutexGuard<'static, ()>, GatewayHeaderRuntimeResto
     let restore = GatewayHeaderRuntimeRestore::capture();
     std::env::remove_var(OPENAI_ORGANIZATION_ENV);
     std::env::remove_var(OPENAI_PROJECT_ENV);
-    let _ = crate::set_gateway_originator("codex_cli_rs");
-    let _ = crate::set_gateway_residency_requirement(None);
+    let _ = crate::gateway::set_originator("codex_cli_rs");
+    let _ = crate::gateway::set_residency_requirement(None);
     (guard, restore)
 }
 
@@ -75,8 +75,8 @@ impl Drop for GatewayHeaderRuntimeRestore {
     /// # 返回
     /// 无
     fn drop(&mut self) {
-        let _ = crate::set_gateway_originator(&self.originator);
-        let _ = crate::set_gateway_residency_requirement(self.residency_requirement.as_deref());
+        let _ = crate::gateway::set_originator(&self.originator);
+        let _ = crate::gateway::set_residency_requirement(self.residency_requirement.as_deref());
         restore_env_var(OPENAI_ORGANIZATION_ENV, self.openai_organization.as_deref());
         restore_env_var(OPENAI_PROJECT_ENV, self.openai_project.as_deref());
     }
@@ -455,8 +455,8 @@ fn codex_header_profile_uses_dynamic_originator_and_residency_requirement() {
     let (_guard, _restore) = header_runtime_scope();
     std::env::set_var(OPENAI_ORGANIZATION_ENV, "org_dynamic");
     std::env::set_var(OPENAI_PROJECT_ENV, "proj_dynamic");
-    crate::set_gateway_originator("codex_cli_rs_e2e").expect("set gateway originator");
-    crate::set_gateway_residency_requirement(Some("us"))
+    crate::gateway::set_originator("codex_cli_rs_e2e").expect("set gateway originator");
+    crate::gateway::set_residency_requirement(Some("us"))
         .expect("set gateway residency requirement");
 
     let expected_version = crate::current_gateway_user_agent_version();

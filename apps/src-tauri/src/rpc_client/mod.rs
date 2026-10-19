@@ -1,5 +1,6 @@
 mod address;
 mod http;
+mod retry_policy;
 mod transport;
 
 pub(crate) use address::normalize_addr;

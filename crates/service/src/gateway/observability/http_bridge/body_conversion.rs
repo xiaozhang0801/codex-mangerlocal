@@ -673,6 +673,45 @@ pub(super) fn convert_responses_body_to_chat_completions(body: &[u8]) -> Option<
         .get("usage")
         .or_else(|| value.get("usage"))
         .map(responses_usage_to_chat_usage);
+    // Match the Chat stream adapter's function_call contract. Custom tools
+    // carry a different input schema and are not mapped to function tools.
+    let tool_calls = response
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        .map(|item| {
+            let id = item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .or_else(|| {
+                    item.get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                });
+            let arguments = match item.get("arguments") {
+                Some(Value::String(arguments)) => arguments.clone(),
+                Some(arguments) => arguments.to_string(),
+                None => String::new(),
+            };
+            json!({
+                "id": id,
+                "type": "function",
+                "function": {
+                    "name": item.get("name").and_then(Value::as_str).unwrap_or_default(),
+                    "arguments": arguments
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let has_tool_calls = !tool_calls.is_empty();
+    let content = if has_tool_calls && text.is_empty() {
+        Value::Null
+    } else {
+        Value::String(text)
+    };
     let mut completion = json!({
         "id": id,
         "object": "chat.completion",
@@ -682,11 +721,14 @@ pub(super) fn convert_responses_body_to_chat_completions(body: &[u8]) -> Option<
             "index": 0,
             "message": {
                 "role": "assistant",
-                "content": text
+                "content": content
             },
-            "finish_reason": "stop"
+            "finish_reason": if has_tool_calls { "tool_calls" } else { "stop" }
         }]
     });
+    if has_tool_calls {
+        completion["choices"][0]["message"]["tool_calls"] = Value::Array(tool_calls);
+    }
     if let Some(usage) = usage {
         completion["usage"] = usage;
     }

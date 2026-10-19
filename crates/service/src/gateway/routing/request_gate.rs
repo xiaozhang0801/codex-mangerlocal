@@ -314,7 +314,10 @@ fn maybe_cleanup_request_gate_locks(table: &mut RequestGateLockTable, now: i64) 
 pub(super) fn clear_runtime_state() {
     let lock = REQUEST_GATE_LOCKS.get_or_init(|| Mutex::new(RequestGateLockTable::default()));
     let mut table = crate::lock_utils::lock_recover(lock, "request_gate_locks");
-    table.entries.clear();
+    // In-flight requests and waiters must keep sharing the same admission gate.
+    table
+        .entries
+        .retain(|_, entry| Arc::strong_count(&entry.lock) > 1);
     table.last_cleanup_at = 0;
 }
 

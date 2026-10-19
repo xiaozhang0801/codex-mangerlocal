@@ -1,7 +1,4 @@
-use super::{
-    get_persisted_app_setting, normalize_optional_text, save_persisted_app_setting,
-    APP_SETTING_SERVICE_ADDR_KEY,
-};
+use super::{get_persisted_app_setting, normalize_optional_text, APP_SETTING_SERVICE_ADDR_KEY};
 
 pub const DEFAULT_ADDR: &str = "localhost:48760";
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:48760";
@@ -22,7 +19,7 @@ pub const SERVICE_BIND_MODE_ALL_INTERFACES: &str = "all_interfaces";
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_service_bind_mode(raw: Option<&str>) -> &'static str {
+pub(super) fn normalize_service_bind_mode(raw: Option<&str>) -> &'static str {
     let Some(value) = raw else {
         return SERVICE_BIND_MODE_LOOPBACK;
     };
@@ -44,10 +41,13 @@ fn normalize_service_bind_mode(raw: Option<&str>) -> &'static str {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_saved_service_addr(raw: Option<&str>) -> Result<String, String> {
+pub(super) fn normalize_saved_service_addr(raw: Option<&str>) -> Result<String, String> {
     let Some(value) = normalize_optional_text(raw) else {
         return Ok(DEFAULT_ADDR.to_string());
     };
+    if value.contains(char::from(0)) {
+        return Err("service address contains NUL".to_owned());
+    }
     let value = value
         .strip_prefix("http://")
         .or_else(|| value.strip_prefix("https://"))
@@ -176,13 +176,20 @@ pub fn current_service_bind_mode() -> String {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_service_bind_mode(mode: &str) -> Result<String, String> {
-    let normalized = normalize_service_bind_mode(Some(mode)).to_string();
-    save_persisted_app_setting(SERVICE_BIND_MODE_SETTING_KEY, Some(&normalized))?;
-    let current_addr = current_saved_service_addr();
-    let synced_addr = listener_bind_addr_for_mode(&current_addr, &normalized);
-    save_persisted_app_setting(APP_SETTING_SERVICE_ADDR_KEY, Some(&synced_addr))?;
-    std::env::set_var("CODEXMANAGER_SERVICE_ADDR", &synced_addr);
-    Ok(normalized)
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"serviceListenMode": mode}),
+        SERVICE_BIND_MODE_SETTING_KEY,
+    )
+}
+
+/// Publish the bind mode already read from storage without re-entering the
+/// settings write coordinator or persisting an unchanged snapshot.
+pub(super) fn publish_service_bind_mode_from_storage(mode: &str, current_addr: &str) {
+    let mode = normalize_service_bind_mode(Some(mode));
+    let normalized = normalize_saved_service_addr(Some(current_addr))
+        .unwrap_or_else(|_| DEFAULT_ADDR.to_owned());
+    let addr = listener_bind_addr_for_mode(&normalized, mode);
+    std::env::set_var("CODEXMANAGER_SERVICE_ADDR", addr);
 }
 
 /// 函数 `bind_all_interfaces_enabled`
@@ -379,7 +386,8 @@ pub fn current_saved_service_addr() -> String {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_saved_service_addr(addr: Option<&str>) -> Result<String, String> {
-    let normalized = normalize_saved_service_addr(addr)?;
-    save_persisted_app_setting(APP_SETTING_SERVICE_ADDR_KEY, Some(&normalized))?;
-    Ok(normalized)
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"serviceAddr": addr.unwrap_or_default()}),
+        APP_SETTING_SERVICE_ADDR_KEY,
+    )
 }

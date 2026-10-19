@@ -58,7 +58,7 @@ impl Default for QuotaGuardConfig {
 }
 
 impl QuotaGuardConfig {
-    fn normalized(self) -> Self {
+    pub(crate) fn normalized(self) -> Self {
         Self {
             enabled: self.enabled,
             primary_min_remaining_percent: normalize_percent(self.primary_min_remaining_percent),

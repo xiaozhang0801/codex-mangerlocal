@@ -108,7 +108,7 @@ export function modeImpact(
   if (mode === "gateway") {
     return t("Codex 请求由 CodexManager 转发；实际路由和模型目录取决于当前平台密钥的配置。");
   }
-  return t("选择接入方式后，CodexManager 会接管该 Codex profile 的 auth.json / config.toml。");
+  return t("选择接入方式后应用配置；账号直连会更新 auth.json，网关和聚合 API 接入保留 auth.json，仅更新 config.toml。");
 }
 
 export function usePlatformModePageState(

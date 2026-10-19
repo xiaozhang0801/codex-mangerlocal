@@ -358,7 +358,12 @@ pub(in super::super) fn inspect_sse_frame(lines: &[String]) -> SseFrameInspectio
 /// # 返回
 /// 返回函数执行结果
 pub(in super::super) fn extract_sse_event_name(lines: &[String]) -> Option<String> {
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
+        let line = if index == 0 {
+            line.strip_prefix('\u{feff}').unwrap_or(line)
+        } else {
+            line
+        };
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if let Some(rest) = trimmed.strip_prefix("event:") {
             let event_name = rest.trim();
@@ -402,7 +407,12 @@ fn normalize_sse_event_name_for_type(event_name: &str) -> Option<&str> {
 /// 返回函数执行结果
 pub(in super::super) fn extract_sse_frame_payload(lines: &[String]) -> Option<String> {
     let mut data_lines = Vec::new();
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
+        let line = if index == 0 {
+            line.strip_prefix('\u{feff}').unwrap_or(line)
+        } else {
+            line
+        };
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if let Some(rest) = trimmed.strip_prefix("data:") {
             data_lines.push(rest.trim_start().to_string());

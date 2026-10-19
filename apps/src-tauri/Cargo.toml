@@ -34,6 +34,9 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 rfd = "0.15"
 rusqlite = { path = "../../crates/rusqlite", features = ["bundled", "backup"] }
 
+[dev-dependencies]
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 glib = "0.18"
 

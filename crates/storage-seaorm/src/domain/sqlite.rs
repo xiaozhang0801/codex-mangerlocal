@@ -280,6 +280,13 @@ impl SettingsPluginsStore for SqliteDomainStorage {
     fn remove_setting(&self, key: String) -> StorageFuture<'_, ()> {
         self.execute(move |s| s.delete_app_setting(&key))
     }
+    fn save_settings(
+        &self,
+        changes: Vec<(String, Option<String>)>,
+        now: i64,
+    ) -> StorageFuture<'_, ()> {
+        self.execute(move |s| s.save_app_settings(&changes, now))
+    }
     fn plugins(&self) -> StorageFuture<'_, Vec<PluginInstallListSummary>> {
         self.execute(move |s| s.list_plugin_install_summaries())
     }

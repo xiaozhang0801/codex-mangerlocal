@@ -25,8 +25,10 @@ fn effective_request_timeout(
         // 中文注释：流式链路要兼容 0.1.18 的行为，避免较短 total timeout 抢先截断更长的 stream timeout。
         (Some(total_timeout), Some(stream_timeout)) => Some(total_timeout.max(stream_timeout)),
         (Some(total_timeout), None) => Some(total_timeout),
-        (None, Some(stream_timeout)) => Some(stream_timeout),
-        (None, None) => None,
+        // Stream header/idle timeouts apply to each upstream attempt. With no
+        // total timeout, a silent account must not consume the next account's
+        // opportunity to respond.
+        (None, _) => None,
     }
 }
 

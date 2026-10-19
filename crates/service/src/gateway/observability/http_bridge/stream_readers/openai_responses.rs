@@ -3,118 +3,22 @@ use super::{
     stream_idle_timed_out, stream_idle_timeout_message, stream_reader_disconnected_message,
     stream_wait_timeout, upstream_hint_or_stream_incomplete_message, Arc, Cursor, Mutex,
     OpenAIResponsesEvent, OpenAIResponsesOutputTextState, PassthroughSseCollector, Read,
-    SseKeepAliveFrame, SseTerminal, TerminalDeliveryTracker,
+    SseKeepAliveFrame, SseTerminal, TerminalDeliveryTracker, UpstreamSseFramePump,
+    UpstreamSseFramePumpItem,
 };
-use crate::gateway::upstream::attempt_flow::transport::runtime::upstream_runtime;
-use crate::gateway::upstream::{GatewayByteStream, GatewayByteStreamItem, GatewayStreamResponse};
-use eventsource_stream::{Event, Eventsource};
-use futures_util::pin_mut;
-use futures_util::stream::unfold;
-use futures_util::StreamExt;
-use std::sync::mpsc::{self, RecvTimeoutError};
+use crate::gateway::upstream::GatewayStreamResponse;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Instant;
-use tokio::sync::mpsc::Receiver;
-
-const OPENAI_RESPONSES_SSE_CHANNEL_CAPACITY: usize = 128;
-
-#[derive(Debug)]
-enum OpenAIResponsesSidecarItem {
-    Event(OpenAIResponsesEvent),
-    Eof,
-    Error(String),
-}
-
-struct OpenAIResponsesSidecarObserver {
-    rx: Receiver<OpenAIResponsesSidecarItem>,
-}
-
-impl OpenAIResponsesSidecarObserver {
-    fn new(byte_stream: GatewayByteStream) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(OPENAI_RESPONSES_SSE_CHANNEL_CAPACITY);
-        if let Ok(runtime) = upstream_runtime() {
-            runtime.spawn(async move {
-                let byte_stream = unfold(Some(byte_stream), |state| async move {
-                    let mut byte_stream = state?;
-                    match byte_stream.recv_async().await {
-                        Some(GatewayByteStreamItem::Chunk(bytes)) => {
-                            Some((Ok(bytes), Some(byte_stream)))
-                        }
-                        Some(GatewayByteStreamItem::Error(err)) => Some((Err(err), None)),
-                        Some(GatewayByteStreamItem::Eof) | None => None,
-                    }
-                });
-                let stream = byte_stream.eventsource();
-                pin_mut!(stream);
-                loop {
-                    let event = tokio::select! {
-                        _ = tx.closed() => return,
-                        event = stream.next() => event,
-                    };
-                    let (item, terminal) = match event {
-                        Some(Ok(event)) => {
-                            let Some(parsed) =
-                                OpenAIResponsesEvent::parse(&event_to_sse_lines(&event))
-                            else {
-                                continue;
-                            };
-                            (OpenAIResponsesSidecarItem::Event(parsed), false)
-                        }
-                        Some(Err(err)) => {
-                            (OpenAIResponsesSidecarItem::Error(err.to_string()), true)
-                        }
-                        None => (OpenAIResponsesSidecarItem::Eof, true),
-                    };
-                    if tx.send(item).await.is_err() || terminal {
-                        return;
-                    }
-                }
-            });
-        }
-        Self { rx }
-    }
-
-    fn try_recv(&mut self) -> Result<OpenAIResponsesSidecarItem, mpsc::TryRecvError> {
-        self.rx.try_recv().map_err(|err| match err {
-            tokio::sync::mpsc::error::TryRecvError::Empty => mpsc::TryRecvError::Empty,
-            tokio::sync::mpsc::error::TryRecvError::Disconnected => {
-                mpsc::TryRecvError::Disconnected
-            }
-        })
-    }
-
-    async fn recv(&mut self) -> Option<OpenAIResponsesSidecarItem> {
-        self.rx.recv().await
-    }
-}
-
-fn event_to_sse_lines(event: &Event) -> Vec<String> {
-    let mut lines = Vec::new();
-    if !event.id.is_empty() {
-        lines.push(format!("id: {}\n", event.id));
-    }
-    if let Some(retry) = event.retry {
-        lines.push(format!("retry: {}\n", retry.as_millis()));
-    }
-    if !event.event.is_empty() && !event.event.eq_ignore_ascii_case("message") {
-        lines.push(format!("event: {}\n", event.event));
-    }
-    for data_line in event.data.split('\n') {
-        lines.push(format!("data: {data_line}\n"));
-    }
-    lines.push("\n".to_string());
-    lines
-}
 
 pub(crate) struct OpenAIResponsesPassthroughSseReader {
-    raw_upstream: GatewayByteStream,
-    observer: OpenAIResponsesSidecarObserver,
+    upstream: UpstreamSseFramePump,
     out_cursor: Cursor<Vec<u8>>,
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
     terminal_delivery: TerminalDeliveryTracker,
     usage_text_state: OpenAIResponsesOutputTextState,
     keepalive_frame: SseKeepAliveFrame,
     request_started_at: Instant,
-    last_upstream_activity: Instant,
+    pending_separator: bool,
     finished: bool,
 }
 
@@ -140,17 +44,15 @@ impl OpenAIResponsesPassthroughSseReader {
         keepalive_frame: SseKeepAliveFrame,
         request_started_at: Instant,
     ) -> Self {
-        let (raw_upstream, sidecar_upstream) = upstream.into_body().tee();
         Self {
-            raw_upstream,
-            observer: OpenAIResponsesSidecarObserver::new(sidecar_upstream),
+            upstream: UpstreamSseFramePump::from_stream(upstream.into_body()),
             out_cursor: Cursor::new(Vec::new()),
             usage_collector,
             terminal_delivery: TerminalDeliveryTracker::default(),
             usage_text_state: OpenAIResponsesOutputTextState::default(),
             keepalive_frame,
             request_started_at,
-            last_upstream_activity: Instant::now(),
+            pending_separator: false,
             finished: false,
         }
     }
@@ -173,45 +75,70 @@ impl OpenAIResponsesPassthroughSseReader {
         }
     }
 
-    fn drain_sidecar_events(&mut self) {
-        loop {
-            match self.observer.try_recv() {
-                Ok(OpenAIResponsesSidecarItem::Event(event)) => {
-                    self.update_usage_from_event(event);
-                }
-                Ok(OpenAIResponsesSidecarItem::Eof) => return,
-                Ok(OpenAIResponsesSidecarItem::Error(err)) => {
-                    if let Ok(mut collector) = self.usage_collector.lock() {
-                        collector
-                            .terminal_error
-                            .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
-                    }
-                    return;
-                }
-                Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => return,
+    fn update_usage_from_frame(&mut self, frame: &[String]) -> Option<bool> {
+        let event = OpenAIResponsesEvent::parse(frame)?;
+        // Use the parsed top-level type, never terminal words inside ordinary
+        // deltas or nested tool data. Generic errors still need normalization to
+        // response.failed even though they are semantic upstream failures.
+        let terminal_delivered = matches!(
+            event.event_type.as_deref(),
+            Some(
+                "response.completed" | "response.failed" | "response.incomplete" | "response.done"
+            )
+        );
+        self.update_usage_from_event(event);
+        Some(terminal_delivered)
+    }
+
+    fn is_standalone_done_frame(frame: &[String]) -> bool {
+        // Check the complete joined data payload without allocating another copy
+        // of a potentially large malformed frame. Empty data lines only add
+        // surrounding whitespace; every other nonempty line must be rejected.
+        let mut saw_done = false;
+        for (index, line) in frame.iter().enumerate() {
+            let line = if index == 0 {
+                line.strip_prefix('\u{feff}').unwrap_or(line)
+            } else {
+                line
+            };
+            let line = line.trim_end_matches(['\r', '\n']);
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data.is_empty() {
+                continue;
             }
+            if data != "[DONE]" || saw_done {
+                return false;
+            }
+            saw_done = true;
+        }
+        saw_done
+    }
+
+    fn record_read_error(&self, error: &str) {
+        if let Ok(mut collector) = self.usage_collector.lock() {
+            collector
+                .terminal_error
+                .get_or_insert_with(|| classify_upstream_stream_read_error(error));
         }
     }
 
-    async fn finish_sidecar(&mut self) {
-        // Stop network input first. The tee then flushes its bounded observer
-        // queue and closes it, so EOF confirms all received usage was parsed.
-        self.raw_upstream.close();
+    async fn finish_upstream(&mut self) {
+        // Cancel network input before draining. The pump finishes parsing only
+        // bytes already received, retaining late usage even after client close.
+        self.upstream.stop_input().await;
         loop {
-            match self.observer.recv().await {
-                Some(OpenAIResponsesSidecarItem::Event(event)) => {
-                    self.update_usage_from_event(event);
+            match self.upstream.recv_async().await {
+                Some(UpstreamSseFramePumpItem::Frame(frame)) => {
+                    let _ = self.update_usage_from_frame(&frame);
                 }
-                Some(OpenAIResponsesSidecarItem::Eof) => return,
-                Some(OpenAIResponsesSidecarItem::Error(err)) => {
-                    if let Ok(mut collector) = self.usage_collector.lock() {
-                        collector
-                            .terminal_error
-                            .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
-                    }
+                Some(UpstreamSseFramePumpItem::Error(error)) => {
+                    self.record_read_error(&error);
                     return;
                 }
-                None => return,
+                Some(UpstreamSseFramePumpItem::Eof) | None => return,
             }
         }
     }
@@ -226,9 +153,19 @@ impl OpenAIResponsesPassthroughSseReader {
         let Some(message) = message else {
             return Vec::new();
         };
+        let code = [
+            "upstream_sse_frame_too_large",
+            "upstream_sse_buffer_exhausted",
+            "upstream_sse_invalid_utf8",
+        ]
+        .into_iter()
+        .find(|code| message.starts_with(&format!("{code}:")))
+        .unwrap_or("upstream_error");
 
-        // Codex ignores most generic error events. Deliver the upstream failure
-        // as a Responses terminal event instead of an unexplained disconnect.
+        // Codex currently ignores generic Responses `error` events except for a
+        // small set of special cases. Normalize an undelivered terminal failure
+        // to `response.failed` so the client reports the upstream error instead
+        // of replacing it with "stream closed before response.completed".
         let payload = serde_json::json!({
             "type": "response.failed",
             "response": {
@@ -237,34 +174,55 @@ impl OpenAIResponsesPassthroughSseReader {
                 "status": "failed",
                 "error": {
                     "type": "server_error",
-                    "code": "upstream_error",
+                    "code": code,
                     "message": message
                 }
             }
         });
-        // End a possibly truncated upstream frame before emitting a new event.
-        let chunk = format!("\n\nevent: response.failed\ndata: {payload}\n\n").into_bytes();
+        // EOF may have flushed a final frame without its empty-line delimiter.
+        // Preserve those bytes while keeping our error in its own SSE event.
+        let separator = if self.pending_separator { "\n\n" } else { "" };
+        let chunk = format!("{separator}event: response.failed\ndata: {payload}\n\n").into_bytes();
         mark_terminal_delivered(&self.usage_collector, &mut self.terminal_delivery, &chunk);
         chunk
     }
 
     async fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
-        self.drain_sidecar_events();
         match self
-            .raw_upstream
-            .recv_timeout_async(stream_wait_timeout(self.last_upstream_activity))
+            .upstream
+            .recv_timeout_async(stream_wait_timeout(
+                self.upstream
+                    .last_activity()
+                    .unwrap_or(self.request_started_at),
+            ))
             .await
         {
-            Ok(GatewayByteStreamItem::Chunk(bytes)) => {
-                self.last_upstream_activity = Instant::now();
+            Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
                 mark_first_response_ms(&self.usage_collector, self.request_started_at);
-                self.drain_sidecar_events();
-                let bytes = bytes.to_vec();
-                mark_terminal_delivered(&self.usage_collector, &mut self.terminal_delivery, &bytes);
+                let parsed_terminal = self.update_usage_from_frame(&frame);
+                let terminal_delivered =
+                    parsed_terminal.unwrap_or_else(|| Self::is_standalone_done_frame(&frame));
+                // Parsing and delivery share the bounded complete frame. No raw
+                // tee may forward a partial oversized JSON/base64 event first.
+                self.pending_separator = !frame
+                    .last()
+                    .is_some_and(|line| line == "\n" || line == "\r" || line == "\r\n");
+                let mut bytes = frame.concat().into_bytes();
+                // EOF may leave valid terminal JSON without the blank line
+                // required for the downstream SSE parser to dispatch it.
+                if terminal_delivered && self.pending_separator {
+                    bytes.extend_from_slice(b"\n\n");
+                    self.pending_separator = false;
+                }
+                if terminal_delivered {
+                    if let Ok(mut collector) = self.usage_collector.lock() {
+                        collector.terminal_delivered = true;
+                    }
+                }
                 Ok(bytes)
             }
-            Ok(GatewayByteStreamItem::Eof) => {
-                self.finish_sidecar().await;
+            Ok(UpstreamSseFramePumpItem::Eof) => {
+                self.finish_upstream().await;
                 if let Ok(mut collector) = self.usage_collector.lock() {
                     if !collector.saw_terminal {
                         let hint = collector.upstream_error_hint.clone();
@@ -275,24 +233,25 @@ impl OpenAIResponsesPassthroughSseReader {
                 }
                 Ok(self.terminal_error_chunk())
             }
-            Ok(GatewayByteStreamItem::Error(err)) => {
-                self.last_upstream_activity = Instant::now();
-                self.finish_sidecar().await;
-                if let Ok(mut collector) = self.usage_collector.lock() {
-                    collector
-                        .terminal_error
-                        .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
-                }
+            Ok(UpstreamSseFramePumpItem::Error(err)) => {
+                self.record_read_error(&err);
+                self.finish_upstream().await;
                 Ok(self.terminal_error_chunk())
             }
             Err(RecvTimeoutError::Timeout) => {
-                self.drain_sidecar_events();
-                if stream_idle_timed_out(self.last_upstream_activity) {
+                // A large frame may arrive over many chunks without a newline.
+                // Byte activity, rather than completed frames, controls idleness.
+                if stream_idle_timed_out(
+                    self.upstream
+                        .last_activity()
+                        .unwrap_or(self.request_started_at),
+                ) {
                     if let Ok(mut collector) = self.usage_collector.lock() {
                         collector
                             .terminal_error
                             .get_or_insert_with(stream_idle_timeout_message);
                     }
+                    self.finish_upstream().await;
                     return Ok(self.terminal_error_chunk());
                 }
                 if crate::gateway::current_sse_keepalive_enabled() {
@@ -302,7 +261,7 @@ impl OpenAIResponsesPassthroughSseReader {
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
-                self.finish_sidecar().await;
+                self.finish_upstream().await;
                 if let Ok(mut collector) = self.usage_collector.lock() {
                     let hint = collector.upstream_error_hint.clone();
                     collector.terminal_error.get_or_insert_with(|| {
@@ -322,7 +281,7 @@ impl crate::http::gateway_response_body::GatewayResponseBody
         &mut self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            self.finish_sidecar().await;
+            self.finish_upstream().await;
         })
     }
 
@@ -355,16 +314,293 @@ impl Read for OpenAIResponsesPassthroughSseReader {
 }
 
 #[cfg(test)]
+struct ExactWireKeepaliveGuard<'lock> {
+    original_environment: Option<std::ffi::OsString>,
+    original_enabled: bool,
+    // Keep the original configuration lock until the cache and environment are
+    // both restored. The test harness itself retains its default concurrency.
+    _lock: &'lock std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl<'lock> ExactWireKeepaliveGuard<'lock> {
+    const ENVIRONMENT: &'static str = "CODEXMANAGER_SSE_KEEPALIVE_ENABLED";
+
+    fn enter(lock: &'lock std::sync::MutexGuard<'static, ()>) -> Self {
+        // Initialize the cache before taking its snapshot. The setter ignores
+        // writes while an environment override exists, so remove that override
+        // only within this locked, reversible fixture scope.
+        let original_enabled = crate::gateway::current_sse_keepalive_enabled();
+        let guard = Self {
+            original_environment: std::env::var_os(Self::ENVIRONMENT),
+            original_enabled,
+            _lock: lock,
+        };
+        std::env::remove_var(Self::ENVIRONMENT);
+        assert!(!crate::gateway::set_sse_keepalive_enabled(false));
+        guard
+    }
+}
+
+#[cfg(test)]
+impl Drop for ExactWireKeepaliveGuard<'_> {
+    fn drop(&mut self) {
+        // Restore the cached value before the environment override can make
+        // its setter a no-op. No other runtime setting needs to be reloaded.
+        std::env::remove_var(Self::ENVIRONMENT);
+        crate::gateway::set_sse_keepalive_enabled(self.original_enabled);
+        match &self.original_environment {
+            Some(value) => std::env::set_var(Self::ENVIRONMENT, value),
+            None => std::env::remove_var(Self::ENVIRONMENT),
+        }
+    }
+}
+
+#[cfg(test)]
+fn assert_exact_wire_bytes(actual: &[u8], expected: &[u8], context: &str) {
+    // Compare every byte; bounded failure metadata avoids printing a 64 MiB
+    // base64 response twice. No prefix, comment, or payload is removed.
+    if actual == expected {
+        return;
+    }
+    let offset = actual
+        .iter()
+        .zip(expected)
+        .position(|(actual, expected)| actual != expected)
+        .unwrap_or(actual.len().min(expected.len()));
+    panic!(
+        "{context}: wire bytes differ; actual_len={} expected_len={} first_difference={} \
+         actual_window={:?} expected_window={:?}",
+        actual.len(),
+        expected.len(),
+        offset,
+        &actual[offset..actual.len().min(offset + 16)],
+        &expected[offset..expected.len().min(offset + 16)],
+    );
+}
+
+#[cfg(test)]
+mod exact_wire_fixture_tests {
+    use super::*;
+    use crate::gateway::upstream::{GatewayByteStream, GatewayByteStreamItem};
+    use bytes::Bytes;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::time::Duration;
+
+    struct KeepaliveIntervalGuard<'lock> {
+        original_environment: Option<std::ffi::OsString>,
+        original_interval: u64,
+        _lock: &'lock std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl<'lock> KeepaliveIntervalGuard<'lock> {
+        const ENVIRONMENT: &'static str = "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS";
+
+        fn enter(lock: &'lock std::sync::MutexGuard<'static, ()>) -> Self {
+            let guard = Self {
+                original_environment: std::env::var_os(Self::ENVIRONMENT),
+                original_interval: crate::gateway::current_sse_keepalive_interval_ms(),
+                _lock: lock,
+            };
+            std::env::remove_var(Self::ENVIRONMENT);
+            assert_eq!(crate::gateway::set_sse_keepalive_interval_ms(1), Ok(1));
+            guard
+        }
+    }
+
+    impl Drop for KeepaliveIntervalGuard<'_> {
+        fn drop(&mut self) {
+            std::env::remove_var(Self::ENVIRONMENT);
+            // The saved getter value is always >= 1, so it remains valid.
+            let _ = crate::gateway::set_sse_keepalive_interval_ms(self.original_interval);
+            match &self.original_environment {
+                Some(value) => std::env::set_var(Self::ENVIRONMENT, value),
+                None => std::env::remove_var(Self::ENVIRONMENT),
+            }
+        }
+    }
+
+    #[test]
+    fn native_next_chunk_keepalive_toggle_preserves_upstream_comment_and_terminal_bytes() {
+        let lock = crate::test_env_guard();
+        let original_enabled = crate::gateway::current_sse_keepalive_enabled();
+        let original_enabled_environment = std::env::var_os(ExactWireKeepaliveGuard::ENVIRONMENT);
+        let original_interval = crate::gateway::current_sse_keepalive_interval_ms();
+        let original_interval_environment = std::env::var_os(KeepaliveIntervalGuard::ENVIRONMENT);
+        let restore_enabled = ExactWireKeepaliveGuard::enter(&lock);
+        let restore_interval = KeepaliveIntervalGuard::enter(&lock);
+        crate::gateway::set_sse_keepalive_enabled(true);
+        crate::gateway::response_test_runtime().unwrap().block_on(async {
+            let (provider, input) = tokio::sync::mpsc::channel(2);
+            let usage = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+            let mut reader = OpenAIResponsesPassthroughSseReader::from_stream_response(
+                GatewayStreamResponse::new(
+                    reqwest::StatusCode::OK,
+                    reqwest::header::HeaderMap::new(),
+                    GatewayByteStream::from_receiver(input),
+                ),
+                usage.clone(),
+                SseKeepAliveFrame::Comment,
+                Instant::now(),
+            );
+            tokio::time::timeout(Duration::from_secs(2), async {
+                assert_eq!(reader.next_chunk().await.unwrap(), b": keep-alive\n\n".as_slice());
+                {
+                    let collected = usage.lock().unwrap();
+                    assert!(collected.usage.first_response_ms.is_none());
+                    assert!(!collected.saw_terminal);
+                    assert!(!collected.terminal_delivered);
+                    assert!(collected.terminal_error.is_none());
+                }
+                crate::gateway::set_sse_keepalive_enabled(false);
+                assert!(reader.next_chunk().await.unwrap().is_empty());
+                {
+                    let collected = usage.lock().unwrap();
+                    assert!(collected.usage.first_response_ms.is_none());
+                    assert!(!collected.saw_terminal);
+                    assert!(!collected.terminal_delivered);
+                    assert!(collected.terminal_error.is_none());
+                }
+
+                // This identical comment belongs to the provider. Disabling
+                // generated heartbeats must preserve it, including every byte.
+                let upstream = concat!(
+                    ": keep-alive\n\n",
+                    "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_comment_wire\",\"status\":\"completed\",\"usage\":{\"input_tokens\":7}}}\r\n\r\n",
+                );
+                provider
+                    .send(GatewayByteStreamItem::Chunk(Bytes::from_static(upstream.as_bytes())))
+                    .await
+                    .unwrap();
+                provider.send(GatewayByteStreamItem::Eof).await.unwrap();
+                let mut actual = Vec::new();
+                while !reader.finished {
+                    actual.extend_from_slice(&reader.next_chunk().await.unwrap());
+                }
+                assert_exact_wire_bytes(&actual, upstream.as_bytes(), "provider comment and terminal");
+                let collected = usage.lock().unwrap();
+                assert!(collected.usage.first_response_ms.is_some());
+                assert_eq!(collected.usage.input_tokens, Some(7));
+                assert!(collected.saw_terminal);
+                assert!(collected.terminal_delivered);
+                assert!(collected.terminal_error.is_none());
+            }).await.expect("paired keepalive and exact-wire fixture stays bounded");
+        });
+        drop(restore_interval);
+        drop(restore_enabled);
+        assert_eq!(
+            crate::gateway::current_sse_keepalive_enabled(),
+            original_enabled
+        );
+        assert_eq!(
+            crate::gateway::current_sse_keepalive_interval_ms(),
+            original_interval
+        );
+        assert!(
+            std::env::var_os(ExactWireKeepaliveGuard::ENVIRONMENT) == original_enabled_environment
+        );
+        assert!(
+            std::env::var_os(KeepaliveIntervalGuard::ENVIRONMENT) == original_interval_environment
+        );
+    }
+
+    #[test]
+    fn exact_wire_guard_restores_cached_and_environment_keepalive_settings() {
+        let lock = crate::test_env_guard();
+        let original_enabled = crate::gateway::current_sse_keepalive_enabled();
+        let original_environment = std::env::var_os(ExactWireKeepaliveGuard::ENVIRONMENT);
+        let interval = crate::gateway::current_sse_keepalive_interval_ms();
+        let restore_original = ExactWireKeepaliveGuard::enter(&lock);
+        for (enabled, environment) in [
+            (true, None),
+            (true, Some("1")),
+            (false, Some("off")),
+            (false, Some("")),
+        ] {
+            std::env::remove_var(ExactWireKeepaliveGuard::ENVIRONMENT);
+            crate::gateway::set_sse_keepalive_enabled(enabled);
+            if let Some(value) = environment {
+                std::env::set_var(ExactWireKeepaliveGuard::ENVIRONMENT, value);
+            }
+            {
+                let _wire = ExactWireKeepaliveGuard::enter(&lock);
+                assert!(!crate::gateway::current_sse_keepalive_enabled());
+                assert!(std::env::var_os(ExactWireKeepaliveGuard::ENVIRONMENT).is_none());
+                assert_eq!(
+                    crate::gateway::current_sse_keepalive_interval_ms(),
+                    interval
+                );
+            }
+            assert_eq!(crate::gateway::current_sse_keepalive_enabled(), enabled);
+            assert!(
+                std::env::var_os(ExactWireKeepaliveGuard::ENVIRONMENT)
+                    == environment.map(std::ffi::OsString::from)
+            );
+        }
+        drop(restore_original);
+        assert_eq!(
+            crate::gateway::current_sse_keepalive_enabled(),
+            original_enabled
+        );
+        assert!(std::env::var_os(ExactWireKeepaliveGuard::ENVIRONMENT) == original_environment);
+    }
+
+    #[test]
+    fn exact_wire_guard_restores_keepalive_after_fixture_panic() {
+        let lock = crate::test_env_guard();
+        let _restore_original = ExactWireKeepaliveGuard::enter(&lock);
+        crate::gateway::set_sse_keepalive_enabled(true);
+        std::env::set_var(ExactWireKeepaliveGuard::ENVIRONMENT, "1");
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _wire = ExactWireKeepaliveGuard::enter(&lock);
+            assert!(!crate::gateway::current_sse_keepalive_enabled());
+            panic!("injected exact-wire fixture panic");
+        }));
+        assert!(result.is_err());
+        assert!(crate::gateway::current_sse_keepalive_enabled());
+        assert!(
+            std::env::var_os(ExactWireKeepaliveGuard::ENVIRONMENT)
+                == Some(std::ffi::OsString::from("1"))
+        );
+    }
+
+    #[test]
+    fn exact_wire_comparison_rejects_comments_changed_bytes_and_truncation() {
+        let expected = b"data: complete\n\n";
+        assert_exact_wire_bytes(expected, expected, "identical fixture");
+        for actual in [
+            b": keep-alive\n\ndata: complete\n\n".as_slice(),
+            b"data: completE\n\n".as_slice(),
+            b"data: complete\n".as_slice(),
+        ] {
+            assert!(catch_unwind(|| {
+                assert_exact_wire_bytes(actual, expected, "injected wire mismatch");
+            })
+            .is_err());
+        }
+    }
+}
+
+#[cfg(test)]
 mod async_finish_tests {
     use super::*;
+    use crate::gateway::upstream::{GatewayByteStream, GatewayByteStreamItem};
     use crate::http::gateway_response_body::GatewayResponseBody;
+    use bytes::Bytes;
     use std::time::Duration;
 
     #[test]
     fn native_finish_waits_for_late_usage_after_stopping_provider() {
         crate::gateway::response_test_runtime().unwrap().block_on(async {
-            let (_provider, input) = tokio::sync::mpsc::channel(2);
-            let (cancel, mut cancelled) = tokio::sync::oneshot::channel();
+            let (provider, input) = tokio::sync::mpsc::channel(2);
+            let (cancel, cancelled) = tokio::sync::oneshot::channel();
+            // More frames than the pump queue can hold: the terminal usage is
+            // already received but cannot be parsed/sent until cleanup drains.
+            let mut queued = ": queued provider frame\n\n".repeat(384);
+            queued.push_str("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":11,\"output_tokens\":7}}}\n\n");
+            provider
+                .try_send(GatewayByteStreamItem::Chunk(Bytes::from(queued)))
+                .unwrap();
             let usage = Arc::new(Mutex::new(PassthroughSseCollector::default()));
             let mut reader = OpenAIResponsesPassthroughSseReader::from_stream_response(
                 GatewayStreamResponse::new(
@@ -376,30 +612,101 @@ mod async_finish_tests {
                 SseKeepAliveFrame::Comment,
                 Instant::now(),
             );
-            // Model a queued frame whose observer parsing completes after the
-            // former 50 ms deadline. Cleanup must wait for its explicit EOF.
-            let (events, receiver) = tokio::sync::mpsc::channel(2);
-            reader.observer = OpenAIResponsesSidecarObserver { rx: receiver };
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(120)).await;
-                let event = OpenAIResponsesEvent::parse(&[
-                    "event: response.completed\n".to_owned(),
-                    "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":11,\"output_tokens\":7}}}\n".to_owned(),
-                    "\n".to_owned(),
-                ]).unwrap();
-                events.send(OpenAIResponsesSidecarItem::Event(event)).await.unwrap();
-                events.send(OpenAIResponsesSidecarItem::Eof).await.unwrap();
-            });
-            let mut finishing = Box::pin(reader.finish_async());
-            tokio::select! {
-                result = &mut cancelled => result.unwrap(),
-                _ = &mut finishing => panic!("observer cleanup finished before provider cancellation"),
-            }
-            tokio::time::timeout(Duration::from_secs(2), finishing)
-                .await.expect("queued observer events drain to EOF");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(usage.lock().unwrap().usage.input_tokens.is_none());
+            tokio::time::timeout(Duration::from_secs(2), reader.finish_async())
+                .await
+                .expect("queued frames drain despite a full frame queue");
+            tokio::time::timeout(Duration::from_secs(1), cancelled)
+                .await
+                .expect("cleanup must stop provider input")
+                .expect("provider cancellation sender is signalled");
+            assert!(provider.is_closed(), "cleanup closes provider byte input");
             let collected = usage.lock().unwrap();
             assert_eq!(collected.usage.input_tokens, Some(11));
             assert_eq!(collected.usage.output_tokens, Some(7));
+            assert!(collected.saw_terminal);
+            assert!(!collected.terminal_delivered, "cleanup never delivers queued frames");
+        });
+    }
+
+    #[test]
+    fn native_split_utf8_and_crlf_are_preserved_by_the_shared_pump() {
+        let lock = crate::test_env_guard();
+        let _wire = ExactWireKeepaliveGuard::enter(&lock);
+        crate::gateway::response_test_runtime().unwrap().block_on(async {
+            let upstream = "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_split\",\"status\":\"completed\",\"output_text\":\"你好\",\"usage\":{\"input_tokens\":3}}}\r\n\r\n";
+            let (provider, input) = tokio::sync::mpsc::channel(1);
+            let producer = tokio::spawn(async move {
+                for &byte in upstream.as_bytes() {
+                    provider
+                        .send(GatewayByteStreamItem::Chunk(Bytes::from(vec![byte])))
+                        .await
+                        .unwrap();
+                }
+                provider.send(GatewayByteStreamItem::Eof).await.unwrap();
+            });
+            let usage = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+            let mut reader = OpenAIResponsesPassthroughSseReader::from_stream_response(
+                GatewayStreamResponse::new(
+                    reqwest::StatusCode::OK,
+                    reqwest::header::HeaderMap::new(),
+                    GatewayByteStream::from_receiver(input),
+                ),
+                usage.clone(),
+                SseKeepAliveFrame::Comment,
+                Instant::now(),
+            );
+            let mut body = Vec::new();
+            let mut buffer = [0_u8; 7];
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let count = reader.read_async(&mut buffer).await.unwrap();
+                    if count == 0 { break; }
+                    body.extend_from_slice(&buffer[..count]);
+                }
+            }).await.expect("split UTF-8/CRLF frame must complete");
+            producer.await.unwrap();
+            assert_eq!(body, upstream.as_bytes());
+            let collected = usage.lock().unwrap();
+            assert_eq!(collected.usage.input_tokens, Some(3));
+            assert_eq!(collected.usage.output_text.as_deref(), Some("你好"));
+            assert!(collected.terminal_error.is_none());
+        });
+    }
+
+    #[test]
+    fn native_cr_only_terminal_is_delivered_before_provider_closes() {
+        let lock = crate::test_env_guard();
+        let _wire = ExactWireKeepaliveGuard::enter(&lock);
+        crate::gateway::response_test_runtime().unwrap().block_on(async {
+            let upstream = "event: response.completed\rdata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_live_cr\",\"status\":\"completed\",\"usage\":{\"input_tokens\":9}}}\r\r";
+            let (provider, input) = tokio::sync::mpsc::channel(2);
+            provider.try_send(GatewayByteStreamItem::Chunk(Bytes::copy_from_slice(upstream.as_bytes()))).unwrap();
+            let usage = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+            let mut reader = OpenAIResponsesPassthroughSseReader::from_stream_response(
+                GatewayStreamResponse::new(
+                    reqwest::StatusCode::OK,
+                    reqwest::header::HeaderMap::new(),
+                    GatewayByteStream::from_receiver(input),
+                ),
+                usage.clone(),
+                SseKeepAliveFrame::Comment,
+                Instant::now(),
+            );
+            let bytes = tokio::time::timeout(Duration::from_secs(2), reader.next_chunk())
+                .await.expect("CR-only terminal cannot wait for provider close").unwrap();
+            assert_eq!(bytes, upstream.as_bytes());
+            assert!(!provider.is_closed());
+            {
+                let collected = usage.lock().unwrap();
+                assert_eq!(collected.usage.input_tokens, Some(9));
+                assert!(collected.saw_terminal);
+                assert!(collected.terminal_delivered);
+                assert!(collected.terminal_error.is_none());
+            }
+            provider.send(GatewayByteStreamItem::Eof).await.unwrap();
+            assert!(reader.next_chunk().await.unwrap().is_empty());
         });
     }
 }
@@ -407,9 +714,43 @@ mod async_finish_tests {
 #[cfg(test)]
 mod terminal_error_tests {
     use super::*;
+    use crate::gateway::upstream::attempt_flow::transport::runtime::upstream_runtime;
+    use crate::gateway::upstream::GatewayByteStream;
     use bytes::Bytes;
+    use eventsource_stream::Eventsource;
+    use futures_util::StreamExt;
+
+    #[test]
+    fn native_unterminated_terminal_frame_is_dispatched_before_reporting_delivery() {
+        for kind in [
+            "response.completed",
+            "response.failed",
+            "response.incomplete",
+            "response.done",
+        ] {
+            let payload = serde_json::json!({"type": kind, "response": {"id": "fixture", "status": "completed"}});
+            let source = format!("data: {payload}\n");
+            let (body, collected) = read_fixture(source.as_bytes());
+            let events = upstream_runtime().unwrap().block_on(async {
+                futures_util::stream::iter([Ok::<_, String>(Bytes::from(body))])
+                    .eventsource()
+                    .collect::<Vec<_>>()
+                    .await
+            });
+            assert!(collected.terminal_delivered);
+            assert!(
+                events.into_iter().filter_map(Result::ok).any(|event| {
+                    serde_json::from_str::<serde_json::Value>(&event.data)
+                        .is_ok_and(|value| value["type"] == kind)
+                }),
+                "claimed delivery without a dispatched {kind} frame"
+            );
+        }
+    }
 
     fn read_fixture(sse: &[u8]) -> (String, PassthroughSseCollector) {
+        let lock = crate::test_env_guard();
+        let _wire = ExactWireKeepaliveGuard::enter(&lock);
         let usage = Arc::new(Mutex::new(PassthroughSseCollector::default()));
         let response = GatewayStreamResponse::new(
             reqwest::StatusCode::OK,
@@ -514,5 +855,210 @@ mod terminal_error_tests {
             collected.terminal_error.as_deref(),
             Some("code=server_error upstream failure")
         );
+    }
+
+    #[test]
+    fn native_large_image_base64_frame_preserves_every_byte() {
+        // The bridge treats image results as opaque base64. Exercise a 64 MiB
+        // syntactically valid base64 response rather than a large request body.
+        let image_b64 = "QUFB".repeat(16 * 1024 * 1024);
+        let upstream = format!(
+            "event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_large_image\",\"status\":\"completed\",\"output\":[{{\"type\":\"image_generation_call\",\"status\":\"completed\",\"result\":\"{image_b64}\",\"output_format\":\"png\"}}],\"usage\":{{\"input_tokens\":5,\"output_tokens\":2}}}}}}\n\n"
+        );
+        drop(image_b64);
+        let (body, collected) = read_fixture(upstream.as_bytes());
+        assert_exact_wire_bytes(
+            body.as_bytes(),
+            upstream.as_bytes(),
+            "large image JSON/base64 must not be truncated",
+        );
+        assert_eq!(
+            collected.usage.response_id.as_deref(),
+            Some("resp_large_image")
+        );
+        assert_eq!(collected.usage.input_tokens, Some(5));
+        assert_eq!(collected.usage.output_tokens, Some(2));
+        assert!(collected.saw_terminal);
+        assert!(collected.terminal_delivered);
+        assert!(collected.terminal_error.is_none());
+    }
+
+    #[test]
+    fn native_budget_error_is_a_protocol_failure_without_partial_payload() {
+        use crate::gateway::upstream::GatewayByteStreamItem;
+        let lock = crate::test_env_guard();
+        let _wire = ExactWireKeepaliveGuard::enter(&lock);
+        let (provider, input) = tokio::sync::mpsc::channel(1);
+        provider
+            .try_send(GatewayByteStreamItem::Error(
+                "upstream_sse_frame_too_large: SSE frame exceeds 128 bytes".to_owned(),
+            ))
+            .unwrap();
+        let usage = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+        let mut reader = OpenAIResponsesPassthroughSseReader::from_stream_response(
+            GatewayStreamResponse::new(
+                reqwest::StatusCode::OK,
+                reqwest::header::HeaderMap::new(),
+                GatewayByteStream::from_receiver(input),
+            ),
+            usage.clone(),
+            SseKeepAliveFrame::Comment,
+            Instant::now(),
+        );
+        let mut body = String::new();
+        reader.read_to_string(&mut body).unwrap();
+        assert!(body.starts_with("event: response.failed\n"));
+        assert!(body.contains("\"code\":\"upstream_sse_frame_too_large\""));
+        assert!(!body.contains("response.completed"));
+        assert_eq!(body.matches("event: response.failed").count(), 1);
+        assert!(usage.lock().unwrap().terminal_error.is_some());
+    }
+
+    fn read_prefix_then_frame_budget_error(prefix: &str) -> (String, PassthroughSseCollector) {
+        use super::super::common::SseFrameLimits;
+        use tokio::sync::Semaphore;
+
+        let lock = crate::test_env_guard();
+        let _wire = ExactWireKeepaliveGuard::enter(&lock);
+        let upstream = format!("{prefix}data: {}", "x".repeat(257));
+        let budget = Arc::new(Semaphore::new(8192));
+        let pump = UpstreamSseFramePump::from_stream_with_limits(
+            GatewayByteStream::from_bytes(Bytes::from(upstream)),
+            SseFrameLimits {
+                frame_bytes: 256,
+                queued_bytes: 512,
+            },
+            budget.clone(),
+        );
+        let usage = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+        let mut reader = OpenAIResponsesPassthroughSseReader {
+            terminal_delivery: TerminalDeliveryTracker::default(),
+            upstream: pump,
+            out_cursor: Cursor::new(Vec::new()),
+            usage_collector: usage.clone(),
+            usage_text_state: OpenAIResponsesOutputTextState::default(),
+            keepalive_frame: SseKeepAliveFrame::Comment,
+            request_started_at: Instant::now(),
+            pending_separator: false,
+            finished: false,
+        };
+        let mut body = String::new();
+        reader.read_to_string(&mut body).unwrap();
+        assert_eq!(budget.available_permits(), 8192);
+        let collected = usage.lock().unwrap().clone();
+        (body, collected)
+    }
+
+    fn assert_frame_budget_failure_after_prefix(prefix: &str) {
+        let (body, collected) = read_prefix_then_frame_budget_error(prefix);
+        assert!(body.starts_with(prefix));
+        assert_eq!(
+            body.matches("event: response.failed\n").count(),
+            1,
+            "nonterminal prefix {prefix:?} must not suppress the real pump error"
+        );
+        assert!(body.contains("\"code\":\"upstream_sse_frame_too_large\""));
+        assert!(!body[prefix.len()..].contains("event: response.completed\n"));
+        assert!(collected.terminal_error.is_some());
+    }
+
+    #[test]
+    fn native_empty_terminal_header_does_not_hide_a_later_frame_budget_error() {
+        assert_frame_budget_failure_after_prefix("event: response.completed\n\n");
+    }
+
+    #[test]
+    fn native_invalid_json_terminal_header_does_not_hide_a_later_frame_budget_error() {
+        assert_frame_budget_failure_after_prefix("event: response.completed\ndata: {broken}\n\n");
+    }
+
+    #[test]
+    fn native_done_mixed_with_other_data_does_not_hide_a_later_frame_budget_error() {
+        for prefix in [
+            "data: [DONE]\ndata: other\n\n",
+            "data: other\ndata: [DONE]\n\n",
+            "data: [DONE]\ndata: [DONE]\n\n",
+            "data: [done]\n\n",
+        ] {
+            assert_frame_budget_failure_after_prefix(prefix);
+        }
+    }
+
+    #[test]
+    fn native_standalone_done_and_bom_done_do_not_add_a_later_budget_failure() {
+        for prefix in [
+            "data: [DONE]\n\n",
+            "\u{feff}data: [DONE]\r\n\r\n",
+            "event: message\ndata:\ndata: [DONE]\ndata: \n\n",
+        ] {
+            let (body, collected) = read_prefix_then_frame_budget_error(prefix);
+            assert_eq!(body, prefix);
+            assert!(collected.terminal_delivered);
+        }
+    }
+
+    #[test]
+    fn native_delta_terminal_words_do_not_hide_a_later_frame_budget_error() {
+        for marker in [
+            "response.completed",
+            "response.failed",
+            "response.incomplete",
+            "response.done",
+            "data: [DONE]",
+        ] {
+            let delta = serde_json::json!({
+                "type": "response.output_text.delta",
+                "delta": format!("Explain the literal text {marker}"),
+                "metadata": {"type": "response.completed"},
+            });
+            // Both data-only frames and explicitly typed events use the same
+            // top-level JSON semantics. Neither nested types nor an inconsistent
+            // event header can turn this delta into a completed response.
+            for prefix in [
+                format!("event: response.output_text.delta\ndata: {delta}\n\n"),
+                format!("data: {delta}\n\n"),
+                format!("event: response.completed\ndata: {delta}\n\n"),
+            ] {
+                assert_frame_budget_failure_after_prefix(&prefix);
+            }
+        }
+    }
+
+    #[test]
+    fn native_crlf_comments_and_multiline_data_keep_the_original_bytes() {
+        let upstream = concat!(
+            ": provider comment\r\n\r\n",
+            "id: event_1\r\nevent: response.completed\r\n",
+            "data: {\"type\":\"response.completed\",\r\n",
+            "data: \"response\":{\"id\":\"resp_crlf\",\"status\":\"completed\",\"output_text\":\"你好\",\"usage\":{\"input_tokens\":11}}}\r\n\r\n",
+        );
+        let (body, collected) = read_fixture(upstream.as_bytes());
+        assert_eq!(body, upstream);
+        assert_eq!(collected.usage.response_id.as_deref(), Some("resp_crlf"));
+        assert_eq!(collected.usage.input_tokens, Some(11));
+        assert_eq!(collected.usage.output_text.as_deref(), Some("你好"));
+        assert!(collected.terminal_error.is_none());
+    }
+
+    #[test]
+    fn native_bom_data_only_completed_frame_keeps_raw_bytes_and_usage() {
+        let upstream = "\u{feff}data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bom\",\"status\":\"completed\",\"usage\":{\"input_tokens\":13,\"output_tokens\":4}}}\r\n\r\n";
+        let (body, collected) = read_fixture(upstream.as_bytes());
+        assert_eq!(body, upstream, "BOM remains in raw passthrough bytes");
+        assert_eq!(collected.usage.response_id.as_deref(), Some("resp_bom"));
+        assert_eq!(collected.usage.input_tokens, Some(13));
+        assert_eq!(collected.usage.output_tokens, Some(4));
+        assert!(collected.saw_terminal);
+        assert!(collected.terminal_delivered);
+        assert!(collected.terminal_error.is_none());
+    }
+
+    #[test]
+    fn native_unterminated_generic_error_keeps_its_normalized_failure_separate() {
+        let upstream = b"event: error\ndata: {\"type\":\"error\",\"message\":\"upstream failed\"}";
+        let (body, _) = read_fixture(upstream);
+        assert!(body.starts_with(std::str::from_utf8(upstream).unwrap()));
+        assert!(body.contains("}\n\nevent: response.failed\n"));
+        assert_eq!(body.matches("event: response.failed").count(), 1);
     }
 }

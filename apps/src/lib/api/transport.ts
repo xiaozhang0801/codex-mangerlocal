@@ -11,6 +11,11 @@ import { createWebCommandMap } from "./transport-web-commands";
 import type { InvokeParams, WebCommandDescriptor } from "./transport-web-commands";
 import { postJsonRpc } from "./rpc-http";
 import {
+  rpcAllowsReplay,
+  rpcRequestOptions,
+  rpcResultUnknown,
+} from "./rpc-retry-policy";
+import {
   isTauriRuntime,
   loadRuntimeCapabilities,
 } from "./transport-runtime";
@@ -177,10 +182,28 @@ export async function invoke<T>(
     return invokeWebRpc(method, params, options);
   }
 
-  const response = await runWithControl<unknown>(
-    () => tauriInvoke(method, params || {}),
-    options
-  );
+  const rpcMethod = WEB_COMMAND_MAP[method]?.rpcMethod ?? "";
+  let started = false;
+  let response: unknown;
+  try {
+    response = await runWithControl<unknown>(
+      () => {
+        started = true;
+        return tauriInvoke(method, params || {});
+      },
+      rpcRequestOptions(rpcMethod, options)
+    );
+  } catch (error) {
+    if (
+      started &&
+      !rpcAllowsReplay(rpcMethod) &&
+      error instanceof Error &&
+      error.name === "AbortError"
+    ) {
+      throw rpcResultUnknown(rpcMethod || method, "Request aborted after IPC started", error);
+    }
+    throw error;
+  }
   return unwrapRpcPayload<T>(response);
 }
 

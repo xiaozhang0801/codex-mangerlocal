@@ -136,6 +136,12 @@ impl EnvGuard {
         std::env::set_var(key, value);
         Self { key, original }
     }
+
+    fn clear(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
 }
 
 impl Drop for EnvGuard {
@@ -221,17 +227,83 @@ fn explicit_stateless_mode_removes_session_id_added_by_gemini_profile() {
     assert_eq!(header_value(&headers, "session_id"), None);
 }
 
+struct RawHttpFixtureRelease {
+    release: Option<mpsc::Sender<()>>,
+    cancel_accept: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl RawHttpFixtureRelease {
+    fn send(mut self, value: ()) -> Result<(), mpsc::SendError<()>> {
+        self.cancel_accept.notify_one();
+        self.release.take().unwrap().send(value)
+    }
+}
+
+impl Drop for RawHttpFixtureRelease {
+    fn drop(&mut self) {
+        self.cancel_accept.notify_one();
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
 fn spawn_raw_http_response(
     status: &'static str,
     headers: Vec<(&'static str, &'static str)>,
     body: Vec<u8>,
     hold_open: bool,
-) -> (String, mpsc::Sender<()>, thread::JoinHandle<()>) {
+) -> (String, RawHttpFixtureRelease, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock upstream");
+    spawn_raw_http_response_on_listener(listener, status, headers, body, hold_open)
+}
+
+fn spawn_raw_http_response_on_listener(
+    listener: TcpListener,
+    status: &'static str,
+    headers: Vec<(&'static str, &'static str)>,
+    body: Vec<u8>,
+    hold_open: bool,
+) -> (String, RawHttpFixtureRelease, thread::JoinHandle<()>) {
     let addr = listener.local_addr().expect("mock upstream addr");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking mock listener");
     let (release_tx, release_rx) = mpsc::channel::<()>();
+    let cancel_accept = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = RawHttpFixtureRelease {
+        release: Some(release_tx),
+        cancel_accept: cancel_accept.clone(),
+    };
+    let test_name = thread::current()
+        .name()
+        .unwrap_or("transport-fixture")
+        .to_owned();
+    let started_at = Instant::now();
     let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept mock upstream");
+        let accepted = crate::process_runtime().unwrap().block_on(async {
+            let listener =
+                tokio::net::TcpListener::from_std(listener).expect("register mock listener");
+            tokio::select! {
+                _ = cancel_accept.notified() => None,
+                accepted = listener.accept() => {
+                    let (stream, _) = accepted.expect("accept mock upstream");
+                    Some(stream.into_std().expect("detach mock upstream socket"))
+                }
+            }
+        });
+        let Some(mut stream) = accepted else {
+            eprintln!(
+                "transport_fixture test={test_name} phase=cancelled_before_accept elapsed={:?}",
+                started_at.elapsed()
+            );
+            return;
+        };
+        stream.set_nonblocking(false).expect("blocking mock socket");
+        eprintln!(
+            "transport_fixture test={test_name} phase=accepted elapsed={:?}",
+            started_at.elapsed()
+        );
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("set read timeout");
@@ -244,6 +316,10 @@ fn spawn_raw_http_response(
                 Err(_) => break,
             }
         }
+        eprintln!(
+            "transport_fixture test={test_name} phase=request_headers_read elapsed={:?}",
+            started_at.elapsed()
+        );
         // Drain any request payload before closing the connection.  The
         // non-streaming async transport test sends a POST body; responding
         // before the client finishes uploading can make reqwest report a
@@ -295,13 +371,76 @@ fn spawn_raw_http_response(
         stream
             .write_all(response.as_bytes())
             .expect("write mock response headers");
+        eprintln!(
+            "transport_fixture test={test_name} phase=response_headers_written elapsed={:?}",
+            started_at.elapsed()
+        );
         stream.write_all(&body).expect("write mock response body");
         stream.flush().expect("flush mock response");
         if hold_open {
             let _ = release_rx.recv_timeout(Duration::from_secs(5));
         }
     });
-    (format!("http://{addr}/v1/responses"), release_tx, handle)
+    (format!("http://{addr}/v1/responses"), release, handle)
+}
+
+struct RawHttpFixtureCleanup {
+    release: Option<RawHttpFixtureRelease>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl RawHttpFixtureCleanup {
+    fn new(release: RawHttpFixtureRelease, handle: thread::JoinHandle<()>) -> Self {
+        Self {
+            release: Some(release),
+            handle: Some(handle),
+        }
+    }
+
+    fn release(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+
+    fn finish(mut self) -> thread::Result<()> {
+        self.release();
+        self.handle.take().unwrap().join()
+    }
+}
+
+impl Drop for RawHttpFixtureCleanup {
+    fn drop(&mut self) {
+        self.release();
+        if let Some(handle) = self.handle.take() {
+            if handle.join().is_err() {
+                eprintln!("transport_fixture phase=cleanup_join_failed");
+            }
+        }
+    }
+}
+
+fn report_transport_headers(
+    result: &Result<super::super::super::GatewayStreamResponse, super::AsyncStreamRequestError>,
+    started_at: Instant,
+) {
+    let phase = match result {
+        Ok(_) => "response_headers_received",
+        Err(super::AsyncStreamRequestError::ResponseHeadersTimeout(_)) => {
+            "response_headers_timeout"
+        }
+        Err(super::AsyncStreamRequestError::Request(error)) if error.is_timeout() => {
+            "request_timeout"
+        }
+        Err(super::AsyncStreamRequestError::Request(_)) => "request_error",
+        Err(super::AsyncStreamRequestError::WorkerLimit) => "worker_limit",
+        Err(super::AsyncStreamRequestError::WorkerUnavailable(_)) => "worker_unavailable",
+    };
+    eprintln!(
+        "transport_client test={} phase={phase} elapsed={:?}",
+        thread::current().name().unwrap_or("transport-fixture"),
+        started_at.elapsed()
+    );
 }
 
 fn spawn_active_streaming_http_response(
@@ -379,6 +518,7 @@ fn spawn_delayed_http_response_headers(delay: Duration) -> (String, thread::Join
 
 fn send_mock_stream_request(url: &str) -> super::super::super::GatewayStreamResponse {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(Duration::from_secs(1))
         .build()
         .expect("build reqwest client");
@@ -901,6 +1041,11 @@ fn stream_transport_timeout_does_not_cap_active_body_duration() {
 
 #[test]
 fn non_streaming_async_transport_reads_json_body_without_blocking_client() {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(1))
+        .build()
+        .expect("build reqwest client");
     let body = br#"{"id":"async-json","choices":[]}"#.to_vec();
     let (url, release, handle) = spawn_raw_http_response(
         "200 OK",
@@ -908,12 +1053,10 @@ fn non_streaming_async_transport_reads_json_body_without_blocking_client() {
         body.clone(),
         false,
     );
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(1))
-        .build()
-        .expect("build reqwest client");
+    let cleanup = RawHttpFixtureCleanup::new(release, handle);
+    let started_at = Instant::now();
 
-    let response = send_async_stream_request(
+    let headers = send_async_stream_request(
         &client,
         &reqwest::Method::POST,
         url.as_str(),
@@ -922,29 +1065,33 @@ fn non_streaming_async_transport_reads_json_body_without_blocking_client() {
         &[("Content-Type".to_string(), "application/json".to_string())],
         &Bytes::from_static(br#"{"model":"demo"}"#),
         false,
-    )
-    .expect("send non-streaming async request");
+    );
+    report_transport_headers(&headers, started_at);
+    let result = headers.map(|response| (response.status(), response.read_all_bytes()));
+    let joined = cleanup.finish();
+    let (status, result) = result.expect("send non-streaming async request");
 
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    assert_eq!(response.read_all_bytes().expect("read json body"), body);
-    let _ = release.send(());
-    handle.join().expect("join mock upstream");
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(result.expect("read json body"), body);
+    joined.expect("join mock upstream");
 }
 
 #[test]
 fn non_streaming_async_transport_enforces_deadline_while_reading_body() {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
     let (url, release, handle) = spawn_raw_http_response(
         "200 OK",
         vec![("Content-Type", "application/json")],
         br#"{"id":"unfinished"}"#.to_vec(),
         true,
     );
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(1))
-        .build()
-        .unwrap();
+    let cleanup = RawHttpFixtureCleanup::new(release, handle);
     let started_at = Instant::now();
-    let response = send_async_stream_request(
+    let headers = send_async_stream_request(
         &client,
         &reqwest::Method::GET,
         &url,
@@ -953,13 +1100,18 @@ fn non_streaming_async_transport_enforces_deadline_while_reading_body() {
         &[],
         &Bytes::new(),
         false,
-    )
-    .expect("headers arrive before deadline");
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let result = response.read_all_bytes();
+    );
+    report_transport_headers(&headers, started_at);
+    let result = headers.map(|response| (response.status(), response.read_all_bytes()));
     let elapsed = started_at.elapsed();
-    let _ = release.send(());
-    handle.join().expect("join slow-body upstream");
+    eprintln!(
+        "transport_client phase=body_read_finished elapsed={elapsed:?} headers_received={} body_error={:?}",
+        result.is_ok(), result.as_ref().ok().map(|(_, body)| body.is_err())
+    );
+    let joined = cleanup.finish();
+    let (status, result) = result.expect("headers arrive before deadline");
+    assert_eq!(status, reqwest::StatusCode::OK);
+    joined.expect("join slow-body upstream");
     assert!(
         result.is_err(),
         "unfinished JSON body must time out: {result:?}"
@@ -971,6 +1123,100 @@ fn non_streaming_async_transport_enforces_deadline_while_reading_body() {
 }
 
 #[test]
+fn local_transport_clients_bypass_a_controlled_silent_system_proxy() {
+    if crate::loopback_proxy_test::run_proxy_control_in_isolated_process() {
+        return;
+    }
+    let _env_lock = crate::test_env_guard();
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    proxy.set_nonblocking(true).unwrap();
+    let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/v1/responses", listener.local_addr().unwrap());
+
+    // Separate locals drop in reverse order, preserving Windows aliases as
+    // well as distinct uppercase/lowercase variables on other platforms.
+    let _upper_http = EnvGuard::set("HTTP_PROXY", &proxy_url);
+    let _lower_http = EnvGuard::set("http_proxy", &proxy_url);
+    let _upper_https = EnvGuard::set("HTTPS_PROXY", &proxy_url);
+    let _lower_https = EnvGuard::set("https_proxy", &proxy_url);
+    let _upper_all = EnvGuard::set("ALL_PROXY", &proxy_url);
+    let _lower_all = EnvGuard::set("all_proxy", &proxy_url);
+    let _upper_no_proxy = EnvGuard::set("NO_PROXY", "unrelated.invalid");
+    let _lower_no_proxy = EnvGuard::set("no_proxy", "unrelated.invalid");
+    let _request_method = EnvGuard::clear("REQUEST_METHOD");
+
+    let default_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+    let started_at = Instant::now();
+    let negative = send_async_stream_request(
+        &default_client,
+        &reqwest::Method::GET,
+        &url,
+        "/v1/chat/completions",
+        Some(started_at + Duration::from_secs(2)),
+        &[],
+        &Bytes::new(),
+        false,
+    );
+    report_transport_headers(&negative, started_at);
+    assert!(
+        match negative {
+            Err(super::AsyncStreamRequestError::ResponseHeadersTimeout(_)) => true,
+            Err(super::AsyncStreamRequestError::Request(error)) => error.is_timeout(),
+            _ => false,
+        },
+        "the old default client must time out against the silent system proxy"
+    );
+    drop(
+        proxy
+            .accept()
+            .expect("default request reached the controlled proxy"),
+    );
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    assert!(matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+
+    let isolated_client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+    let expected = br#"{"id":"direct-json","choices":[]}"#.to_vec();
+    let (url, release, handle) = spawn_raw_http_response_on_listener(
+        listener,
+        "200 OK",
+        vec![("Content-Type", "application/json")],
+        expected.clone(),
+        false,
+    );
+    let cleanup = RawHttpFixtureCleanup::new(release, handle);
+    let started_at = Instant::now();
+    let positive = send_async_stream_request(
+        &isolated_client,
+        &reqwest::Method::GET,
+        &url,
+        "/v1/chat/completions",
+        Some(started_at + Duration::from_secs(2)),
+        &[],
+        &Bytes::new(),
+        false,
+    );
+    report_transport_headers(&positive, started_at);
+    let result = positive.map(|response| (response.status(), response.read_all_bytes()));
+    let joined = cleanup.finish();
+    let (status, body) = result.expect("isolated client reaches the same local fixture directly");
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(body.expect("complete direct response body"), expected);
+    joined.expect("join direct mock upstream");
+    assert!(matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+}
+
+#[test]
 fn stream_transport_reports_response_headers_timeout() {
     let _env_lock = crate::test_env_guard();
     let _reload_guard = RuntimeConfigReloadGuard;
@@ -979,6 +1225,7 @@ fn stream_transport_reports_response_headers_timeout() {
 
     let (url, handle) = spawn_delayed_http_response_headers(Duration::from_millis(200));
     let client = reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(Duration::from_secs(1))
         .build()
         .expect("build reqwest client");
@@ -1189,20 +1436,236 @@ fn websocket_upstream_request_text_from_http_body_rejects_invalid_payload() {
 }
 
 #[test]
-fn captured_upstream_websocket_body_matches_sent_response_create_frame() {
-    use sha2::{Digest, Sha256};
+fn capture_database_is_ready_before_concurrent_initialization() {
+    if crate::loopback_proxy_test::run_proxy_control_in_isolated_process() {
+        return;
+    }
     let _env_lock = crate::test_env_guard();
-    let _reload_guard = RuntimeConfigReloadGuard;
-    let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
-    let _proxy_list_guard = EnvGuard::set("CODEXMANAGER_PROXY_LIST", "");
-    let db_path = std::env::temp_dir().join(format!(
+    let incomplete_path = reserve_capture_database_path();
+    let incomplete_lock = hold_capture_database_migration_lock(&incomplete_path);
+    {
+        let _environment = CaptureDatabaseEnvironment::publish(&incomplete_path);
+        let error = crate::storage_helpers::initialize_storage()
+            .expect_err("an incomplete capture database requires the held migration lock");
+        assert!(
+            error.starts_with("model catalog migration lock is held by another process ("),
+            "{error}"
+        );
+        assert!(
+            error.contains(
+                &capture_database_migration_lock_path(&incomplete_path)
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
+        assert_eq!(std::fs::metadata(&incomplete_path).unwrap().len(), 0);
+        eprintln!("capture database publication control: incomplete database rejected by held migration lock");
+    }
+    drop(incomplete_lock);
+
+    let storage_keys = [
+        "CODEXMANAGER_STORAGE_BACKEND",
+        "CODEXMANAGER_DATABASE_URL",
+        "CODEXMANAGER_DB_PATH",
+    ];
+    let previous_environment = storage_keys.map(std::env::var_os);
+    let ready = PreparedCaptureDatabase::new();
+    assert_eq!(
+        storage_keys.map(std::env::var_os),
+        previous_environment,
+        "private capture preparation must not publish storage settings"
+    );
+    eprintln!("capture database publication control: private preparation left storage environment unchanged");
+    let ready_lock = hold_capture_database_migration_lock(&ready.path);
+    {
+        let _environment = ready.publish();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let observers: Vec<_> = (0..4)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let expected_path = ready.path.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    crate::storage_helpers::initialize_storage()
+                        .expect("initialize an already prepared capture database");
+                    let published_path = std::path::PathBuf::from(
+                        std::env::var_os("CODEXMANAGER_DB_PATH")
+                            .expect("published capture database path"),
+                    );
+                    assert!(
+                        published_path == expected_path,
+                        "observer must see the published ready capture database"
+                    );
+                    let connection = rusqlite::Connection::open(&published_path)
+                        .expect("open published capture schema probe");
+                    connection
+                        .execute_batch("PRAGMA query_only=ON;")
+                        .expect("make capture schema probe query only");
+                    // Missing-table fallbacks in the diagnostic APIs below can
+                    // return empty results, so execute explicit schema queries.
+                    for sql in [
+                        "SELECT trace_id, stage, method, url, transport, content_encoding,
+                                wire_sha256, identical_to_client, created_at, generation
+                         FROM request_log_upstream_attempts LIMIT 0",
+                        "SELECT trace_id, stage, payload, payload_bytes, payload_truncated,
+                                redacted, body_hash, created_at, generation
+                         FROM request_log_payloads LIMIT 0",
+                        "SELECT trace_id, stage, body_kind, list_field, conversation_key,
+                                parent_trace_id, shared_prefix_len, item_count,
+                                previous_response_id, payload_bytes, redacted, body_hash,
+                                created_at, generation
+                         FROM request_log_payload_manifests LIMIT 0",
+                    ] {
+                        let mut statement = connection.prepare(sql).expect("prepare schema probe");
+                        let rows: Vec<()> = statement
+                            .query_map([], |_| Ok(()))
+                            .expect("execute capture table and column probe")
+                            .collect::<rusqlite::Result<_>>()
+                            .expect("collect capture schema probe");
+                        assert!(rows.is_empty());
+                    }
+                    let storage = crate::storage_helpers::open_storage()
+                        .expect("open prepared capture database");
+                    storage
+                        .smoke_check_model_catalog_v2()
+                        .expect("check observed capture model catalog");
+                    let stages = storage
+                        .list_request_log_upstream_attempt_stages("unused-capture-control-trace")
+                        .expect("query observed capture stages");
+                    let attempt = storage
+                        .find_request_log_upstream_attempt(
+                            "unused-capture-control-trace",
+                            "upstream",
+                        )
+                        .expect("query observed capture attempt");
+                    let payload = storage
+                        .find_request_log_payload_by_trace_id(
+                            "unused-capture-control-trace",
+                            "upstream",
+                        )
+                        .expect("query observed capture payload");
+                    (stages, attempt.is_none(), payload.is_none())
+                })
+            })
+            .collect();
+        // Join every observer before reporting an assertion failure.
+        let results: Vec<_> = observers
+            .into_iter()
+            .map(|observer| observer.join())
+            .collect();
+        for result in results {
+            let (stages, no_attempt, no_payload) = result.expect("capture observer completed");
+            assert!(stages.is_empty());
+            assert!(no_attempt);
+            assert!(no_payload);
+        }
+        let competing_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(capture_database_migration_lock_path(&ready.path))
+            .expect("open competing capture migration lock handle");
+        assert!(matches!(
+            competing_lock.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        eprintln!("capture database publication control: four synchronized observers saw ready capture schema while migration lock stayed held");
+    }
+    drop(ready_lock);
+}
+
+fn reserve_capture_database_path() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
         "codexmanager-ws-request-capture-{}-{}.sqlite",
         std::process::id(),
         crate::gateway::next_trace_id()
     ));
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-    let storage = codexmanager_core::storage::Storage::open(&db_path).expect("open capture db");
-    storage.init().expect("init capture db");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .expect("exclusively reserve capture database");
+    path
+}
+
+struct PreparedCaptureDatabase {
+    path: std::path::PathBuf,
+    storage: codexmanager_core::storage::Storage,
+}
+
+impl PreparedCaptureDatabase {
+    fn new() -> Self {
+        let path = reserve_capture_database_path();
+        // An explicit core-storage path stays private until every migration and
+        // model-catalog check has succeeded.
+        let storage = codexmanager_core::storage::Storage::open(&path)
+            .expect("open private capture database");
+        storage.init().expect("initialize private capture database");
+        storage
+            .smoke_check_model_catalog_v2()
+            .expect("check private capture model catalog");
+        Self { path, storage }
+    }
+
+    fn publish(&self) -> CaptureDatabaseEnvironment {
+        CaptureDatabaseEnvironment::publish(&self.path)
+    }
+}
+
+struct CaptureDatabaseEnvironment(Vec<EnvGuard>);
+
+impl CaptureDatabaseEnvironment {
+    fn publish(path: &std::path::Path) -> Self {
+        let mut environment = Self(Vec::new());
+        environment
+            .0
+            .push(EnvGuard::set("CODEXMANAGER_STORAGE_BACKEND", "sqlite"));
+        environment
+            .0
+            .push(EnvGuard::clear("CODEXMANAGER_DATABASE_URL"));
+        // Select the backend before exposing the fully prepared database path.
+        environment.0.push(EnvGuard::set(
+            "CODEXMANAGER_DB_PATH",
+            path.to_string_lossy().as_ref(),
+        ));
+        environment
+    }
+}
+
+impl Drop for CaptureDatabaseEnvironment {
+    fn drop(&mut self) {
+        // Restore the path before restoring its backend selection.
+        while let Some(guard) = self.0.pop() {
+            drop(guard);
+        }
+    }
+}
+
+fn capture_database_migration_lock_path(path: &std::path::Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}.model-catalog-v2.lock", path.display()))
+}
+
+fn hold_capture_database_migration_lock(path: &std::path::Path) -> std::fs::File {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(capture_database_migration_lock_path(path))
+        .expect("exclusively create capture migration lock");
+    file.try_lock().expect("hold capture migration lock");
+    file
+}
+
+#[test]
+fn captured_upstream_websocket_body_matches_sent_response_create_frame() {
+    use sha2::{Digest, Sha256};
+    let _env_lock = crate::test_env_guard();
+    let _reload_guard = RuntimeConfigReloadGuard;
+    let database = PreparedCaptureDatabase::new();
+    let storage = &database.storage;
+    let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    let _proxy_list_guard = EnvGuard::set("CODEXMANAGER_PROXY_LIST", "");
+    let _database_environment = database.publish();
     crate::gateway::reload_runtime_config_from_env();
     let (url, _headers_rx, frame_rx, handle) =
         spawn_mock_websocket_upstream(r#"{"type":"response.completed"}"#);

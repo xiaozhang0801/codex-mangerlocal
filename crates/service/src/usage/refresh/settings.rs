@@ -57,6 +57,100 @@ pub(crate) struct BackgroundTasksSettingsPatch {
     pub warmup_cron_expression: Option<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct PreparedBackgroundTasksSettings {
+    pub(crate) snapshot: BackgroundTasksSettings,
+    patch: BackgroundTasksSettingsPatch,
+}
+
+fn normalize_background_tasks_patch(
+    mut patch: BackgroundTasksSettingsPatch,
+) -> BackgroundTasksSettingsPatch {
+    patch.usage_poll_interval_secs = patch
+        .usage_poll_interval_secs
+        .map(|value| value.max(MIN_USAGE_POLL_INTERVAL_SECS));
+    patch.gateway_keepalive_interval_secs = patch
+        .gateway_keepalive_interval_secs
+        .map(|value| value.max(MIN_GATEWAY_KEEPALIVE_INTERVAL_SECS));
+    patch.token_refresh_poll_interval_secs = patch
+        .token_refresh_poll_interval_secs
+        .map(|value| value.max(MIN_TOKEN_REFRESH_POLL_INTERVAL_SECS));
+    patch.usage_refresh_workers = patch.usage_refresh_workers.map(|value| value.max(1));
+    patch.http_worker_factor = patch.http_worker_factor.map(|value| value.max(1));
+    patch.http_worker_min = patch.http_worker_min.map(|value| value.max(1));
+    patch.http_stream_worker_factor = patch.http_stream_worker_factor.map(|value| value.max(1));
+    patch.http_stream_worker_min = patch.http_stream_worker_min.map(|value| value.max(1));
+    patch.warmup_cron_expression = patch
+        .warmup_cron_expression
+        .as_deref()
+        .map(normalize_text_setting);
+    patch
+}
+
+/// Purely merge and validate a patch against one explicit snapshot. No atomics,
+/// process environment, worker signals, or storage are modified here.
+pub(crate) fn normalize_background_tasks_settings(
+    current: &BackgroundTasksSettings,
+    patch: &BackgroundTasksSettingsPatch,
+) -> Result<BackgroundTasksSettings, String> {
+    let patch = normalize_background_tasks_patch(patch.clone());
+    let mut next = current.clone();
+    macro_rules! merge {
+        ($($field:ident),+ $(,)?) => {
+            $(if let Some(value) = patch.$field {
+                next.$field = value;
+            })+
+        };
+    }
+    merge!(
+        usage_polling_enabled,
+        usage_poll_interval_secs,
+        gateway_keepalive_enabled,
+        gateway_keepalive_interval_secs,
+        token_refresh_polling_enabled,
+        token_refresh_poll_interval_secs,
+        usage_refresh_workers,
+        http_worker_factor,
+        http_worker_min,
+        http_stream_worker_factor,
+        http_stream_worker_min,
+        warmup_cron_enabled,
+    );
+    if let Some(expression) = &patch.warmup_cron_expression {
+        next.warmup_cron_expression = expression.clone();
+    }
+    if next.warmup_cron_expression.contains('\0') {
+        return Err("warmup cron expression contains NUL".to_string());
+    }
+    if next.warmup_cron_enabled && next.warmup_cron_expression.is_empty() {
+        return Err("warmup cron expression is required when warmup cron is enabled".to_string());
+    }
+    if !next.warmup_cron_expression.is_empty()
+        && (next.warmup_cron_enabled || patch.warmup_cron_expression.is_some())
+    {
+        validate_warmup_cron_expression(&next.warmup_cron_expression)?;
+    }
+    Ok(next)
+}
+
+/// Prepare the exact JSON snapshot to commit before any runtime publication.
+/// The settings write coordinator must serialize preparation through publication.
+pub(crate) fn prepare_background_tasks_settings(
+    patch: BackgroundTasksSettingsPatch,
+) -> Result<PreparedBackgroundTasksSettings, String> {
+    let patch = normalize_background_tasks_patch(patch);
+    let snapshot = normalize_background_tasks_settings(&background_tasks_settings(), &patch)?;
+    Ok(PreparedBackgroundTasksSettings { snapshot, patch })
+}
+
+/// Publish only the fields present in the committed patch. Other runtime fields
+/// are not overwritten by a whole-snapshot replay.
+pub(crate) fn publish_background_tasks_settings(
+    prepared: PreparedBackgroundTasksSettings,
+) -> BackgroundTasksSettings {
+    set_background_tasks_settings(prepared.patch)
+}
+
 /// 函数 `background_tasks_settings`
 ///
 /// 作者: gaohongshun
@@ -106,6 +200,7 @@ pub(crate) fn set_background_tasks_settings(
     patch: BackgroundTasksSettingsPatch,
 ) -> BackgroundTasksSettings {
     ensure_background_tasks_config_loaded();
+    let patch = normalize_background_tasks_patch(patch);
 
     let normalized_warmup_cron_expression = patch
         .warmup_cron_expression
@@ -196,27 +291,7 @@ pub(crate) fn set_background_tasks_settings(
 pub(crate) fn validate_background_tasks_settings_patch(
     patch: &BackgroundTasksSettingsPatch,
 ) -> Result<(), String> {
-    ensure_background_tasks_config_loaded();
-
-    let target_warmup_cron_enabled = patch
-        .warmup_cron_enabled
-        .unwrap_or_else(|| WARMUP_CRON_ENABLED.load(Ordering::Relaxed));
-    let patched_warmup_cron_expression = patch
-        .warmup_cron_expression
-        .as_deref()
-        .map(normalize_text_setting);
-    let target_warmup_cron_expression = patched_warmup_cron_expression
-        .clone()
-        .unwrap_or_else(|| current_mutex_string(&WARMUP_CRON_EXPRESSION));
-    if target_warmup_cron_enabled && target_warmup_cron_expression.is_empty() {
-        return Err("warmup cron expression is required when warmup cron is enabled".to_string());
-    }
-    if !target_warmup_cron_expression.is_empty()
-        && (target_warmup_cron_enabled || patched_warmup_cron_expression.is_some())
-    {
-        validate_warmup_cron_expression(target_warmup_cron_expression.as_str())?;
-    }
-    Ok(())
+    normalize_background_tasks_settings(&background_tasks_settings(), patch).map(|_| ())
 }
 
 /// 函数 `reload_background_tasks_runtime_from_env`
@@ -419,3 +494,59 @@ fn env_bool_or(name: &str, default: bool) -> bool {
 #[cfg(test)]
 #[path = "../tests/usage_refresh_settings_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+
+    #[test]
+    fn preparing_background_tasks_does_not_publish_runtime_or_environment() {
+        let _guard = crate::test_env_guard();
+        let before = background_tasks_settings();
+        let before_env = std::env::var_os(ENV_USAGE_POLLING_ENABLED);
+        let before_signal = warmup_cron_signal_version();
+        let prepared = prepare_background_tasks_settings(BackgroundTasksSettingsPatch {
+            usage_polling_enabled: Some(!before.usage_polling_enabled),
+            http_worker_factor: Some(0),
+            ..BackgroundTasksSettingsPatch::default()
+        })
+        .expect("valid background patch");
+
+        assert_eq!(
+            prepared.snapshot.usage_polling_enabled,
+            !before.usage_polling_enabled
+        );
+        assert_eq!(prepared.snapshot.http_worker_factor, 1);
+        assert_eq!(prepared.snapshot.http_worker_min, before.http_worker_min);
+        assert_eq!(
+            serde_json::to_value(background_tasks_settings()).unwrap(),
+            serde_json::to_value(before).unwrap(),
+        );
+        assert_eq!(std::env::var_os(ENV_USAGE_POLLING_ENABLED), before_env);
+        assert_eq!(warmup_cron_signal_version(), before_signal);
+    }
+
+    #[test]
+    fn invalid_background_patch_rejects_all_fields_before_publication() {
+        let _guard = crate::test_env_guard();
+        let before = background_tasks_settings();
+        for expression in ["99 99 99 99 99", "0 0 * * *\0"] {
+            let result = normalize_background_tasks_settings(
+                &before,
+                &BackgroundTasksSettingsPatch {
+                    usage_polling_enabled: Some(!before.usage_polling_enabled),
+                    warmup_cron_expression: Some(expression.to_string()),
+                    ..BackgroundTasksSettingsPatch::default()
+                },
+            );
+            assert!(
+                result.is_err(),
+                "invalid expression must reject the snapshot"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(background_tasks_settings()).unwrap(),
+            serde_json::to_value(before).unwrap(),
+        );
+    }
+}

@@ -8,7 +8,9 @@ use super::{
 };
 use axum::http::{header, HeaderValue, Uri};
 use axum::{body::Bytes, extract::State, http::HeaderMap};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -315,6 +317,327 @@ async fn rpc_proxy_rejects_body_over_the_bounded_upload_limit() {
     let response = super::rpc_proxy(State(state), headers, body).await;
 
     assert_eq!(response.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn rpc_proxy_does_not_replay_committed_writes_through_307_or_308_redirects() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    for status in [
+        axum::http::StatusCode::TEMPORARY_REDIRECT,
+        axum::http::StatusCode::PERMANENT_REDIRECT,
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind redirect mock");
+        let addr = listener.local_addr().expect("redirect mock address");
+        let commits = Arc::new(AtomicUsize::new(0));
+        let replays = Arc::new(AtomicUsize::new(0));
+        let original_commits = commits.clone();
+        let redirected_commits = replays.clone();
+        let app = axum::Router::new()
+            .route(
+                "/rpc",
+                axum::routing::post(move |body: Bytes| {
+                    let original_commits = original_commits.clone();
+                    async move {
+                        let request: serde_json::Value =
+                            serde_json::from_slice(&body).expect("RPC mock request");
+                        assert_eq!(request["method"], "apikey/create");
+                        // Commit first, then redirect while preserving the POST body.
+                        original_commits.fetch_add(1, Ordering::SeqCst);
+                        (status, [(header::LOCATION, "/redirected")], "")
+                    }
+                }),
+            )
+            .route(
+                "/redirected",
+                axum::routing::post(move || {
+                    let redirected_commits = redirected_commits.clone();
+                    async move {
+                        redirected_commits.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({ "result": { "id": "duplicate-key" } }))
+                    }
+                }),
+            );
+        let (mock_shutdown_tx, mock_shutdown_rx) = tokio::sync::oneshot::channel();
+        let mock = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = mock_shutdown_rx.await;
+                })
+                .await
+                .expect("serve redirect mock");
+        });
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+        let state = Arc::new(crate::AppState {
+            client: super::build_service_proxy_client().expect("service proxy client"),
+            service_rpc_url: format!("http://{addr}/rpc"),
+            service_addr: addr.to_string(),
+            rpc_token: "mock-rpc-token".to_string(),
+            web_auth_session_key: "mock-session".to_string(),
+            shutdown_tx,
+            spawned_service: Arc::new(tokio::sync::Mutex::new(false)),
+            missing_ui_html: Arc::new(String::new()),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        let body =
+            Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"apikey/create","params":{}}"#);
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            super::rpc_proxy(State(state), headers, body),
+        )
+        .await
+        .expect("RPC proxy must finish");
+        let _ = mock_shutdown_tx.send(());
+        mock.await.expect("join redirect mock");
+
+        assert_eq!(response.status(), status);
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            replays.load(Ordering::SeqCst),
+            0,
+            "redirect status {status}"
+        );
+    }
+}
+
+enum RpcMockFailure {
+    LostResponse,
+    StalledBody,
+}
+
+struct RpcFailureMock {
+    listener: Arc<tokio::net::TcpListener>,
+    commits: Arc<AtomicUsize>,
+    ready: tokio::sync::oneshot::Receiver<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+async fn read_mock_rpc_request(stream: &mut tokio::net::TcpStream) -> serde_json::Value {
+    use tokio::io::AsyncReadExt;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut request = Vec::new();
+        loop {
+            let mut bytes = [0_u8; 1024];
+            let read = stream
+                .read(&mut bytes)
+                .await
+                .expect("read mock RPC request");
+            assert!(read > 0, "request ended before its complete body");
+            request.extend_from_slice(&bytes[..read]);
+            assert!(request.len() <= 8192, "mock RPC request exceeded its bound");
+            let Some(split) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = std::str::from_utf8(&request[..split]).expect("mock HTTP headers");
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+                .expect("mock content length header");
+            if request.len() >= split + 4 + length {
+                return serde_json::from_slice(&request[split + 4..split + 4 + length])
+                    .expect("mock JSON RPC request");
+            }
+        }
+    })
+    .await
+    .expect("complete mock RPC request must arrive within its bound")
+}
+
+async fn spawn_rpc_failure_mock(failure: RpcMockFailure) -> RpcFailureMock {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = Arc::new(
+        tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind RPC failure mock"),
+    );
+    let server_listener = listener.clone();
+    let commits = Arc::new(AtomicUsize::new(0));
+    let server_commits = commits.clone();
+    let (ready_tx, ready) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut stream, _) =
+            tokio::time::timeout(Duration::from_secs(2), server_listener.accept())
+                .await
+                .expect("RPC must connect within its bound")
+                .expect("accept RPC failure mock");
+        assert_eq!(
+            read_mock_rpc_request(&mut stream).await["method"],
+            "apikey/create"
+        );
+        server_commits.fetch_add(1, Ordering::SeqCst);
+        match failure {
+            RpcMockFailure::LostResponse => {
+                ready_tx.send(()).expect("report committed request");
+                // Commit before dropping the connection without any response.
+            }
+            RpcMockFailure::StalledBody => {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .expect("send mock headers without a body");
+                ready_tx.send(()).expect("report sent response headers");
+                let mut byte = [0_u8; 1];
+                match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte))
+                    .await
+                    .expect("proxy must release its stalled upstream socket")
+                {
+                    Ok(0) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                    other => panic!("unexpected data while observing upstream release: {other:?}"),
+                }
+            }
+        }
+    });
+    RpcFailureMock {
+        listener,
+        commits,
+        ready,
+        task,
+    }
+}
+
+async fn call_rpc_proxy_for_mock(
+    client: reqwest::Client,
+    addr: std::net::SocketAddr,
+) -> axum::response::Response {
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+    let state = Arc::new(crate::AppState {
+        client,
+        service_rpc_url: format!("http://{addr}/rpc"),
+        service_addr: addr.to_string(),
+        rpc_token: "mock-rpc-token".to_string(),
+        web_auth_session_key: "mock-session".to_string(),
+        shutdown_tx,
+        spawned_service: Arc::new(tokio::sync::Mutex::new(false)),
+        missing_ui_html: Arc::new(String::new()),
+    });
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    super::rpc_proxy(
+        State(state),
+        headers,
+        Bytes::from_static(
+            br#"{"jsonrpc":"2.0","id":1,"method":"apikey/create","params":{"retries":99}}"#,
+        ),
+    )
+    .await
+}
+
+async fn assert_mock_rpc_was_not_replayed(mock: &RpcFailureMock) {
+    assert_eq!(mock.commits.load(Ordering::SeqCst), 1);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), mock.listener.accept())
+            .await
+            .is_err(),
+        "proxy must not send a second request after the mock committed"
+    );
+}
+
+#[tokio::test]
+async fn rpc_proxy_reports_bad_gateway_without_replaying_committed_write_after_lost_response() {
+    let mut mock = spawn_rpc_failure_mock(RpcMockFailure::LostResponse).await;
+    let addr = mock
+        .listener
+        .local_addr()
+        .expect("RPC failure mock address");
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        call_rpc_proxy_for_mock(
+            super::build_service_proxy_client().expect("service proxy client"),
+            addr,
+        ),
+    )
+    .await
+    .expect("closed upstream must finish the proxy request");
+    (&mut mock.ready).await.expect("mock committed the request");
+    (&mut mock.task).await.expect("join lost-response mock");
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert_mock_rpc_was_not_replayed(&mock).await;
+}
+
+#[tokio::test]
+async fn rpc_proxy_reports_body_timeout_as_bad_gateway_with_bounded_test_client() {
+    let mut mock = spawn_rpc_failure_mock(RpcMockFailure::StalledBody).await;
+    let addr = mock
+        .listener
+        .local_addr()
+        .expect("RPC failure mock address");
+    // Inject a deadline only into this test client. The production proxy client
+    // has no body deadline; this verifies its existing read-error mapping.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_millis(250))
+        .build()
+        .expect("bounded test proxy client");
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        call_rpc_proxy_for_mock(client, addr),
+    )
+    .await
+    .expect("bounded test client must finish reading the stalled body");
+    (&mut mock.ready).await.expect("mock sent response headers");
+    (&mut mock.task).await.expect("join stalled-body mock");
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    let body = axum::body::to_bytes(response.into_body(), 8192)
+        .await
+        .expect("read proxy error");
+    assert!(
+        String::from_utf8_lossy(&body).starts_with("upstream read error:"),
+        "the timeout must occur after headers, while reading the body"
+    );
+    assert_mock_rpc_was_not_replayed(&mock).await;
+}
+
+#[tokio::test]
+async fn rpc_proxy_cancelled_future_releases_stalled_upstream_without_replaying() {
+    let mut mock = spawn_rpc_failure_mock(RpcMockFailure::StalledBody).await;
+    let addr = mock
+        .listener
+        .local_addr()
+        .expect("RPC failure mock address");
+    let mut proxy = tokio::spawn(call_rpc_proxy_for_mock(
+        super::build_service_proxy_client().expect("service proxy client"),
+        addr,
+    ));
+    tokio::time::timeout(Duration::from_secs(2), &mut mock.ready)
+        .await
+        .expect("mock must send response headers within its bound")
+        .expect("mock sent response headers");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut proxy)
+            .await
+            .is_err(),
+        "headers without a body must leave the proxy future pending"
+    );
+    proxy.abort();
+    let error = tokio::time::timeout(Duration::from_secs(2), proxy)
+        .await
+        .expect("cancelled proxy future must finish")
+        .expect_err("proxy future must be cancelled");
+    assert!(error.is_cancelled());
+    (&mut mock.task).await.expect("join cancelled-body mock");
+    assert_mock_rpc_was_not_replayed(&mock).await;
 }
 
 /// 在独立线程里起一个最小 HTTP 服务，返回固定 SSE 响应后关闭连接，供代理测试当上游用。

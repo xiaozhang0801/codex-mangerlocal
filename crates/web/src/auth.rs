@@ -211,21 +211,31 @@ fn request_is_authenticated(headers: &HeaderMap, state: &AppState) -> bool {
     match codexmanager_service::current_web_auth_mode().as_str() {
         "none" => true,
         "accounts" => current_app_session_from_headers(headers).is_some(),
-        _ => {
-            let Some(password_hash) = current_web_access_password_hash() else {
-                return true;
-            };
-            let Some(cookie_value) = parse_cookie_value(headers, WEB_AUTH_COOKIE_NAME) else {
-                return false;
-            };
-            let expected = build_web_auth_cookie_value(
-                &password_hash,
-                &state.rpc_token,
-                &state.web_auth_session_key,
-            );
-            cookie_value == expected
-        }
+        _ => password_request_is_authenticated(
+            headers,
+            current_web_access_password_hash().as_deref(),
+            &state.rpc_token,
+            &state.web_auth_session_key,
+        ),
     }
+}
+
+fn password_request_is_authenticated(
+    headers: &HeaderMap,
+    password_hash: Option<&str>,
+    rpc_token: &str,
+    session_key: &str,
+) -> bool {
+    // The hash may disappear after the caller observes password mode. Never
+    // turn that concurrent settings transition into unauthenticated access.
+    let Some(password_hash) = password_hash else {
+        return false;
+    };
+    let Some(cookie_value) = parse_cookie_value(headers, WEB_AUTH_COOKIE_NAME) else {
+        return false;
+    };
+    let expected = build_web_auth_cookie_value(password_hash, rpc_token, session_key);
+    cookie_value == expected
 }
 
 pub(super) fn current_app_session_from_headers(

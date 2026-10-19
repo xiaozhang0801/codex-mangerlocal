@@ -1,7 +1,4 @@
-use crate::app_settings::{
-    get_persisted_app_setting, normalize_optional_text, save_persisted_app_setting,
-    APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY,
-};
+use crate::app_settings::{get_persisted_app_setting, APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY};
 use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -48,17 +45,11 @@ pub fn web_access_password_configured() -> bool {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_web_access_password(password: Option<&str>) -> Result<bool, String> {
-    match normalize_optional_text(password) {
-        Some(value) => {
-            let hashed = hash_web_access_password(&value);
-            save_persisted_app_setting(APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY, Some(&hashed))?;
-            Ok(true)
-        }
-        None => {
-            save_persisted_app_setting(APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY, Some(""))?;
-            Ok(false)
-        }
-    }
+    let raw = crate::app_settings::api::apply_single_setting_patch(
+        serde_json::json!({ "webAccessPassword": password.unwrap_or_default() }),
+        APP_SETTING_WEB_ACCESS_PASSWORD_HASH_KEY,
+    )?;
+    Ok(!raw.is_empty())
 }
 
 /// 函数 `web_auth_status_value`
@@ -123,7 +114,7 @@ pub fn build_web_access_session_token(password_hash: &str, rpc_token: &str) -> S
 ///
 /// # 返回
 /// 返回函数执行结果
-fn hash_web_access_password(password: &str) -> String {
+pub(crate) fn hash_web_access_password(password: &str) -> String {
     let mut salt = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut salt);
     let salt_hex = hex_encode(&salt);

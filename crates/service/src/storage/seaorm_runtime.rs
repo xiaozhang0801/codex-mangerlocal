@@ -130,6 +130,9 @@ mod tests {
 
     #[test]
     fn pool_survives_operations_and_rejects_live_backend_changes() {
+        if crate::loopback_proxy_test::run_proxy_control_in_isolated_process() {
+            return;
+        }
         let _guard = crate::test_env_guard();
         let _restore = EnvGuard(
             ["CODEXMANAGER_STORAGE_BACKEND", "CODEXMANAGER_DATABASE_URL"]

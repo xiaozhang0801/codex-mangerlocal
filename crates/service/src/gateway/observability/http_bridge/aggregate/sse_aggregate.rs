@@ -9,11 +9,16 @@ use super::{
     UpstreamResponseUsage,
 };
 
+#[path = "chat_function_calls.rs"]
+mod chat_function_calls;
+use chat_function_calls::ChatFunctionCalls;
+
 #[derive(Debug, Clone, Default)]
 struct ChatCompletionChoiceSynthesis {
     role: Option<String>,
     content: String,
     finish_reason: Option<Value>,
+    tool_calls: ChatFunctionCalls,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -37,36 +42,6 @@ struct ResponsesSseSynthesis {
     output_items: BTreeMap<i64, Value>,
     next_output_index: i64,
     saw_completed: bool,
-}
-
-/// 函数 `merge_tool_call_arguments`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - existing: 参数 existing
-/// - fragment: 参数 fragment
-///
-/// # 返回
-/// 无
-fn merge_tool_call_arguments(existing: &mut String, fragment: &str) {
-    if fragment.is_empty() {
-        return;
-    }
-    if existing.is_empty() {
-        existing.push_str(fragment);
-        return;
-    }
-    if existing == fragment || existing.ends_with(fragment) || existing.starts_with(fragment) {
-        return;
-    }
-    if fragment.starts_with(existing.as_str()) {
-        *existing = fragment.to_string();
-        return;
-    }
-    existing.push_str(fragment);
 }
 
 /// 函数 `reserve_output_index`
@@ -190,7 +165,12 @@ fn merge_response_output_item_event(synthesis: &mut ResponsesSseSynthesis, value
                 .or_else(|| entry_obj.get("input").and_then(Value::as_str))
                 .map(str::to_string)
                 .unwrap_or_default();
-            merge_tool_call_arguments(&mut arguments, fragment);
+            if event_type.ends_with(".delta") {
+                // Repeated fragments are valid; only done events are snapshots.
+                arguments.push_str(fragment);
+            } else {
+                arguments = fragment.to_string();
+            }
             if !arguments.is_empty() {
                 let field = if event_type.starts_with("response.custom_tool_call_input.") {
                     "input"
@@ -287,6 +267,9 @@ fn update_chat_completion_sse_synthesis(synthesis: &mut ChatCompletionSseSynthes
         }
         if let Some(delta_content) = choice.get("delta").and_then(|delta| delta.get("content")) {
             append_chat_delta_content(&mut target.content, delta_content);
+        }
+        if let Some(delta) = choice.get("delta") {
+            target.tool_calls.merge_delta(delta);
         }
         if let Some(finish_reason) = choice.get("finish_reason") {
             if !finish_reason.is_null() {
@@ -661,14 +644,24 @@ fn synthesize_chat_completion_body(synthesis: &ChatCompletionSseSynthesis) -> Op
         .choices
         .iter()
         .map(|(index, choice)| {
-            json!({
+            let tool_calls = choice.tool_calls.snapshot();
+            let content = if !tool_calls.is_empty() && choice.content.is_empty() {
+                Value::Null
+            } else {
+                json!(choice.content)
+            };
+            let mut value = json!({
                 "index": index,
                 "message": {
                     "role": choice.role.clone().unwrap_or_else(|| "assistant".to_string()),
-                    "content": choice.content,
+                    "content": content,
                 },
                 "finish_reason": choice.finish_reason.clone().unwrap_or(Value::Null),
-            })
+            });
+            if !tool_calls.is_empty() {
+                value["message"]["tool_calls"] = Value::Array(tool_calls);
+            }
+            value
         })
         .collect::<Vec<_>>();
     let mut out = serde_json::Map::new();

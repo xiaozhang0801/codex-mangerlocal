@@ -70,16 +70,27 @@ fn effective_request_timeout_stream_uses_max_total_and_stream() {
 /// # 返回
 /// 无
 #[test]
-fn effective_request_timeout_stream_falls_back_when_one_side_missing() {
+fn effective_request_timeout_stream_respects_disabled_total_timeout() {
     assert_eq!(
         effective_request_timeout(Some(Duration::from_secs(120)), None, true),
         Some(Duration::from_secs(120))
     );
     assert_eq!(
         effective_request_timeout(None, Some(Duration::from_secs(300)), true),
-        Some(Duration::from_secs(300))
+        None
     );
     assert_eq!(effective_request_timeout(None, None, true), None);
+}
+
+#[test]
+fn send_timeout_stream_remains_bounded_without_total_deadline() {
+    let _guard = crate::test_env_guard();
+    let previous = crate::gateway::current_upstream_stream_timeout_ms();
+    crate::gateway::set_upstream_stream_timeout_ms(300_000);
+    let timeout = send_timeout(None, true);
+    crate::gateway::set_upstream_stream_timeout_ms(previous);
+
+    assert_eq!(timeout, Some(Duration::from_secs(300)));
 }
 
 /// 函数 `send_timeout_stream_caps_by_configured_stream_timeout`

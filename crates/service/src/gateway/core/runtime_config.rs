@@ -3,7 +3,7 @@ use codexmanager_core::auth::{DEFAULT_CLIENT_ID, DEFAULT_ISSUER};
 use codexmanager_core::storage::Storage;
 use reqwest::header::HeaderValue;
 use reqwest::Proxy;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
@@ -640,14 +640,24 @@ fn build_async_upstream_client() -> reqwest::Client {
 }
 
 fn build_async_direct_upstream_client() -> reqwest::Client {
+    build_async_direct_upstream_client_strict().expect("build direct async upstream client")
+}
+
+fn build_async_direct_upstream_client_strict() -> Result<reqwest::Client, String> {
+    build_async_direct_upstream_client_with_timeout(upstream_connect_timeout_cached())
+}
+
+fn build_async_direct_upstream_client_with_timeout(
+    connect_timeout: Duration,
+) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .no_proxy()
-        .connect_timeout(upstream_connect_timeout_cached())
+        .connect_timeout(connect_timeout)
         .pool_max_idle_per_host(32)
         .pool_idle_timeout(Some(Duration::from_secs(90)))
         .tcp_keepalive(Some(Duration::from_secs(30)))
         .build()
-        .expect("build direct async upstream client")
+        .map_err(|err| format!("build direct async upstream client failed: {err}"))
 }
 
 pub(crate) fn apply_async_upstream_proxy(
@@ -671,8 +681,15 @@ pub(crate) fn apply_async_upstream_proxy(
 fn build_async_client_with_proxy_strict(
     proxy_url: Option<&str>,
 ) -> Result<reqwest::Client, String> {
+    build_async_client_with_proxy_and_timeout(proxy_url, upstream_connect_timeout_cached())
+}
+
+fn build_async_client_with_proxy_and_timeout(
+    proxy_url: Option<&str>,
+    connect_timeout: Duration,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
-        .connect_timeout(upstream_connect_timeout_cached())
+        .connect_timeout(connect_timeout)
         .pool_max_idle_per_host(32)
         .pool_idle_timeout(Some(Duration::from_secs(90)))
         .tcp_keepalive(Some(Duration::from_secs(30)));
@@ -807,11 +824,16 @@ pub(super) fn sse_keepalive_interval_is_env_overridden() -> bool {
     env_non_empty(ENV_SSE_KEEPALIVE_INTERVAL_MS).is_some()
 }
 
-pub(super) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
-    ensure_runtime_config_loaded();
+pub(crate) fn normalize_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
     if interval_ms == 0 {
         return Err("SSE keepalive interval must be greater than 0".to_string());
     }
+    Ok(interval_ms)
+}
+
+pub(super) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
+    ensure_runtime_config_loaded();
+    let interval_ms = normalize_sse_keepalive_interval_ms(interval_ms)?;
     if sse_keepalive_interval_is_env_overridden() {
         return Ok(SSE_KEEPALIVE_INTERVAL_MS.load(Ordering::Relaxed).max(1));
     }
@@ -1479,21 +1501,135 @@ pub(crate) fn set_request_compression_enabled(enabled: bool) -> bool {
 /// # 返回
 /// 返回函数执行结果
 pub(super) fn set_upstream_proxy_url(proxy_url: Option<&str>) -> Result<Option<String>, String> {
-    ensure_runtime_config_loaded();
-    let normalized = normalize_upstream_proxy_url(proxy_url)?;
+    let prepared = prepare_upstream_proxy_url(proxy_url)?;
+    let normalized = prepared.normalized_url().map(str::to_string);
+    prepared.publish();
+    Ok(normalized)
+}
 
-    if let Some(value) = normalized.as_deref() {
-        std::env::set_var(ENV_UPSTREAM_PROXY_URL, value);
-    } else {
-        std::env::remove_var(ENV_UPSTREAM_PROXY_URL);
+/// A proxy change whose fallible validation and gateway client construction have
+/// already completed. Keep this value until settings persistence commits.
+pub(crate) struct PreparedUpstreamProxy {
+    normalized_url: Option<String>,
+    async_client: reqwest::Client,
+    retry_client: reqwest::Client,
+    direct_client: reqwest::Client,
+    pool: UpstreamClientPool,
+    #[cfg(test)]
+    connect_timeout: Duration,
+}
+
+impl PreparedUpstreamProxy {
+    pub(crate) fn normalized_url(&self) -> Option<&str> {
+        self.normalized_url.as_deref()
     }
 
-    let mut cached_proxy_url =
-        crate::lock_utils::write_recover(upstream_proxy_url_cell(), "upstream_proxy_url");
-    *cached_proxy_url = normalized.clone();
-    drop(cached_proxy_url);
-    refresh_upstream_clients_from_runtime_config();
-    Ok(normalized)
+    pub(crate) fn publish(self) {
+        if let Some(value) = self.normalized_url.as_deref() {
+            std::env::set_var(ENV_UPSTREAM_PROXY_URL, value);
+        } else {
+            std::env::remove_var(ENV_UPSTREAM_PROXY_URL);
+        }
+        *crate::lock_utils::write_recover(upstream_proxy_url_cell(), "upstream_proxy_url") =
+            self.normalized_url;
+        for (cell, client, label) in [
+            (
+                &ASYNC_UPSTREAM_CLIENT,
+                self.async_client,
+                "async_upstream_client",
+            ),
+            (
+                &ASYNC_RETRY_UPSTREAM_CLIENT,
+                self.retry_client,
+                "async_retry_upstream_client",
+            ),
+            (
+                &ASYNC_DIRECT_UPSTREAM_CLIENT,
+                self.direct_client,
+                "async_direct_upstream_client",
+            ),
+        ] {
+            let lock = cell.get_or_init(|| RwLock::new(client.clone()));
+            *crate::lock_utils::write_recover(lock, label) = client;
+        }
+        let lock = UPSTREAM_CLIENT_POOL.get_or_init(|| RwLock::new(self.pool.clone()));
+        *crate::lock_utils::write_recover(lock, "upstream_client_pool") = self.pool;
+        clear_candidate_client_caches();
+        crate::usage_http::reload_usage_http_client_from_env();
+    }
+}
+
+pub(crate) fn prepare_upstream_proxy_url(
+    proxy_url: Option<&str>,
+) -> Result<PreparedUpstreamProxy, String> {
+    let normalized_url = normalize_upstream_proxy_url(proxy_url)?;
+    ensure_runtime_config_loaded();
+    prepare_upstream_proxy(
+        normalized_url,
+        upstream_connect_timeout_cached(),
+        parse_proxy_list_env(),
+    )
+}
+
+/// Prepare against the effective post-commit environment without installing it.
+/// A missing key retains the current runtime/environment value; a supplied key
+/// uses the same defaulting and proxy-list parsing rules as a runtime reload.
+pub(crate) fn prepare_upstream_proxy_url_with_env(
+    proxy_url: Option<&str>,
+    target_env: &BTreeMap<String, String>,
+) -> Result<PreparedUpstreamProxy, String> {
+    let normalized_url = normalize_upstream_proxy_url(proxy_url)?;
+    let connect_timeout = target_env
+        .get(ENV_UPSTREAM_CONNECT_TIMEOUT_SECS)
+        .map(|value| {
+            Duration::from_secs(
+                value
+                    .trim()
+                    .parse::<u64>()
+                    .unwrap_or(DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS),
+            )
+        })
+        .unwrap_or_else(upstream_connect_timeout_cached);
+    let proxies = target_env
+        .get(ENV_PROXY_LIST)
+        .map(|value| parse_proxy_list(value))
+        .unwrap_or_else(parse_proxy_list_env);
+    prepare_upstream_proxy(normalized_url, connect_timeout, proxies)
+}
+
+fn prepare_upstream_proxy(
+    normalized_url: Option<String>,
+    connect_timeout: Duration,
+    proxies: Vec<String>,
+) -> Result<PreparedUpstreamProxy, String> {
+    let async_client =
+        build_async_client_with_proxy_and_timeout(normalized_url.as_deref(), connect_timeout)?;
+    let retry_client =
+        build_async_client_with_proxy_and_timeout(normalized_url.as_deref(), connect_timeout)?;
+    let direct_client = build_async_direct_upstream_client_with_timeout(connect_timeout)?;
+    let mut pool = UpstreamClientPool::default();
+    if normalized_url.is_none() {
+        for proxy in proxies {
+            // Preserve startup behavior for invalid pre-existing proxy-pool
+            // entries while surfacing client-construction failures before commit.
+            if Proxy::all(proxy.as_str()).is_err() {
+                continue;
+            }
+            let client =
+                build_async_client_with_proxy_and_timeout(Some(proxy.as_str()), connect_timeout)?;
+            pool.proxies.push(proxy);
+            pool.async_retry_clients.push(client);
+        }
+    }
+    Ok(PreparedUpstreamProxy {
+        normalized_url,
+        async_client,
+        retry_client,
+        direct_client,
+        pool,
+        #[cfg(test)]
+        connect_timeout,
+    })
 }
 
 pub(super) fn set_upstream_proxy_bypass_hosts(raw: Option<&str>) -> String {
@@ -1653,10 +1789,8 @@ pub(super) fn reload_from_env() {
         env_usize_or(ENV_ACCOUNT_MAX_INFLIGHT, DEFAULT_ACCOUNT_MAX_INFLIGHT),
         Ordering::Relaxed,
     );
-    ACCOUNT_MAX_CONCURRENT.store(DEFAULT_ACCOUNT_MAX_CONCURRENT, Ordering::Relaxed);
-    CLIENT_IP_SINGLE_MAX_CONCURRENT
-        .store(DEFAULT_CLIENT_IP_SINGLE_MAX_CONCURRENT, Ordering::Relaxed);
-    CLIENT_IP_MULTI_MAX_CONCURRENT.store(DEFAULT_CLIENT_IP_MULTI_MAX_CONCURRENT, Ordering::Relaxed);
+    // Local admission limits are persisted settings, not environment overrides.
+    // Keep their live values throughout reload so requests cannot bypass them.
     STRICT_REQUEST_PARAM_ALLOWLIST.store(
         env_bool_or(
             ENV_STRICT_REQUEST_PARAM_ALLOWLIST,
@@ -2446,7 +2580,7 @@ fn parse_model_forward_rule_line(line: &str) -> Option<(&str, &str)> {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_model_forward_rules(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_model_forward_rules(raw: &str) -> Result<String, String> {
     let mut lines = Vec::new();
     for (idx, line) in raw.lines().enumerate() {
         let trimmed = line.trim();
@@ -2600,6 +2734,10 @@ fn normalize_model_slug(raw: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
+pub(crate) fn normalize_free_account_max_model(raw: &str) -> Result<String, String> {
+    normalize_model_slug(raw)
+}
+
 pub(crate) fn is_obsolete_free_account_max_model(raw: &str) -> bool {
     let normalized = raw.trim().to_ascii_lowercase();
     OBSOLETE_FREE_ACCOUNT_MAX_MODELS.contains(&normalized.as_str())
@@ -2650,7 +2788,7 @@ fn normalize_compact_api_path(raw: &str) -> Result<String, String> {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_originator(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_originator(raw: &str) -> Result<String, String> {
     let normalized = raw.trim();
     if normalized.is_empty() {
         return Err("originator is required".to_string());
@@ -2672,7 +2810,7 @@ fn normalize_originator(raw: &str) -> Result<String, String> {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_codex_user_agent_version(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_codex_user_agent_version(raw: &str) -> Result<String, String> {
     let normalized = raw.trim();
     if normalized.is_empty() {
         return Err("codexUserAgentVersion is required".to_string());
@@ -2804,7 +2942,7 @@ fn sanitize_header_value(raw: String) -> String {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_residency_requirement(raw: Option<&str>) -> Result<Option<String>, String> {
+pub(crate) fn normalize_residency_requirement(raw: Option<&str>) -> Result<Option<String>, String> {
     let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
@@ -2874,7 +3012,7 @@ fn parse_upstream_proxy_bypass_hosts(raw: &str) -> Vec<String> {
         })
 }
 
-fn normalize_upstream_proxy_bypass_hosts(raw: Option<&str>) -> String {
+pub(crate) fn normalize_upstream_proxy_bypass_hosts(raw: Option<&str>) -> String {
     raw.map(parse_upstream_proxy_bypass_hosts)
         .unwrap_or_default()
         .join("\n")
@@ -2947,6 +3085,10 @@ fn parse_proxy_list_env() -> Vec<String> {
     let Some(raw) = env_non_empty(ENV_PROXY_LIST) else {
         return Vec::new();
     };
+    parse_proxy_list(&raw)
+}
+
+fn parse_proxy_list(raw: &str) -> Vec<String> {
     raw.split(|ch| ch == ',' || ch == ';' || ch == '\n' || ch == '\r')
         .map(str::trim)
         .filter(|part| !part.is_empty())

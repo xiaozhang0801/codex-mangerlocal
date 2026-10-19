@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 use tokio::runtime::{Builder, Runtime};
@@ -302,21 +302,33 @@ impl Connection {
     }
 }
 
-static SQLITE_RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
+static SQLITE_RUNTIME: StdMutex<Option<Arc<Runtime>>> = StdMutex::new(None);
 
 fn sqlite_runtime() -> Result<Arc<Runtime>> {
-    if let Some(runtime) = SQLITE_RUNTIME.get() {
+    initialize_sqlite_runtime(&SQLITE_RUNTIME, || {
+        Builder::new_multi_thread().enable_all().build()
+    })
+}
+
+fn initialize_sqlite_runtime(
+    slot: &StdMutex<Option<Arc<Runtime>>>,
+    build: impl FnOnce() -> std::io::Result<Runtime>,
+) -> Result<Arc<Runtime>> {
+    let mut shared = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(runtime) = shared.as_ref() {
         return Ok(Arc::clone(runtime));
     }
-    let runtime = Arc::new(
-        Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(Error::from)?,
-    );
-    let _ = SQLITE_RUNTIME.set(Arc::clone(&runtime));
-    Ok(SQLITE_RUNTIME.get().map(Arc::clone).unwrap_or(runtime))
+    // Serialize construction as well as publication. Building before a
+    // OnceLock::set allows losing callers to drop a redundant runtime inside
+    // an async context, where Tokio's blocking shutdown panics. A build error
+    // leaves the slot empty and is returned without an automatic retry.
+    let runtime = Arc::new(build().map_err(Error::from)?);
+    *shared = Some(Arc::clone(&runtime));
+    Ok(runtime)
 }
+
+#[cfg(test)]
+mod runtime_tests;
 
 fn block_on_runtime<F>(rt: &Runtime, future: F) -> F::Output
 where

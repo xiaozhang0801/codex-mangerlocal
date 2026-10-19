@@ -1,11 +1,18 @@
-import type { RequestOptions } from "../utils/request";
+import type { RequestOptions, ResponseReader } from "../utils/request";
+import { requestWasNotSent, throwIfAborted } from "../utils/request";
 import { getAppErrorMessage, unwrapRpcPayload } from "./transport-errors";
+import {
+  rpcAllowsReplay,
+  rpcRequestOptions,
+  rpcResultUnknown,
+} from "./rpc-retry-policy";
 
-export type JsonRpcFetcher = (
+export type JsonRpcFetcher = <T>(
   url: string,
-  init?: RequestInit,
-  options?: RequestOptions
-) => Promise<Response>;
+  init: RequestInit,
+  options: RequestOptions,
+  readResponse: ResponseReader<T>
+) => Promise<T>;
 
 export function buildJsonRpcRequestBody(
   method: string,
@@ -27,27 +34,24 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 async function readRpcHttpErrorPayload(response: Response): Promise<unknown> {
   if (typeof response.text === "function") {
+    const raw = await response.text();
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return null;
+    }
     try {
-      const raw = await response.text();
-      const trimmed = raw.trim();
-      if (!trimmed) {
-        return null;
-      }
-      try {
-        return JSON.parse(trimmed) as unknown;
-      } catch {
-        return trimmed;
-      }
+      return JSON.parse(trimmed) as unknown;
     } catch {
-      // Ignore text parsing failure and fall through to json().
+      return trimmed;
     }
   }
 
   if (typeof response.json === "function") {
     try {
       return (await response.json()) as unknown;
-    } catch {
-      return null;
+    } catch (error) {
+      if (error instanceof SyntaxError) return null;
+      throw error;
     }
   }
 
@@ -101,25 +105,59 @@ export async function postJsonRpc<T>(
   params: Record<string, unknown> = {},
   options: RequestOptions = {}
 ): Promise<T> {
-  const response = await fetcher(
-    url,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: buildJsonRpcRequestBody(rpcMethod, params),
-    },
-    options
-  );
+  // An already-cancelled request is known not to have been sent.
+  throwIfAborted(options.signal);
+  const allowsReplay = rpcAllowsReplay(rpcMethod);
+  const body = buildJsonRpcRequestBody(rpcMethod, params);
+  let decoded: { response: Response; payload: unknown };
+  try {
+    decoded = await fetcher(
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        // 307/308 would otherwise replay the POST inside fetch itself.
+        redirect: "error",
+      },
+      rpcRequestOptions(rpcMethod, options),
+      async (response) => {
+        const payload = response.ok
+          ? (await response.json()) as unknown
+          : await readRpcHttpErrorPayload(response);
+        if (response.ok) {
+          const record = asRecord(payload);
+          if (!record || !("result" in record || "error" in record)) {
+            throw new Error("Unexpected RPC response (missing result/error)");
+          }
+        }
+        return { response, payload };
+      }
+    );
+    // Readers only decode. Never redirect or publish a late result after cancel.
+    throwIfAborted(options.signal);
+  } catch (error) {
+    // Browser fetch does not expose whether a connection error happened before
+    // or after the server committed. Never infer safe replay from its message.
+    if (!allowsReplay && !requestWasNotSent(error)) {
+      throw rpcResultUnknown(rpcMethod, getAppErrorMessage(error), error);
+    }
+    throw error;
+  }
 
+  const { response, payload } = decoded;
   if (!response.ok) {
-    const payload = await readRpcHttpErrorPayload(response);
     if (response.status === 401 && isWebAuthRequiredPayload(payload)) {
       redirectToWebLoginIfBrowser();
     }
-    throw new Error(
-      buildRpcHttpErrorMessage(response.status, payload, response.headers)
+    const message = buildRpcHttpErrorMessage(
+      response.status,
+      payload,
+      response.headers
     );
+    throw allowsReplay ? new Error(message) : rpcResultUnknown(rpcMethod, message);
   }
 
-  return unwrapRpcPayload<T>((await response.json()) as unknown);
+  // A complete business error is definitive; do not label it as a lost result.
+  return unwrapRpcPayload<T>(payload);
 }

@@ -107,3 +107,11 @@ test("getAppErrorMessage 会把旧的网络抖动文案统一收敛为连接中�
     "连接中断（可能是网络波动或客户端主动取消）"
   );
 });
+test("unknown write results cannot trigger command alias fallback", () => {
+  assert.equal(transportErrors.isCommandMissingError(new Error("rpc_result_unknown: apikey/create result unknown: HTTP 404 not found")), false);
+});
+
+test("unknown write refresh guidance survives generic timeout message normalization", () => {
+  const message = "rpc_result_unknown: apikey/create 请求结果未知，请先刷新核实 (stream idle timeout)";
+  assert.equal(transportErrors.getAppErrorMessage(new Error(message)), message);
+});

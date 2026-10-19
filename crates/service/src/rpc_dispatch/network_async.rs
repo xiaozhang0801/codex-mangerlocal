@@ -114,6 +114,220 @@ pub(crate) async fn try_handle_network_request_async(
 mod tests {
     use super::*;
 
+    struct StorageEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl StorageEnvironment {
+        fn publish(path: &std::path::Path) -> Self {
+            let previous = Self(
+                [
+                    "CODEXMANAGER_STORAGE_BACKEND",
+                    "CODEXMANAGER_DATABASE_URL",
+                    "CODEXMANAGER_DB_PATH",
+                ]
+                .into_iter()
+                .map(|key| (key, std::env::var_os(key)))
+                .collect(),
+            );
+            std::env::set_var("CODEXMANAGER_STORAGE_BACKEND", "sqlite");
+            std::env::remove_var("CODEXMANAGER_DATABASE_URL");
+            // Select the SQLite backend before publishing its database path.
+            std::env::set_var("CODEXMANAGER_DB_PATH", path);
+            previous
+        }
+    }
+
+    impl Drop for StorageEnvironment {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    struct PermissionDatabase {
+        path: std::path::PathBuf,
+    }
+
+    impl PermissionDatabase {
+        fn new_in(directory: &std::path::Path) -> Self {
+            static NEXT_FIXTURE: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("fixture timestamp")
+                .as_nanos();
+            let sequence = NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = directory.join(format!(
+                "async-rpc-permissions-{}-{timestamp}-{sequence}.db",
+                std::process::id()
+            ));
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .expect("exclusively reserve permission database");
+            // Core storage takes an explicit path and does not expose this
+            // incomplete database through the process-wide environment.
+            let storage = codexmanager_core::storage::Storage::open(&path)
+                .expect("open private permission database");
+            storage
+                .init()
+                .expect("initialize private permission database");
+            storage
+                .smoke_check_model_catalog_v2()
+                .expect("check private permission model catalog");
+            storage
+                .set_app_setting("web.auth.mode", "accounts", 1)
+                .expect("configure private permission database");
+            drop(storage);
+            Self { path }
+        }
+
+        fn publish(&self) -> StorageEnvironment {
+            StorageEnvironment::publish(&self.path)
+        }
+    }
+
+    fn migration_lock_path(path: &std::path::Path) -> std::path::PathBuf {
+        std::path::PathBuf::from(format!("{}.model-catalog-v2.lock", path.display()))
+    }
+
+    fn hold_migration_lock(path: &std::path::Path) -> std::fs::File {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(migration_lock_path(path))
+            .expect("exclusively create fixture migration lock");
+        file.try_lock().expect("hold fixture migration lock");
+        file
+    }
+
+    #[test]
+    fn network_permission_fixture_is_ready_before_concurrent_initialization() {
+        const CHILD_TEST: &str = "CODEXMANAGER_NETWORK_PERMISSION_FIXTURE_CHILD_TEST";
+        const CHILD_DIRECTORY: &str = "CODEXMANAGER_NETWORK_PERMISSION_FIXTURE_CHILD_DIRECTORY";
+        let current = std::thread::current();
+        let test_name = current.name().expect("named test thread");
+        if std::env::var(CHILD_TEST).as_deref() != Ok(test_name) {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("child fixture timestamp")
+                .as_nanos();
+            let directory = std::env::temp_dir().join(format!(
+                "async-rpc-permission-controls-{}-{timestamp}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&directory).expect("create parent-owned permission directory");
+            // A fresh child has no initialized-path cache or detached startup
+            // task that could prepare either control before its first observer.
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current test executable"),
+            )
+            .args(["--exact", test_name, "--nocapture"])
+            .env(CHILD_TEST, test_name)
+            .env(CHILD_DIRECTORY, &directory)
+            .output();
+            let output = output.unwrap_or_else(|error| {
+                panic!(
+                    "could not start {test_name}: {error}; fixture retained at {}",
+                    directory.display()
+                )
+            });
+            assert!(
+                output.status.success(),
+                "{test_name} child status: {}; fixture retained at {}\n{}\n{}",
+                output.status,
+                directory.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            // Successful child exit closes every pool handle before one cleanup.
+            // Failure keeps the owned directory available for diagnosis.
+            std::fs::remove_dir_all(&directory).unwrap_or_else(|error| {
+                panic!("cleanup of {} failed: {error}", directory.display())
+            });
+            return;
+        }
+
+        let _guard = crate::test_env_guard();
+        let directory = std::path::PathBuf::from(
+            std::env::var_os(CHILD_DIRECTORY).expect("parent-owned permission directory"),
+        );
+        let incomplete_path = directory.join("incomplete.db");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&incomplete_path)
+            .expect("exclusively reserve incomplete control");
+        let incomplete_lock = hold_migration_lock(&incomplete_path);
+        {
+            let _restore = StorageEnvironment::publish(&incomplete_path);
+            let error = crate::storage_helpers::initialize_storage()
+                .expect_err("an incomplete database must require the held migration lock");
+            assert!(
+                error.starts_with("model catalog migration lock is held by another process ("),
+                "{error}"
+            );
+            assert!(
+                error.contains(&migration_lock_path(&incomplete_path).display().to_string()),
+                "{error}"
+            );
+            assert_eq!(std::fs::metadata(&incomplete_path).unwrap().len(), 0);
+        }
+        drop(incomplete_lock);
+
+        let previous_path = std::env::var_os("CODEXMANAGER_DB_PATH");
+        let ready = PermissionDatabase::new_in(&directory);
+        assert_eq!(
+            std::env::var_os("CODEXMANAGER_DB_PATH"),
+            previous_path,
+            "private preparation must not publish its database path"
+        );
+        let ready_lock = hold_migration_lock(&ready.path);
+        {
+            let _restore = ready.publish();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let observers: Vec<_> = (0..4)
+                .map(|_| {
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        crate::storage_helpers::initialize_storage()
+                            .expect("initialize an already prepared permission database");
+                        crate::storage_helpers::open_storage()
+                            .expect("open prepared permission database")
+                            .get_app_setting("web.auth.mode")
+                            .expect("read prepared permission mode")
+                    })
+                })
+                .collect();
+            let results: Vec<_> = observers
+                .into_iter()
+                .map(|observer| observer.join())
+                .collect();
+            for result in results {
+                assert_eq!(
+                    result.expect("permission observer completed").as_deref(),
+                    Some("accounts")
+                );
+            }
+            let competing_lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(migration_lock_path(&ready.path))
+                .expect("open competing migration lock handle");
+            assert!(matches!(
+                competing_lock.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+        }
+        drop(ready_lock);
+    }
+
     fn price_sync_request(params: Option<serde_json::Value>) -> JsonRpcRequest {
         JsonRpcRequest {
             id: 1.into(),
@@ -167,39 +381,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn network_methods_preserve_member_denials_before_side_effects() {
         let _guard = crate::test_env_guard();
-        struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                for (key, value) in self.0.drain(..) {
-                    match value {
-                        Some(value) => std::env::set_var(key, value),
-                        None => std::env::remove_var(key),
-                    }
-                }
-            }
-        }
-        let _restore = Restore(
-            [
-                "CODEXMANAGER_DB_PATH",
-                "CODEXMANAGER_DATABASE_URL",
-                "CODEXMANAGER_STORAGE_BACKEND",
-            ]
-            .into_iter()
-            .map(|key| (key, std::env::var_os(key)))
-            .collect(),
-        );
-        let path = std::env::temp_dir().join(format!(
-            "async-rpc-permissions-{}.db",
-            rand::random::<u64>()
-        ));
-        std::env::set_var("CODEXMANAGER_DB_PATH", &path);
-        std::env::set_var("CODEXMANAGER_STORAGE_BACKEND", "sqlite");
-        std::env::remove_var("CODEXMANAGER_DATABASE_URL");
+        let database = PermissionDatabase::new_in(&std::env::temp_dir());
+        let _restore = database.publish();
         crate::storage_helpers::initialize_storage().unwrap();
-        crate::storage_helpers::open_storage()
-            .unwrap()
-            .set_app_setting("web.auth.mode", "accounts", 1)
-            .unwrap();
         let actor = crate::RpcActor::from_parts(Some("member"), Some("fixture-member"));
         for method in [
             "account/login/start",

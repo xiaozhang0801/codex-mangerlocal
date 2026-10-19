@@ -516,6 +516,7 @@ pub(crate) use request_log_payload::{
     set_request_log_payload_preview_enabled, set_request_log_payload_redaction_enabled,
     store_client_request_log_payload, OutboundPayloadContext,
 };
+pub(crate) use route_hint::normalize_route_strategy;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::async_upstream_client_for_aggregate_url;
@@ -535,6 +536,13 @@ pub(crate) use runtime_config::{
     prepare_upstream_client_for_account,
 };
 pub(crate) use runtime_config::{front_proxy_max_body_bytes, front_proxy_zstd_max_body_bytes};
+pub(crate) use runtime_config::{
+    normalize_codex_user_agent_version, normalize_free_account_max_model,
+    normalize_gateway_user_agent, normalize_model_forward_rules, normalize_originator,
+    normalize_residency_requirement, normalize_sse_keepalive_interval_ms,
+    normalize_upstream_proxy_bypass_hosts, prepare_upstream_proxy_url,
+    prepare_upstream_proxy_url_with_env,
+};
 use runtime_config::{
     prepare_upstream_client_for_aggregate_api_candidate, request_gate_wait_timeout,
     trace_body_preview_max_bytes, upstream_stream_timeout, upstream_total_timeout,
@@ -566,6 +574,14 @@ use upstream::proxy::proxy_validated_request;
 /// # 返回
 /// 无
 pub(crate) fn reload_runtime_config_from_env() {
+    reload_runtime_config_from_env_inner(false);
+}
+
+pub(crate) fn reload_runtime_config_from_env_preserving_route_strategy() {
+    reload_runtime_config_from_env_inner(true);
+}
+
+fn reload_runtime_config_from_env_inner(preserve_route_strategy: bool) {
     runtime_config::reload_from_env();
     selection::reload_from_env();
     request_gate::clear_runtime_state();
@@ -573,7 +589,11 @@ pub(crate) fn reload_runtime_config_from_env() {
     request_activity::clear_request_activity_for_tests();
     cooldown::clear_runtime_state();
     route_quality::clear_runtime_state();
-    route_hint::reload_from_env();
+    if preserve_route_strategy {
+        route_hint::reload_from_env_preserving_strategy();
+    } else {
+        route_hint::reload_from_env();
+    }
     upstream::config::reload_from_env();
     trace_log::reload_from_env();
     http_bridge::reload_from_env();
@@ -1004,10 +1024,7 @@ pub(crate) fn current_websocket_proxy_url_for_account(
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn set_upstream_proxy_url(proxy_url: Option<&str>) -> Result<Option<String>, String> {
-    let applied = runtime_config::set_upstream_proxy_url(proxy_url)?;
-    // 中文注释：用量轮询和 token 刷新复用独立 HTTP client，代理变更后同步重建，避免继续走旧网络路径。
-    crate::usage_http::reload_usage_http_client_from_env();
-    Ok(applied)
+    runtime_config::set_upstream_proxy_url(proxy_url)
 }
 
 pub(crate) fn set_upstream_proxy_bypass_hosts(raw: Option<&str>) -> String {

@@ -137,8 +137,10 @@ impl ResponsesFromAnthropicSseReader {
                         return Ok(mapped);
                     }
                 }
+                Ok(UpstreamSseFramePumpItem::Error(error)) => {
+                    return Ok(self.fail_stream(error));
+                }
                 Ok(UpstreamSseFramePumpItem::Eof)
-                | Ok(UpstreamSseFramePumpItem::Error(_))
                 | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     let finished = self.finish_stream();
                     if !finished.is_empty() {
@@ -150,6 +152,11 @@ impl ResponsesFromAnthropicSseReader {
                     return Ok(finished);
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_upstream_activity = self.last_upstream_activity.max(
+                        self.upstream
+                            .last_activity()
+                            .unwrap_or(self.last_upstream_activity),
+                    );
                     if stream_idle_timed_out(self.last_upstream_activity) {
                         let finished = self.finish_stream();
                         if !finished.is_empty() {
@@ -166,6 +173,34 @@ impl ResponsesFromAnthropicSseReader {
                 }
             }
         }
+    }
+
+    fn fail_stream(&mut self, message: String) -> Vec<u8> {
+        if self.state.completed {
+            return Vec::new();
+        }
+        let mut out = String::new();
+        self.ensure_response_started(&mut out);
+        self.state.completed = true;
+        self.publish_usage();
+        if let Ok(mut usage) = self.usage_collector.lock() {
+            usage.explicit_failure = true;
+            usage.completed_successfully = false;
+        }
+        let mut response = self.response_payload("failed");
+        response["error"] = json!({
+            "type": "server_error",
+            "code": "upstream_stream_read_error",
+            "message": message,
+        });
+        append_sse_event(
+            &mut out,
+            "response.failed",
+            &json!({
+                "type": "response.failed", "response": response,
+            }),
+        );
+        out.into_bytes()
     }
 
     fn process_sse_frame(&mut self, lines: &[String]) -> Vec<u8> {

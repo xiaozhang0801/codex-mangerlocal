@@ -36,6 +36,9 @@ impl Drop for EnvGuard {
 
 #[test]
 fn incomplete_remote_configuration_cannot_fall_back_to_sqlite() {
+    if crate::loopback_proxy_test::run_proxy_control_in_isolated_process() {
+        return;
+    }
     let _guard = crate::test_env_guard();
     let _backend = EnvGuard::set("CODEXMANAGER_STORAGE_BACKEND", "mysql");
     let _url = EnvGuard::set("CODEXMANAGER_DATABASE_URL", "");
@@ -166,6 +169,11 @@ fn model_catalog_preflight_allows_case_conflicting_legacy_slugs() {
 
 #[test]
 fn initialize_storage_migrates_case_conflicting_legacy_slugs() {
+    // This fixture must remain a legacy schema until initialize_storage runs.
+    // Keep it outside the parent process shared DB environment.
+    if crate::loopback_proxy_test::run_proxy_control_in_isolated_process() {
+        return;
+    }
     let _env_lock = crate::test_env_guard();
     let db_path = unique_db_path("codexmanager-model-catalog-duplicate-migration");
     let conn = Connection::open(&db_path).expect("open database");

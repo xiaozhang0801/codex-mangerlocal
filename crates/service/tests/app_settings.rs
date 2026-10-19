@@ -403,54 +403,54 @@ fn app_settings_roundtrip_gateway_user_agent_and_validates_header_value() {
 }
 
 #[test]
-fn app_settings_remove_requires_openai_auth_defaults_on_and_persists_updates() {
+fn app_settings_remove_requires_openai_auth_is_disabled_and_ignores_legacy_updates() {
     with_temp_db(|db_path| {
         let defaults = codexmanager_service::app_settings_get().expect("read default settings");
-        assert_eq!(defaults["removeRequiresOpenaiAuth"], true);
+        assert_eq!(defaults["removeRequiresOpenaiAuth"], false);
         let storage = Storage::open(db_path).expect("open storage");
+        let setting_key =
+            codexmanager_service::APP_SETTING_CODEX_PROFILE_REMOVE_REQUIRES_OPENAI_AUTH_KEY;
         assert_eq!(
             storage
-                .get_app_setting(
-                    codexmanager_service::APP_SETTING_CODEX_PROFILE_REMOVE_REQUIRES_OPENAI_AUTH_KEY
-                )
+                .get_app_setting(setting_key)
                 .expect("read default persisted setting"),
             None
         );
-        drop(storage);
 
         let enabled = codexmanager_service::app_settings_set(Some(&json!({
             "removeRequiresOpenaiAuth": true
         })))
-        .expect("enable requires_openai_auth removal");
-        assert_eq!(enabled["removeRequiresOpenaiAuth"], true);
-
-        let storage = Storage::open(db_path).expect("open storage");
+        .expect("accept legacy enable request");
+        assert_eq!(enabled["removeRequiresOpenaiAuth"], false);
         assert_eq!(
             storage
-                .get_app_setting(
-                    codexmanager_service::APP_SETTING_CODEX_PROFILE_REMOVE_REQUIRES_OPENAI_AUTH_KEY
-                )
-                .expect("read persisted setting")
-                .as_deref(),
-            Some("1")
+                .get_app_setting(setting_key)
+                .expect("read ignored legacy setting"),
+            None
         );
-        drop(storage);
 
-        let disabled = codexmanager_service::app_settings_set(Some(&json!({
-            "removeRequiresOpenaiAuth": false
-        })))
-        .expect("disable requires_openai_auth removal");
-        assert_eq!(disabled["removeRequiresOpenaiAuth"], false);
+        storage
+            .set_app_setting(setting_key, "1", now_ts())
+            .expect("seed historical enabled setting");
         assert_eq!(
-            Storage::open(db_path)
-                .unwrap()
-                .get_app_setting(
-                    codexmanager_service::APP_SETTING_CODEX_PROFILE_REMOVE_REQUIRES_OPENAI_AUTH_KEY
-                )
-                .unwrap()
-                .as_deref(),
-            Some("0")
+            codexmanager_service::app_settings_get().unwrap()["removeRequiresOpenaiAuth"],
+            false
         );
+
+        for legacy_value in [true, false] {
+            let updated = codexmanager_service::app_settings_set(Some(&json!({
+                "removeRequiresOpenaiAuth": legacy_value
+            })))
+            .expect("accept legacy authentication setting");
+            assert_eq!(updated["removeRequiresOpenaiAuth"], false);
+            assert_eq!(
+                storage
+                    .get_app_setting(setting_key)
+                    .expect("read preserved historical setting")
+                    .as_deref(),
+                Some("1")
+            );
+        }
         assert_eq!(
             codexmanager_service::app_settings_get().unwrap()["removeRequiresOpenaiAuth"],
             false
@@ -960,6 +960,17 @@ fn sse_keepalive_app_settings_respect_process_env_and_preserve_requested_storage
                     .and_then(|value| value.as_u64()),
                 Some(15_000),
                 "snapshot must report the effective env-backed interval"
+            );
+            assert!(
+                codexmanager_service::set_gateway_sse_keepalive_enabled(false)
+                    .expect("persist requested enabled value through standalone setter"),
+                "standalone setter must report the effective env-backed enabled value"
+            );
+            assert_eq!(
+                codexmanager_service::set_gateway_sse_keepalive_interval_ms(42_000)
+                    .expect("persist requested interval through standalone setter"),
+                15_000,
+                "standalone setter must report the effective env-backed interval"
             );
 
             let storage = Storage::open(db_path).expect("open storage");

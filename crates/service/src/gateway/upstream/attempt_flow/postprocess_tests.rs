@@ -857,9 +857,8 @@ fn chatgpt_challenge_on_last_candidate_retries_without_same_account_failover() {
 #[test]
 fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() {
     let _guard = crate::test_env_guard();
-    std::env::remove_var("CODEXMANAGER_UPSTREAM_PROXY_URL");
-    std::env::remove_var("CODEXMANAGER_PROXY_LIST");
-    crate::gateway::reload_runtime_config_from_env();
+    let _loopback = crate::loopback_proxy_test::LoopbackProxyGuard::enter(&_guard);
+    let fixture_started_at = std::time::Instant::now();
 
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
@@ -875,10 +874,17 @@ fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() 
     let hit_count = Arc::new(AtomicUsize::new(0));
     let hit_count_thread = Arc::clone(&hit_count);
     let join = thread::spawn(move || {
-        let mut request = server
+        let recv_started_at = std::time::Instant::now();
+        let request = server
             .recv_timeout(Duration::from_secs(2))
-            .expect("receive upstream request")
-            .expect("request present");
+            .expect("receive upstream request");
+        eprintln!(
+            "r03_fixture_timing phase=mock_receive elapsed_ms={} since_fixture_ms={} received={}",
+            recv_started_at.elapsed().as_millis(),
+            fixture_started_at.elapsed().as_millis(),
+            request.is_some()
+        );
+        let mut request = request.expect("request present");
         let mut body = Vec::new();
         std::io::Read::read_to_end(request.as_reader(), &mut body).expect("read request body");
         hit_count_thread.fetch_add(1, Ordering::SeqCst);
@@ -892,7 +898,13 @@ fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() 
         request.respond(response).expect("respond first");
     });
 
+    let client_started_at = std::time::Instant::now();
     let client = reqwest::Client::new();
+    eprintln!(
+        "r03_fixture_timing phase=client_build elapsed_ms={} since_fixture_ms={}",
+        client_started_at.elapsed().as_millis(),
+        fixture_started_at.elapsed().as_millis()
+    );
     let incoming_headers = IncomingHeaderSnapshot::default();
     let request_ctx = UpstreamRequestContext {
         request_path: "/v1/responses",
@@ -901,6 +913,11 @@ fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() 
         capture: None,
     };
     let body = Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
+    let send_started_at = std::time::Instant::now();
+    eprintln!(
+        "r03_fixture_timing phase=send_start since_fixture_ms={}",
+        fixture_started_at.elapsed().as_millis()
+    );
     let upstream = crate::gateway::run_upstream_io(super::super::transport::send_upstream_request(
         &client,
         &reqwest::Method::POST,
@@ -916,6 +933,13 @@ fn chatgpt_cloudflare_challenge_directly_failovers_without_same_account_retry() 
     ))
     .expect("gateway async test runtime")
     .expect("send initial request");
+    assert_eq!(upstream.status(), reqwest::StatusCode::FORBIDDEN);
+    eprintln!(
+        "r03_fixture_timing phase=send_and_runtime elapsed_ms={} since_fixture_ms={} status={}",
+        send_started_at.elapsed().as_millis(),
+        fixture_started_at.elapsed().as_millis(),
+        upstream.status().as_u16()
+    );
 
     let authorization = oauth_authorization(auth_token.as_str());
     let decision = crate::gateway::run_upstream_io(process_upstream_post_retry_flow(

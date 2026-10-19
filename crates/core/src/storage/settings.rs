@@ -19,7 +19,39 @@ fn delete_app_setting_sql() -> &'static str {
     "DELETE FROM app_settings WHERE key = ?1"
 }
 
+fn set_app_setting_sql() -> &'static str {
+    "INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?1, ?2, ?3)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at"
+}
+
 impl Storage {
+    /// Commit exactly the supplied setting changes in one transaction.
+    /// `None` removes a setting; unrelated keys are never read or rewritten.
+    pub fn save_app_settings(
+        &self,
+        changes: &[(String, Option<String>)],
+        updated_at: i64,
+    ) -> rusqlite::Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for (key, value) in changes {
+            match value {
+                Some(value) => {
+                    tx.execute(set_app_setting_sql(), params![key, value, updated_at])?;
+                }
+                None => {
+                    tx.execute(delete_app_setting_sql(), [key])?;
+                }
+            }
+        }
+        tx.commit()
+    }
+
     /// 函数 `list_app_settings`
     ///
     /// 作者: gaohongshun
@@ -77,14 +109,8 @@ impl Storage {
     /// # 返回
     /// 返回函数执行结果
     pub fn set_app_setting(&self, key: &str, value: &str, updated_at: i64) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "INSERT INTO app_settings (key, value, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET
-               value = excluded.value,
-               updated_at = excluded.updated_at",
-            params![key, value, updated_at],
-        )?;
+        self.conn
+            .execute(set_app_setting_sql(), params![key, value, updated_at])?;
         Ok(())
     }
 

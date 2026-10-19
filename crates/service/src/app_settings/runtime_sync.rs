@@ -1,3 +1,4 @@
+use super::service::{publish_service_bind_mode_from_storage, DEFAULT_ADDR};
 use crate::gateway;
 use crate::usage_refresh;
 use std::collections::HashMap;
@@ -5,7 +6,7 @@ use std::collections::HashMap;
 use super::{
     apply_env_overrides_to_process, list_app_settings_map, normalize_optional_text,
     persisted_env_overrides_missing_process_env, reload_runtime_after_env_override_apply,
-    save_persisted_app_setting, set_service_bind_mode, BackgroundTasksInput, QuotaGuardInput,
+    save_persisted_app_setting, BackgroundTasksInput, QuotaGuardInput,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_CONCURRENT_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
     APP_SETTING_GATEWAY_CLIENT_IP_MULTI_MAX_CONCURRENT_KEY,
@@ -21,7 +22,8 @@ use super::{
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY, APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_KEY,
-    APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY, SERVICE_BIND_MODE_SETTING_KEY,
+    APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY, APP_SETTING_SERVICE_ADDR_KEY,
+    SERVICE_BIND_MODE_SETTING_KEY,
 };
 
 /// 函数 `process_env_has_value`
@@ -125,6 +127,13 @@ fn migrate_legacy_compact_model_forward_rules(settings: &HashMap<String, String>
 /// # 返回
 /// 无
 pub fn sync_runtime_settings_from_storage() {
+    let _write = super::api::lock_settings_writes();
+    sync_runtime_settings_from_storage_unlocked();
+}
+
+/// The caller holds the settings write lock through synchronization and any
+/// response snapshot. Runtime publication must not call a persisted setter.
+pub(crate) fn sync_runtime_settings_from_storage_unlocked() {
     let mut settings = list_app_settings_map();
     if migrate_legacy_compact_model_forward_rules(&settings) {
         settings = list_app_settings_map();
@@ -137,7 +146,11 @@ pub fn sync_runtime_settings_from_storage() {
 
     if !process_env_has_value("CODEXMANAGER_SERVICE_ADDR") {
         if let Some(mode) = settings.get(SERVICE_BIND_MODE_SETTING_KEY) {
-            let _ = set_service_bind_mode(mode);
+            let addr = settings
+                .get(APP_SETTING_SERVICE_ADDR_KEY)
+                .map(String::as_str)
+                .unwrap_or(DEFAULT_ADDR);
+            publish_service_bind_mode_from_storage(mode, addr);
         }
     }
     if !process_env_has_value("CODEXMANAGER_ROUTE_STRATEGY") {

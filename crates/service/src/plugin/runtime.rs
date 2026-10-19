@@ -555,5 +555,9 @@ fn json_from_dynamic(value: Dynamic) -> Value {
 }
 
 #[cfg(test)]
+#[path = "runtime_test_support.rs"]
+pub(super) mod test_support;
+
+#[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;

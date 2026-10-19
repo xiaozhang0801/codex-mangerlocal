@@ -1,6 +1,6 @@
 use crate::storage_helpers::{seaorm_block_on, seaorm_enabled};
 use codexmanager_core::storage::now_ts;
-use codexmanager_storage_seaorm::{AppSetting, SettingsRepository};
+use codexmanager_storage_seaorm::SettingsRepository;
 use std::collections::HashMap;
 
 use super::normalize_optional_text;
@@ -84,32 +84,42 @@ pub(crate) fn get_persisted_app_setting(key: &str) -> Option<String> {
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn save_persisted_app_setting(key: &str, value: Option<&str>) -> Result<(), String> {
+    let text = normalize_optional_text(value).unwrap_or_default();
+    save_persisted_app_settings(&[(key.to_owned(), Some(text))])
+}
+
+/// Commit only the prepared keys. The fallback cache changes after commit.
+pub(crate) fn save_persisted_app_settings(
+    changes: &[(String, Option<String>)],
+) -> Result<(), String> {
+    if changes.is_empty() {
+        return Ok(());
+    }
     if seaorm_enabled() {
-        let key = key.to_owned();
-        let text = normalize_optional_text(value).unwrap_or_default();
-        let record = AppSetting {
-            key: key.clone(),
-            value: text.clone(),
-            updated_at: now_ts(),
-        };
+        let _io = REMOTE_SETTINGS_IO.lock().unwrap_or_else(|e| e.into_inner());
+        let owned = changes.to_vec();
         seaorm_block_on(move |storage| async move {
-            SettingsRepository::set(storage.connection(), record)
+            SettingsRepository::save(storage.connection(), &owned, now_ts())
                 .await
-                .map_err(|_| "save remote setting failed".to_owned())
+                .map_err(|err| format!("save remote settings failed: {err}"))
         })?;
-        REMOTE_SETTINGS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key, text);
+        let mut cached = REMOTE_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+        for (key, value) in changes {
+            if let Some(value) = value {
+                cached.insert(key.clone(), value.clone());
+            } else {
+                cached.remove(key);
+            }
+        }
         return Ok(());
     }
     let storage = open_app_settings_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let text = normalize_optional_text(value).unwrap_or_default();
     storage
-        .set_app_setting(key, &text, now_ts())
-        .map_err(|err| format!("save {key} failed: {err}"))?;
-    Ok(())
+        .save_app_settings(changes, now_ts())
+        .map_err(|err| format!("save app settings failed: {err}"))
 }
+
+static REMOTE_SETTINGS_IO: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // Preserve the last successfully loaded security settings during a transient
 // DB outage. Startup eagerly loads them and fails before binding on an error.
@@ -117,6 +127,7 @@ static REMOTE_SETTINGS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Str
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 pub(crate) fn remote_settings() -> Result<HashMap<String, String>, String> {
+    let _io = REMOTE_SETTINGS_IO.lock().unwrap_or_else(|e| e.into_inner());
     let settings = seaorm_block_on(|storage| async move {
         SettingsRepository::list(storage.connection())
             .await

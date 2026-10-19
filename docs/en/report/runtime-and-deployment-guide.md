@@ -13,28 +13,22 @@
 4. Refresh usage and confirm the account status.
 
 ## Connect through ccswitch
-If you want to use CodexManager through ccswitch or directly from Codex CLI, keep the platform key, `auth.json`, and `config.toml` aligned:
+To use CodexManager through ccswitch or Codex CLI, keep Codex's existing ChatGPT or API key authentication and put the platform key only in `config.toml`. There is no need to switch sign-in methods:
 
-1. Open `Platform Keys` and create a general-purpose key. If ccswitch / Codex CLI should keep reusing a fixed `OPENAI_API_KEY`, fill `Custom API key`; otherwise leave it empty to generate one automatically.
-2. In ccswitch, create a provider and paste the generated or custom key into the provider API key field.
-3. Write the same key into Codex CLI's `auth.json`. Do not put account `access_token`, `refresh_token`, or OpenAI login tokens here.
-4. Copy the sample `config.toml` below into the ccswitch / Codex config, then restart Codex CLI.
+1. Confirm the target Codex profile. With a custom `CODEX_HOME`, Codex CLI and CodexManager must use the same directory.
+2. Open `Platform Keys` and create a general-purpose key. For a fixed key, fill `Custom API key`; otherwise leave it empty to generate one.
+3. Apply `Use CodexManager` on the Codex Connection page, or use ccswitch to update only `config.toml` as shown below. Put the platform key in `experimental_bearer_token` and preserve the existing authentication settings.
+4. Restart Codex CLI after applying the configuration.
 
 Common paths:
 
 - macOS / Linux: `~/.codex/auth.json`, `~/.codex/config.toml`
 - Windows: `%USERPROFILE%\.codex\auth.json`, `%USERPROFILE%\.codex\config.toml`
 
-Example `auth.json`:
-
-```json
-{
-  "OPENAI_API_KEY": "replace_with_codexmanager_platform_key",
-  "auth_mode": "apikey"
-}
-```
-
-If you used a custom platform key, `OPENAI_API_KEY` must be that same custom value.
+- Account connections write `auth.json` to switch to the selected account. Direct aggregate API connections update only `config.toml`, write the selected aggregate API key to the provider field `experimental_bearer_token`, and preserve any existing `auth.json`.
+- Gateway setup preserves `auth.json` byte for byte and puts the platform key only in `config.toml`. Starting CodexManager does not write `auth.json` either.
+- Both ChatGPT and API key authentication (`auth_mode = "chatgpt"` or `"apikey"`) are supported. Gateway setup does not require `codex login`, check ChatGPT login tokens, or block configuration writes when `auth.json` is missing. It does not create an auth file.
+- The gateway provider always uses `name = "cm"` and `requires_openai_auth = true`; there is no switch to remove this field.
 
 Example `config.toml`:
 
@@ -48,14 +42,16 @@ cli_auth_credentials_store = "file"
 service_tier = "fast"
 
 [model_providers.cm]
-name = "OpenAI"
+name = "cm"
 base_url = "http://localhost:48760/v1"
 wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "replace_with_codexmanager_platform_key"
 supports_websockets = true
 ```
 
 - If you changed the service port in Settings, update `base_url` accordingly.
-- Restart Codex CLI after changing `auth.json` or `config.toml`.
+- In Docker / Web mode, use the browser-accessible Web address plus `/v1`, such as `http://10.10.121.253:48761/v1`, rather than the container's internal service address.
 
 ## Import and export
 - `Batch import`: select multiple `.json/.txt` files and import them together.

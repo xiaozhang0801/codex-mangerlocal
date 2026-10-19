@@ -775,6 +775,200 @@ fn set_upstream_proxy_url_normalizes_socks_scheme() {
 }
 
 #[test]
+fn prepare_upstream_proxy_does_not_publish_before_commit() {
+    let _guard = crate::test_env_guard();
+    let _proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "http://127.0.0.1:7101");
+    reload_from_env();
+    let original = upstream_proxy_url();
+
+    let prepared = prepare_upstream_proxy_url(Some("https://socks5://127.0.0.1:7102"))
+        .expect("prepare proxy change");
+    assert_eq!(prepared.normalized_url(), Some("socks5h://127.0.0.1:7102"));
+    assert_eq!(upstream_proxy_url(), original);
+    assert_eq!(
+        std::env::var(ENV_UPSTREAM_PROXY_URL).ok().as_deref(),
+        Some("http://127.0.0.1:7101")
+    );
+
+    // A persistence failure discards the prepared change without publishing it.
+    drop(prepared);
+    assert_eq!(upstream_proxy_url(), original);
+
+    prepare_upstream_proxy_url(Some("http://127.0.0.1:7103"))
+        .expect("prepare committed proxy")
+        .publish();
+    assert_eq!(
+        upstream_proxy_url().as_deref(),
+        Some("http://127.0.0.1:7103")
+    );
+}
+
+#[test]
+fn invalid_prepared_proxy_leaves_environment_and_runtime_unchanged() {
+    let _guard = crate::test_env_guard();
+    let _proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "http://127.0.0.1:7101");
+    reload_from_env();
+    let original = upstream_proxy_url();
+
+    assert!(prepare_upstream_proxy_url(Some("http://[invalid")).is_err());
+    assert_eq!(upstream_proxy_url(), original);
+    assert_eq!(
+        std::env::var(ENV_UPSTREAM_PROXY_URL).ok().as_deref(),
+        Some("http://127.0.0.1:7101")
+    );
+}
+
+#[test]
+fn settings_normalizers_validate_without_changing_runtime_values() {
+    let _guard = crate::test_env_guard();
+    let before = (
+        current_originator(),
+        current_codex_user_agent_version(),
+        current_gateway_user_agent_override(),
+        current_residency_requirement(),
+        current_free_account_max_model(),
+        current_model_forward_rules(),
+        upstream_proxy_bypass_hosts(),
+        current_sse_keepalive_interval_ms(),
+    );
+
+    assert_eq!(
+        normalize_originator("  next-client  ").unwrap(),
+        "next-client"
+    );
+    assert!(normalize_originator("bad\r\nvalue").is_err());
+    assert_eq!(
+        normalize_codex_user_agent_version(" 1.2.3 ").unwrap(),
+        "1.2.3"
+    );
+    assert!(normalize_codex_user_agent_version("1.2 3").is_err());
+    assert_eq!(
+        normalize_gateway_user_agent(Some(" custom/1.0 ")).unwrap(),
+        Some("custom/1.0".to_string())
+    );
+    assert!(normalize_gateway_user_agent(Some("bad\r\nvalue")).is_err());
+    assert_eq!(
+        normalize_residency_requirement(Some(" US ")).unwrap(),
+        Some("us".to_string())
+    );
+    assert!(normalize_residency_requirement(Some("unsupported")).is_err());
+    assert_eq!(
+        normalize_free_account_max_model(" GPT-5.6-LUNA ").unwrap(),
+        "gpt-5.6-luna"
+    );
+    assert!(normalize_free_account_max_model("invalid model").is_err());
+    assert_eq!(
+        normalize_model_forward_rules(" Spark* = GPT-5.4-mini ").unwrap(),
+        "Spark*=GPT-5.4-mini"
+    );
+    assert!(normalize_model_forward_rules("spark*=auto").is_err());
+    assert_eq!(
+        normalize_upstream_proxy_bypass_hosts(Some("API.Example.Test, api.example.test")),
+        "api.example.test"
+    );
+    assert_eq!(normalize_sse_keepalive_interval_ms(123).unwrap(), 123);
+    assert!(normalize_sse_keepalive_interval_ms(0).is_err());
+
+    assert_eq!(
+        (
+            current_originator(),
+            current_codex_user_agent_version(),
+            current_gateway_user_agent_override(),
+            current_residency_requirement(),
+            current_free_account_max_model(),
+            current_model_forward_rules(),
+            upstream_proxy_bypass_hosts(),
+            current_sse_keepalive_interval_ms(),
+        ),
+        before
+    );
+}
+
+#[test]
+fn prepare_upstream_proxy_uses_target_timeout_and_pool_without_publication() {
+    let _guard = crate::test_env_guard();
+    let _timeout = EnvGuard::set(ENV_UPSTREAM_CONNECT_TIMEOUT_SECS, "11");
+    let _pool = EnvGuard::set(ENV_PROXY_LIST, "http://127.0.0.1:7201");
+    let _proxy = EnvGuard::clear(ENV_UPSTREAM_PROXY_URL);
+    reload_from_env();
+    let original_timeout = current_upstream_connect_timeout();
+    let original_proxy = upstream_proxy_url();
+    let original_pool =
+        crate::lock_utils::read_recover(upstream_client_pool_lock(), "upstream_client_pool")
+            .proxies
+            .clone();
+    let original_environment = std::env::vars()
+        .filter(|(key, _)| key.starts_with("CODEXMANAGER_"))
+        .collect::<BTreeMap<_, _>>();
+    let target_env = BTreeMap::from([
+        (
+            ENV_UPSTREAM_CONNECT_TIMEOUT_SECS.to_string(),
+            "37".to_string(),
+        ),
+        (
+            ENV_PROXY_LIST.to_string(),
+            " http://127.0.0.1:7202; socks5://127.0.0.1:7203\nhttp://[invalid".to_string(),
+        ),
+    ]);
+
+    let prepared = prepare_upstream_proxy_url_with_env(None, &target_env)
+        .expect("prepare clients against the post-commit environment");
+    assert_eq!(prepared.connect_timeout, Duration::from_secs(37));
+    assert_eq!(
+        prepared.pool.proxies,
+        vec!["http://127.0.0.1:7202", "socks5h://127.0.0.1:7203"]
+    );
+    assert_eq!(prepared.pool.async_retry_clients.len(), 2);
+    let explicit = prepare_upstream_proxy_url_with_env(Some("http://127.0.0.1:7204"), &target_env)
+        .expect("explicit proxy suppresses the target pool");
+    assert_eq!(explicit.connect_timeout, Duration::from_secs(37));
+    assert!(explicit.pool.proxies.is_empty());
+    assert_eq!(current_upstream_connect_timeout(), original_timeout);
+    assert_eq!(upstream_proxy_url(), original_proxy);
+    assert_eq!(
+        crate::lock_utils::read_recover(upstream_client_pool_lock(), "upstream_client_pool")
+            .proxies,
+        original_pool
+    );
+    assert_eq!(
+        std::env::vars()
+            .filter(|(key, _)| key.starts_with("CODEXMANAGER_"))
+            .collect::<BTreeMap<_, _>>(),
+        original_environment
+    );
+}
+
+#[test]
+fn prepare_upstream_proxy_distinguishes_removed_and_unmentioned_environment() {
+    let _guard = crate::test_env_guard();
+    let _timeout = EnvGuard::set(ENV_UPSTREAM_CONNECT_TIMEOUT_SECS, "23");
+    let _pool = EnvGuard::set(ENV_PROXY_LIST, "http://127.0.0.1:7211");
+    let _proxy = EnvGuard::clear(ENV_UPSTREAM_PROXY_URL);
+    reload_from_env();
+
+    let unchanged = prepare_upstream_proxy_url_with_env(None, &BTreeMap::new())
+        .expect("unmentioned target keys retain current values");
+    assert_eq!(unchanged.connect_timeout, Duration::from_secs(23));
+    assert_eq!(unchanged.pool.proxies, vec!["http://127.0.0.1:7211"]);
+    let target_env = BTreeMap::from([
+        (ENV_UPSTREAM_CONNECT_TIMEOUT_SECS.to_string(), String::new()),
+        (ENV_PROXY_LIST.to_string(), String::new()),
+    ]);
+    let cleared = prepare_upstream_proxy_url_with_env(None, &target_env)
+        .expect("empty target keys do not retain the process's old values");
+    assert_eq!(
+        cleared.connect_timeout,
+        Duration::from_secs(DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS)
+    );
+    assert!(cleared.pool.proxies.is_empty());
+    assert_eq!(current_upstream_connect_timeout(), Duration::from_secs(23));
+    assert_eq!(
+        std::env::var(ENV_PROXY_LIST).unwrap(),
+        "http://127.0.0.1:7211"
+    );
+}
+
+#[test]
 fn upstream_proxy_url_for_account_prefers_explicit_account_proxy() {
     let _guard = crate::test_env_guard();
     let db = TestDbGuard::new("runtime-account-proxy-priority");
@@ -1859,4 +2053,26 @@ fn terminal_user_agent_sanitizes_header_like_official_codex() {
         current_codex_terminal_user_agent_token(),
         "Weird_Terminal__/1.2_beta"
     );
+}
+#[test]
+fn local_admission_limits_are_not_reset_by_environment_reload() {
+    let _guard = crate::test_env_guard();
+    let before = (
+        super::account_max_concurrent_limit(),
+        super::client_ip_single_max_concurrent_limit(),
+        super::client_ip_multi_max_concurrent_limit(),
+    );
+    super::set_account_max_concurrent_limit(1);
+    super::set_client_ip_single_max_concurrent_limit(1);
+    super::set_client_ip_multi_max_concurrent_limit(1);
+    super::reload_from_env();
+    let after = (
+        super::account_max_concurrent_limit(),
+        super::client_ip_single_max_concurrent_limit(),
+        super::client_ip_multi_max_concurrent_limit(),
+    );
+    super::set_account_max_concurrent_limit(before.0);
+    super::set_client_ip_single_max_concurrent_limit(before.1);
+    super::set_client_ip_multi_max_concurrent_limit(before.2);
+    assert_eq!(after, (1, 1, 1));
 }

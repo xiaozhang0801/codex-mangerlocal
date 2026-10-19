@@ -25,6 +25,9 @@ mod tests {
 
     #[test]
     fn incomplete_remote_configuration_never_authenticates_or_reads_local_keys() {
+        if crate::loopback_proxy_test::run_proxy_control_in_isolated_process() {
+            return;
+        }
         let _guard = crate::test_env_guard();
         let _restore = EnvRestore(
             ["CODEXMANAGER_STORAGE_BACKEND", "CODEXMANAGER_DATABASE_URL"]

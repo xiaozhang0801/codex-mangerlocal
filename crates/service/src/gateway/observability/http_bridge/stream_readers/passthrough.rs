@@ -199,7 +199,7 @@ impl PassthroughSseUsageReader {
     fn complete_tail_frame(&self, frame: &mut Vec<String>) -> bool {
         if frame
             .last()
-            .is_some_and(|line| line == "\n" || line == "\r\n")
+            .is_some_and(|line| line == "\n" || line == "\r" || line == "\r\n")
         {
             return true;
         }
@@ -283,6 +283,11 @@ impl PassthroughSseUsageReader {
                     return Ok(self.stream_error_chunk("upstream_stream_read_error", message));
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_upstream_activity = self.last_upstream_activity.max(
+                        self.upstream
+                            .last_activity()
+                            .unwrap_or(self.last_upstream_activity),
+                    );
                     if stream_idle_timed_out(self.last_upstream_activity) {
                         return Ok(self.stream_error_chunk(
                             "upstream_stream_idle_timeout",

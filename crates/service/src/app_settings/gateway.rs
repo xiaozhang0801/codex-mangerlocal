@@ -16,7 +16,7 @@ pub struct CodexLatestVersionInfo {
     pub registry_url: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct CodexNpmLatestResponse {
     #[serde(default)]
     name: String,
@@ -25,7 +25,6 @@ struct CodexNpmLatestResponse {
 }
 
 use super::{
-    normalize_optional_text, save_persisted_app_setting, save_persisted_bool_setting,
     APP_SETTING_GATEWAY_ACCOUNT_MAX_CONCURRENT_KEY, APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
     APP_SETTING_GATEWAY_CLIENT_IP_MULTI_MAX_CONCURRENT_KEY,
@@ -44,7 +43,7 @@ use super::{
     APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
 };
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundTasksInput {
     pub usage_polling_enabled: Option<bool>,
@@ -93,7 +92,7 @@ impl BackgroundTasksInput {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QuotaGuardInput {
     enabled: Option<bool>,
@@ -132,9 +131,11 @@ impl QuotaGuardInput {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_route_strategy(strategy: &str) -> Result<String, String> {
-    let applied = gateway::set_route_strategy(strategy)?.to_string();
-    save_persisted_app_setting(APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, Some(&applied))?;
-    Ok(applied)
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"routeStrategy": strategy}),
+        APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+    )?;
+    Ok(gateway::current_route_strategy().to_string())
 }
 
 /// 函数 `set_gateway_free_account_max_model`
@@ -149,12 +150,11 @@ pub fn set_gateway_route_strategy(strategy: &str) -> Result<String, String> {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_free_account_max_model(model: &str) -> Result<String, String> {
-    let applied = gateway::set_free_account_max_model(model)?;
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"freeAccountMaxModel": model}),
         APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
-        Some(&applied),
     )?;
-    Ok(applied)
+    Ok(gateway::current_free_account_max_model())
 }
 
 /// 函数 `current_gateway_free_account_max_model`
@@ -184,16 +184,11 @@ pub fn current_gateway_free_account_max_model() -> String {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_model_forward_rules(raw: &str) -> Result<String, String> {
-    let applied = gateway::set_model_forward_rules(raw)?;
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"modelForwardRules": raw}),
         APP_SETTING_GATEWAY_MODEL_FORWARD_RULES_KEY,
-        if applied.trim().is_empty() {
-            None
-        } else {
-            Some(applied.as_str())
-        },
     )?;
-    Ok(applied)
+    Ok(gateway::current_model_forward_rules())
 }
 
 /// 函数 `current_gateway_model_forward_rules`
@@ -212,16 +207,11 @@ pub fn current_gateway_model_forward_rules() -> String {
 }
 
 pub fn set_gateway_compact_model_forward_rules(raw: &str) -> Result<String, String> {
-    let applied = gateway::set_compact_model_forward_rules(raw)?;
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"compactModelForwardRules": raw}),
         APP_SETTING_GATEWAY_COMPACT_MODEL_FORWARD_RULES_KEY,
-        if applied.trim().is_empty() {
-            None
-        } else {
-            Some(applied.as_str())
-        },
     )?;
-    Ok(applied)
+    Ok(gateway::current_compact_model_forward_rules())
 }
 
 pub fn current_gateway_compact_model_forward_rules() -> String {
@@ -240,12 +230,11 @@ pub fn current_gateway_compact_model_forward_rules() -> String {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_account_max_inflight(limit: usize) -> Result<usize, String> {
-    let applied = gateway::set_account_max_inflight_limit(limit);
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"accountMaxInflight": limit}),
         APP_SETTING_GATEWAY_ACCOUNT_MAX_INFLIGHT_KEY,
-        Some(&applied.to_string()),
     )?;
-    Ok(applied)
+    Ok(gateway::account_max_inflight_limit())
 }
 
 /// 函数 `current_gateway_account_max_inflight`
@@ -264,10 +253,10 @@ pub fn current_gateway_account_max_inflight() -> usize {
 }
 
 pub fn set_gateway_account_max_concurrent(limit: usize) -> Result<usize, String> {
-    let applied = gateway::set_account_max_concurrent_limit(limit);
-    save_persisted_app_setting(
+    let applied = limit.max(1);
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"accountMaxConcurrent": applied}),
         APP_SETTING_GATEWAY_ACCOUNT_MAX_CONCURRENT_KEY,
-        Some(&applied.to_string()),
     )?;
     Ok(applied)
 }
@@ -277,10 +266,10 @@ pub fn current_gateway_account_max_concurrent() -> usize {
 }
 
 pub fn set_gateway_client_ip_single_max_concurrent(limit: usize) -> Result<usize, String> {
-    let applied = gateway::set_client_ip_single_max_concurrent_limit(limit);
-    save_persisted_app_setting(
+    let applied = limit.max(1);
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"clientIpSingleMaxConcurrent": applied}),
         APP_SETTING_GATEWAY_CLIENT_IP_SINGLE_MAX_CONCURRENT_KEY,
-        Some(&applied.to_string()),
     )?;
     Ok(applied)
 }
@@ -290,10 +279,10 @@ pub fn current_gateway_client_ip_single_max_concurrent() -> usize {
 }
 
 pub fn set_gateway_client_ip_multi_max_concurrent(limit: usize) -> Result<usize, String> {
-    let applied = gateway::set_client_ip_multi_max_concurrent_limit(limit);
-    save_persisted_app_setting(
+    let applied = limit.max(1);
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"clientIpMultiMaxConcurrent": applied}),
         APP_SETTING_GATEWAY_CLIENT_IP_MULTI_MAX_CONCURRENT_KEY,
-        Some(&applied.to_string()),
     )?;
     Ok(applied)
 }
@@ -305,12 +294,11 @@ pub fn current_gateway_client_ip_multi_max_concurrent() -> usize {
 pub fn set_gateway_thread_aware_account_distribution_enabled(
     enabled: bool,
 ) -> Result<bool, String> {
-    let applied = gateway::set_thread_aware_account_distribution_enabled(enabled);
-    save_persisted_bool_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"threadAwareAccountDistributionEnabled": enabled}),
         APP_SETTING_GATEWAY_THREAD_AWARE_ACCOUNT_DISTRIBUTION_ENABLED_KEY,
-        applied,
     )?;
-    Ok(applied)
+    Ok(enabled)
 }
 
 pub fn current_gateway_thread_aware_account_distribution_enabled() -> bool {
@@ -319,12 +307,11 @@ pub fn current_gateway_thread_aware_account_distribution_enabled() -> bool {
 
 /// Mask credential-like keys in captured request payloads (default on).
 pub fn set_gateway_request_log_payload_redaction_enabled(enabled: bool) -> Result<bool, String> {
-    let applied = gateway::set_request_log_payload_redaction_enabled(enabled);
-    save_persisted_bool_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"requestLogPayloadRedactionEnabled": enabled}),
         super::shared::APP_SETTING_GATEWAY_REQUEST_LOG_PAYLOAD_REDACTION_ENABLED_KEY,
-        applied,
     )?;
-    Ok(applied)
+    Ok(enabled)
 }
 
 pub fn current_gateway_request_log_payload_redaction_enabled() -> bool {
@@ -334,12 +321,11 @@ pub fn current_gateway_request_log_payload_redaction_enabled() -> bool {
 /// Keep only a 16 KB preview of captured request payloads (default on).
 /// When off, full bodies are stored with conversation-level de-duplication.
 pub fn set_gateway_request_log_payload_preview_enabled(enabled: bool) -> Result<bool, String> {
-    let applied = gateway::set_request_log_payload_preview_enabled(enabled);
-    save_persisted_bool_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"requestLogPayloadPreviewEnabled": enabled}),
         super::shared::APP_SETTING_GATEWAY_REQUEST_LOG_PAYLOAD_PREVIEW_ENABLED_KEY,
-        applied,
     )?;
-    Ok(applied)
+    Ok(enabled)
 }
 
 pub fn current_gateway_request_log_payload_preview_enabled() -> bool {
@@ -349,11 +335,11 @@ pub fn current_gateway_request_log_payload_preview_enabled() -> bool {
 pub(crate) fn set_gateway_quota_guard(
     input: QuotaGuardInput,
 ) -> Result<gateway::QuotaGuardConfig, String> {
-    let applied = gateway::set_quota_guard_config(input.into_config());
-    let raw = serde_json::to_string(&applied)
-        .map_err(|err| format!("serialize quota guard settings failed: {err}"))?;
-    save_persisted_app_setting(APP_SETTING_GATEWAY_QUOTA_GUARD_KEY, Some(&raw))?;
-    Ok(applied)
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"quotaGuard": input}),
+        APP_SETTING_GATEWAY_QUOTA_GUARD_KEY,
+    )?;
+    Ok(gateway::current_quota_guard_config())
 }
 
 pub(crate) fn current_gateway_quota_guard() -> gateway::QuotaGuardConfig {
@@ -372,9 +358,11 @@ pub(crate) fn current_gateway_quota_guard() -> gateway::QuotaGuardConfig {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_request_compression_enabled(enabled: bool) -> Result<bool, String> {
-    let applied = gateway::set_request_compression_enabled(enabled);
-    save_persisted_bool_setting(APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY, applied)?;
-    Ok(applied)
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"requestCompressionEnabled": enabled}),
+        APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+    )?;
+    Ok(enabled)
 }
 
 /// 函数 `current_gateway_request_compression_enabled`
@@ -404,9 +392,11 @@ pub fn current_gateway_request_compression_enabled() -> bool {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_originator(originator: &str) -> Result<String, String> {
-    let applied = gateway::set_originator(originator)?;
-    save_persisted_app_setting(APP_SETTING_GATEWAY_ORIGINATOR_KEY, Some(&applied))?;
-    Ok(applied)
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"gatewayOriginator": originator}),
+        APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+    )?;
+    Ok(gateway::current_originator())
 }
 
 /// 函数 `current_gateway_originator`
@@ -440,9 +430,11 @@ pub fn default_gateway_originator() -> &'static str {
 }
 
 pub fn set_gateway_user_agent(user_agent: &str) -> Result<String, String> {
-    let applied = gateway::set_gateway_user_agent(Some(user_agent))?;
-    save_persisted_app_setting(APP_SETTING_GATEWAY_USER_AGENT_KEY, applied.as_deref())?;
-    Ok(applied.unwrap_or_default())
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"gatewayUserAgent": user_agent}),
+        APP_SETTING_GATEWAY_USER_AGENT_KEY,
+    )?;
+    Ok(gateway::current_gateway_user_agent_override().unwrap_or_default())
 }
 
 pub fn current_gateway_user_agent() -> String {
@@ -465,9 +457,11 @@ pub fn default_gateway_user_agent() -> String {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_user_agent_version(version: &str) -> Result<String, String> {
-    let applied = gateway::set_codex_user_agent_version(version)?;
-    save_persisted_app_setting(APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY, Some(&applied))?;
-    Ok(applied)
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"gatewayUserAgentVersion": version}),
+        APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
+    )?;
+    Ok(gateway::current_codex_user_agent_version())
 }
 
 /// 函数 `current_gateway_user_agent_version`
@@ -596,13 +590,11 @@ async fn fetch_codex_latest_version_from_url_async(
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_residency_requirement(value: Option<&str>) -> Result<Option<String>, String> {
-    let normalized = normalize_optional_text(value);
-    let applied = gateway::set_residency_requirement(normalized.as_deref())?;
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"gatewayResidencyRequirement": value.unwrap_or_default()}),
         APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
-        applied.as_deref(),
     )?;
-    Ok(applied)
+    Ok(gateway::current_residency_requirement())
 }
 
 /// 函数 `current_gateway_residency_requirement`
@@ -647,13 +639,11 @@ pub fn residency_requirement_options() -> &'static [&'static str] {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_upstream_proxy_url(proxy_url: Option<&str>) -> Result<Option<String>, String> {
-    let normalized = normalize_optional_text(proxy_url);
-    let applied = gateway::set_upstream_proxy_url(normalized.as_deref())?;
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"upstreamProxyUrl": proxy_url.unwrap_or_default()}),
         APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
-        applied.as_deref(),
     )?;
-    Ok(applied)
+    Ok(gateway::current_upstream_proxy_url())
 }
 
 pub fn current_gateway_upstream_proxy_bypass_hosts() -> String {
@@ -661,16 +651,11 @@ pub fn current_gateway_upstream_proxy_bypass_hosts() -> String {
 }
 
 pub fn set_gateway_upstream_proxy_bypass_hosts(raw: Option<&str>) -> Result<String, String> {
-    let applied = gateway::set_upstream_proxy_bypass_hosts(raw);
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"upstreamProxyBypassHosts": raw.unwrap_or_default()}),
         APP_SETTING_GATEWAY_UPSTREAM_PROXY_BYPASS_HOSTS_KEY,
-        if applied.is_empty() {
-            None
-        } else {
-            Some(applied.as_str())
-        },
     )?;
-    Ok(applied)
+    Ok(gateway::current_upstream_proxy_bypass_hosts())
 }
 
 /// 函数 `set_gateway_upstream_stream_timeout_ms`
@@ -685,21 +670,19 @@ pub fn set_gateway_upstream_proxy_bypass_hosts(raw: Option<&str>) -> Result<Stri
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_upstream_stream_timeout_ms(timeout_ms: u64) -> Result<u64, String> {
-    let applied = gateway::set_upstream_stream_timeout_ms(timeout_ms);
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"upstreamStreamTimeoutMs": timeout_ms}),
         APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
-        Some(&applied.to_string()),
     )?;
-    Ok(applied)
+    Ok(timeout_ms)
 }
 
 pub fn set_gateway_upstream_total_timeout_ms(timeout_ms: u64) -> Result<u64, String> {
-    let applied = gateway::set_upstream_total_timeout_ms(timeout_ms);
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"upstreamTotalTimeoutMs": timeout_ms}),
         APP_SETTING_GATEWAY_UPSTREAM_TOTAL_TIMEOUT_MS_KEY,
-        Some(&applied.to_string()),
     )?;
-    Ok(applied)
+    Ok(timeout_ms)
 }
 
 /// 函数 `current_gateway_upstream_stream_timeout_ms`
@@ -733,12 +716,11 @@ pub fn current_gateway_upstream_total_timeout_ms() -> u64 {
 /// # 返回
 /// 返回函数执行结果
 pub fn set_gateway_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
-    let applied = gateway::set_sse_keepalive_interval_ms(interval_ms)?;
-    save_persisted_app_setting(
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"sseKeepaliveIntervalMs": interval_ms}),
         APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY,
-        Some(&interval_ms.to_string()),
     )?;
-    Ok(applied)
+    Ok(gateway::current_sse_keepalive_interval_ms())
 }
 
 /// 函数 `current_gateway_sse_keepalive_interval_ms`
@@ -757,9 +739,11 @@ pub fn current_gateway_sse_keepalive_interval_ms() -> u64 {
 }
 
 pub fn set_gateway_sse_keepalive_enabled(enabled: bool) -> Result<bool, String> {
-    let applied = gateway::set_sse_keepalive_enabled(enabled);
-    save_persisted_bool_setting(APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY, enabled)?;
-    Ok(applied)
+    super::api::apply_single_setting_patch(
+        serde_json::json!({"sseKeepaliveEnabled": enabled}),
+        APP_SETTING_GATEWAY_SSE_KEEPALIVE_ENABLED_KEY,
+    )?;
+    Ok(gateway::current_sse_keepalive_enabled())
 }
 
 pub fn current_gateway_sse_keepalive_enabled() -> bool {
@@ -780,13 +764,11 @@ pub fn current_gateway_sse_keepalive_enabled() -> bool {
 pub fn set_gateway_background_tasks(
     input: BackgroundTasksInput,
 ) -> Result<serde_json::Value, String> {
-    let patch = input.into_patch();
-    usage_refresh::validate_background_tasks_settings_patch(&patch)?;
-    let applied = usage_refresh::set_background_tasks_settings(patch);
-    let raw = serde_json::to_string(&applied)
-        .map_err(|err| format!("serialize background tasks failed: {err}"))?;
-    save_persisted_app_setting(APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, Some(&raw))?;
-    serde_json::to_value(applied).map_err(|err| err.to_string())
+    let raw = super::api::apply_single_setting_patch(
+        serde_json::json!({"backgroundTasks": input}),
+        APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
+    )?;
+    serde_json::from_str(&raw).map_err(|err| err.to_string())
 }
 
 /// 函数 `current_background_tasks_snapshot_value`

@@ -11,6 +11,20 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+#[derive(Default)]
+struct ChatToolCallState {
+    chat_index: usize,
+    emitted: bool,
+    emitted_id: bool,
+    emitted_name: bool,
+    arguments: String,
+}
+
+enum ToolCallArguments<'a> {
+    Delta(&'a str),
+    Snapshot(&'a str),
+}
+
 pub(crate) struct ChatCompletionsFromResponsesSseReader {
     upstream: UpstreamSseFramePump,
     out_cursor: Cursor<Vec<u8>>,
@@ -23,8 +37,9 @@ pub(crate) struct ChatCompletionsFromResponsesSseReader {
     emitted_text: bool,
     emitted_reasoning: bool,
     emitted_tool_calls: bool,
-    emitted_tool_call_indices: HashSet<usize>,
-    tool_call_arguments: HashMap<usize, String>,
+    // Responses output positions include reasoning/messages. Keep that identity as
+    // the key, but allocate a dense Chat tool index on first sight of each call.
+    tool_calls: HashMap<usize, ChatToolCallState>,
     emitted_image_urls: HashSet<String>,
     id: Option<String>,
     model: Option<String>,
@@ -74,8 +89,7 @@ impl ChatCompletionsFromResponsesSseReader {
             emitted_text: false,
             emitted_reasoning: false,
             emitted_tool_calls: false,
-            emitted_tool_call_indices: HashSet::new(),
-            tool_call_arguments: HashMap::new(),
+            tool_calls: HashMap::new(),
             emitted_image_urls: HashSet::new(),
             id: None,
             model: None,
@@ -238,89 +252,110 @@ impl ChatCompletionsFromResponsesSseReader {
 
     fn tool_call_added_chunk(&mut self, value: &Value) -> Option<Vec<u8>> {
         let item = Self::function_call_item(value)?;
-        let index = Self::output_index(value);
-        let call_id = item
-            .get("call_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
         let arguments = item
             .get("arguments")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        self.emitted_tool_calls = true;
-        self.emitted_tool_call_indices.insert(index);
-        self.tool_call_arguments
-            .entry(index)
-            .or_insert_with(|| arguments.to_string());
-        Some(self.assistant_delta_chunk(serde_json::json!({
-            "tool_calls": [{
-                "index": index,
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": arguments
-                }
-            }]
-        })))
+        self.tool_call_chunk(
+            Self::output_index(value),
+            Some(item),
+            ToolCallArguments::Snapshot(arguments),
+        )
     }
 
     fn tool_call_arguments_delta_chunk(&mut self, value: &Value) -> Option<Vec<u8>> {
         let delta = value.get("delta").and_then(Value::as_str)?;
-        let index = Self::output_index(value);
-        self.emitted_tool_calls = true;
-        self.tool_call_arguments
-            .entry(index)
-            .or_default()
-            .push_str(delta);
-        Some(self.assistant_delta_chunk(serde_json::json!({
-            "tool_calls": [{
-                "index": index,
-                "function": {
-                    "arguments": delta
-                }
-            }]
-        })))
+        self.tool_call_chunk(
+            Self::output_index(value),
+            None,
+            ToolCallArguments::Delta(delta),
+        )
     }
 
     fn tool_call_arguments_done_chunk(&mut self, value: &Value) -> Option<Vec<u8>> {
         let arguments = value.get("arguments").and_then(Value::as_str)?;
-        let index = Self::output_index(value);
-        self.remaining_tool_call_arguments_chunk(index, arguments)
+        self.tool_call_chunk(
+            Self::output_index(value),
+            None,
+            ToolCallArguments::Snapshot(arguments),
+        )
     }
 
     fn tool_call_done_chunk(&mut self, value: &Value) -> Option<Vec<u8>> {
-        let index = Self::output_index(value);
-        if self.emitted_tool_call_indices.contains(&index) {
-            let item = Self::function_call_item(value)?;
-            let arguments = item.get("arguments").and_then(Value::as_str)?;
-            return self.remaining_tool_call_arguments_chunk(index, arguments);
-        }
         self.tool_call_added_chunk(value)
     }
 
-    fn remaining_tool_call_arguments_chunk(
+    fn tool_call_chunk(
         &mut self,
-        index: usize,
-        arguments: &str,
+        output_index: usize,
+        item: Option<&Value>,
+        arguments: ToolCallArguments<'_>,
     ) -> Option<Vec<u8>> {
-        let accumulated = self.tool_call_arguments.entry(index).or_default();
-        let remaining = arguments
-            .strip_prefix(accumulated.as_str())
-            .unwrap_or(arguments);
-        if remaining.is_empty() {
+        let next_index = self.tool_calls.len();
+        let state = self
+            .tool_calls
+            .entry(output_index)
+            .or_insert_with(|| ChatToolCallState {
+                chat_index: next_index,
+                ..Default::default()
+            });
+        let mut tool_call = serde_json::json!({ "index": state.chat_index });
+        let mut function = serde_json::Map::new();
+        let mut has_delta = !state.emitted;
+        if !state.emitted {
+            tool_call["type"] = serde_json::json!("function");
+            // Chat stream helpers inspect the name even when arguments arrive
+            // before metadata. The full name can be appended in a later chunk.
+            function.insert("name".into(), serde_json::json!(""));
+            function.insert("arguments".into(), serde_json::json!(""));
+        }
+        if let Some(item) = item {
+            if let Some(id) = item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                if !state.emitted_id {
+                    tool_call["id"] = serde_json::json!(id);
+                    state.emitted_id = true;
+                    has_delta = true;
+                }
+            }
+            if let Some(name) = item
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            {
+                if !state.emitted_name {
+                    function.insert("name".into(), serde_json::json!(name));
+                    state.emitted_name = true;
+                    has_delta = true;
+                }
+            }
+        }
+        let remaining = match arguments {
+            ToolCallArguments::Delta(delta) => delta,
+            // A snapshot can only append its missing suffix. Replayed or stale
+            // snapshots must not repeat arguments already delivered to the client.
+            ToolCallArguments::Snapshot(snapshot) => snapshot
+                .strip_prefix(state.arguments.as_str())
+                .unwrap_or_default(),
+        };
+        if !remaining.is_empty() {
+            state.arguments.push_str(remaining);
+            function.insert("arguments".into(), serde_json::json!(remaining));
+            has_delta = true;
+        }
+        if !has_delta {
             return None;
         }
-        accumulated.push_str(remaining);
+        // Keep the function object on ID-only recovery chunks too: SDK stream
+        // helpers expect it on every delta for a function tool call.
+        tool_call["function"] = Value::Object(function);
+        state.emitted = true;
         self.emitted_tool_calls = true;
         Some(self.assistant_delta_chunk(serde_json::json!({
-            "tool_calls": [{
-                "index": index,
-                "function": {
-                    "arguments": remaining
-                }
-            }]
+            "tool_calls": [tool_call]
         })))
     }
 
@@ -329,9 +364,6 @@ impl ChatCompletionsFromResponsesSseReader {
         let mut out = Vec::new();
         for (index, item) in output.iter().enumerate() {
             if item.get("type").and_then(Value::as_str) != Some("function_call") {
-                continue;
-            }
-            if self.emitted_tool_call_indices.contains(&index) {
                 continue;
             }
             if let Some(chunk) = self.tool_call_added_chunk(&serde_json::json!({
@@ -689,6 +721,11 @@ impl ChatCompletionsFromResponsesSseReader {
                     return Ok(self.transport_error_chunk("upstream_stream_read_error", message));
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_upstream_activity = self.last_upstream_activity.max(
+                        self.upstream
+                            .last_activity()
+                            .unwrap_or(self.last_upstream_activity),
+                    );
                     if stream_idle_timed_out(self.last_upstream_activity) {
                         return Ok(self.transport_error_chunk(
                             "upstream_stream_idle_timeout",
@@ -741,6 +778,10 @@ impl crate::http::gateway_response_body::GatewayResponseBody
 #[cfg(test)]
 #[path = "chat_completions_repair_tests.rs"]
 mod repair_tests;
+
+#[cfg(test)]
+#[path = "chat_completions_tool_tests.rs"]
+mod tool_tests;
 
 #[cfg(test)]
 impl Read for ChatCompletionsFromResponsesSseReader {

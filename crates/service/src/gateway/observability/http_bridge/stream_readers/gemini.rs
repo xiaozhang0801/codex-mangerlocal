@@ -158,6 +158,17 @@ impl GeminiSseReader {
                 }
                 Ok(UpstreamSseFramePumpItem::Error(err)) => {
                     self.last_upstream_activity = Instant::now();
+                    // A rejected frame is a protocol/resource failure, even
+                    // when previous text could otherwise synthesize STOP.
+                    if err.starts_with("upstream_sse_") {
+                        self.mark_stream_read_error(err.clone());
+                        self.publish_usage();
+                        self.state.finished = true;
+                        return Ok(build_terminal_error_event(
+                            self.output_mode,
+                            build_gemini_error_body(&err),
+                        ));
+                    }
                     self.mark_stream_read_error(classify_upstream_stream_read_error(&err));
                     let finished = self.finish_stream();
                     if !finished.is_empty() {
@@ -166,6 +177,11 @@ impl GeminiSseReader {
                     return Ok(finished);
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_upstream_activity = self.last_upstream_activity.max(
+                        self.upstream
+                            .last_activity()
+                            .unwrap_or(self.last_upstream_activity),
+                    );
                     if stream_idle_timed_out(self.last_upstream_activity) {
                         self.mark_stream_read_error(stream_idle_timeout_message());
                         let finished = self.finish_stream();
@@ -652,18 +668,7 @@ impl GeminiSseReader {
         self.state.finished = true;
         let should_synthesize_stop =
             !self.state.completed_seen && self.has_recoverable_partial_output();
-        if let Ok(mut collector) = self.usage_collector.lock() {
-            collector.usage.input_tokens = Some(self.state.input_tokens.max(0));
-            collector.usage.cached_input_tokens = Some(self.state.cached_input_tokens.max(0));
-            collector.usage.cache_write_tokens = Some(self.state.cache_write_tokens.max(0));
-            collector.usage.output_tokens = Some(self.state.output_tokens.max(0));
-            collector.usage.total_tokens = self.state.total_tokens.map(|value| value.max(0));
-            collector.usage.reasoning_output_tokens =
-                Some(self.state.reasoning_output_tokens.max(0));
-            if !self.state.output_text.trim().is_empty() {
-                collector.usage.output_text = Some(self.state.output_text.clone());
-            }
-        }
+        self.publish_usage();
         if should_synthesize_stop {
             mark_collector_terminal_success(&self.usage_collector);
             let mut out = String::new();
@@ -681,6 +686,21 @@ impl GeminiSseReader {
             }
         }
         Vec::new()
+    }
+
+    fn publish_usage(&self) {
+        if let Ok(mut collector) = self.usage_collector.lock() {
+            collector.usage.input_tokens = Some(self.state.input_tokens.max(0));
+            collector.usage.cached_input_tokens = Some(self.state.cached_input_tokens.max(0));
+            collector.usage.cache_write_tokens = Some(self.state.cache_write_tokens.max(0));
+            collector.usage.output_tokens = Some(self.state.output_tokens.max(0));
+            collector.usage.total_tokens = self.state.total_tokens.map(|value| value.max(0));
+            collector.usage.reasoning_output_tokens =
+                Some(self.state.reasoning_output_tokens.max(0));
+            if !self.state.output_text.trim().is_empty() {
+                collector.usage.output_text = Some(self.state.output_text.clone());
+            }
+        }
     }
 
     fn has_recoverable_partial_output(&self) -> bool {

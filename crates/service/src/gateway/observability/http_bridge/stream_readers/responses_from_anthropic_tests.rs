@@ -98,6 +98,54 @@ fn anthropic_text_sse_maps_to_responses_sse() {
 }
 
 #[test]
+fn resource_error_after_partial_output_preserves_usage_and_marks_failure() {
+    struct ErrorAfterPayload(Cursor<Vec<u8>>);
+
+    impl Read for ErrorAfterPayload {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let read = self.0.read(buf)?;
+            if read > 0 {
+                return Ok(read);
+            }
+            Err(std::io::Error::other(
+                "upstream_sse_frame_too_large: fixture exceeded frame budget",
+            ))
+        }
+    }
+
+    let upstream = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_partial\",\"model\":\"bridge-model\",\"usage\":{\"input_tokens\":11,\"output_tokens\":3}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial output\"}}\n\n",
+    );
+    let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage {
+        completed_successfully: true,
+        ..Default::default()
+    }));
+    let mut reader = ResponsesFromAnthropicSseReader::from_reader(
+        ErrorAfterPayload(Cursor::new(upstream.as_bytes().to_vec())),
+        Arc::clone(&usage_collector),
+        Some("fallback-model"),
+        Instant::now(),
+    );
+    let mut out = String::new();
+
+    reader.read_to_string(&mut out).expect("read failed stream");
+
+    assert!(out.contains("event: response.output_text.delta"));
+    assert!(out.contains("event: response.failed"));
+    assert!(out.contains("upstream_sse_frame_too_large"));
+    assert!(!out.contains("event: response.completed"));
+    let usage = usage_collector.lock().expect("usage lock").clone();
+    assert!(usage.explicit_failure);
+    assert!(!usage.completed_successfully);
+    assert_eq!(usage.input_tokens, Some(11));
+    assert_eq!(usage.output_tokens, Some(3));
+    assert_eq!(usage.output_text.as_deref(), Some("partial output"));
+}
+
+#[test]
 fn anthropic_to_responses_reader_accepts_openai_usage_fields() {
     let upstream = concat!(
         "event: message_start\n",

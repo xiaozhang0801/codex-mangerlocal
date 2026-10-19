@@ -2,9 +2,7 @@ use serde::{Deserialize, Deserializer};
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 
-use super::save_persisted_app_setting;
-
-const SETTING_KEY: &str = "app.client_ip_names";
+pub(super) const SETTING_KEY: &str = "app.client_ip_names";
 type ClientIpNames = BTreeMap<String, String>;
 
 fn normalize(names: ClientIpNames) -> Result<ClientIpNames, String> {
@@ -62,11 +60,11 @@ pub(super) fn load(settings: &HashMap<String, String>) -> Result<ClientIpNames, 
     normalize(names)
 }
 
-pub(super) fn save(names: &ClientIpNames) -> Result<(), String> {
+pub(super) fn prepare(names: &ClientIpNames) -> Result<String, String> {
     ensure_local_storage()?;
     let raw =
         serde_json::to_string(names).map_err(|_| "serialize clientIpNames failed".to_string())?;
-    save_persisted_app_setting(SETTING_KEY, Some(&raw))
+    Ok(raw)
 }
 
 fn ensure_local_storage() -> Result<(), String> {

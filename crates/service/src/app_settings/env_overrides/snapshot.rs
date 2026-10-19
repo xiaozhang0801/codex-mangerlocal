@@ -146,12 +146,18 @@ pub(crate) fn current_env_overrides() -> BTreeMap<String, String> {
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn save_env_overrides_value(overrides: &BTreeMap<String, String>) -> Result<(), String> {
+    let raw = serialize_env_overrides_value(overrides)?;
+    super::save_persisted_app_setting(super::APP_SETTING_ENV_OVERRIDES_KEY, Some(&raw))
+}
+
+pub(super) fn serialize_env_overrides_value(
+    overrides: &BTreeMap<String, String>,
+) -> Result<String, String> {
     let sanitized = overrides
         .iter()
         .filter(|(key, _)| !super::catalog::is_env_override_reserved_key(key))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect::<BTreeMap<_, _>>();
-    let raw = serde_json::to_string(&sanitized)
-        .map_err(|err| format!("serialize env overrides failed: {err}"))?;
-    super::save_persisted_app_setting(super::APP_SETTING_ENV_OVERRIDES_KEY, Some(&raw))
+    serde_json::to_string(&sanitized)
+        .map_err(|err| format!("serialize env overrides failed: {err}"))
 }

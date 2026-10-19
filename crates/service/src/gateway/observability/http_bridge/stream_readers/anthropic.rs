@@ -1,8 +1,12 @@
+use super::common::mark_anthropic_terminal_delivered;
 use super::{
-    append_output_text, collect_output_text_from_event_fields, collect_response_output_text, json,
-    mark_first_response_ms_on_usage, should_emit_keepalive_after_first_frame,
-    stream_idle_timed_out, stream_wait_timeout, Arc, Cursor, Map, Mutex, Read, SseKeepAliveFrame,
-    UpstreamResponseUsage, UpstreamSseFramePump, UpstreamSseFramePumpItem, Value,
+    append_output_text, classify_upstream_stream_read_error, collect_output_text_from_event_fields,
+    collect_response_output_text, inspect_sse_frame_for_protocol, json, mark_first_response_ms,
+    should_emit_keepalive_after_first_frame, stream_idle_timed_out, stream_idle_timeout_message,
+    stream_reader_disconnected_message, stream_wait_timeout,
+    upstream_hint_or_stream_incomplete_message, Arc, Cursor, Map, Mutex, PassthroughSseCollector,
+    PassthroughSseProtocol, Read, SseKeepAliveFrame, SseTerminal, UpstreamSseFramePump,
+    UpstreamSseFramePumpItem, Value,
 };
 use std::time::Instant;
 
@@ -11,7 +15,7 @@ pub(crate) struct AnthropicSseReader {
     out_cursor: Cursor<Vec<u8>>,
     state: AnthropicSseState,
     tool_name_restore_map: Option<crate::gateway::ToolNameRestoreMap>,
-    usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+    usage_collector: Arc<Mutex<PassthroughSseCollector>>,
     request_started_at: Instant,
     last_upstream_activity: Instant,
     saw_upstream_frame: bool,
@@ -40,7 +44,7 @@ impl AnthropicSseReader {
     #[cfg(test)]
     pub(crate) fn from_reader<R>(
         upstream: R,
-        usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+        usage_collector: Arc<Mutex<PassthroughSseCollector>>,
         fallback_model: Option<&str>,
         tool_name_restore_map: Option<crate::gateway::ToolNameRestoreMap>,
         request_started_at: Instant,
@@ -59,7 +63,7 @@ impl AnthropicSseReader {
 
     pub(crate) fn from_stream_response(
         upstream: crate::gateway::upstream::GatewayStreamResponse,
-        usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+        usage_collector: Arc<Mutex<PassthroughSseCollector>>,
         fallback_model: Option<&str>,
         tool_name_restore_map: Option<crate::gateway::ToolNameRestoreMap>,
         request_started_at: Instant,
@@ -75,7 +79,7 @@ impl AnthropicSseReader {
 
     pub(crate) fn from_pump(
         upstream: UpstreamSseFramePump,
-        usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+        usage_collector: Arc<Mutex<PassthroughSseCollector>>,
         fallback_model: Option<&str>,
         tool_name_restore_map: Option<crate::gateway::ToolNameRestoreMap>,
         request_started_at: Instant,
@@ -111,7 +115,7 @@ impl AnthropicSseReader {
     #[cfg(test)]
     pub(crate) fn new(
         upstream: reqwest::blocking::Response,
-        usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+        usage_collector: Arc<Mutex<PassthroughSseCollector>>,
         fallback_model: Option<&str>,
         tool_name_restore_map: Option<crate::gateway::ToolNameRestoreMap>,
         request_started_at: Instant,
@@ -146,49 +150,40 @@ impl AnthropicSseReader {
                 Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
                     self.last_upstream_activity = Instant::now();
                     self.saw_upstream_frame = true;
-                    mark_first_response_ms_on_usage(&self.usage_collector, self.request_started_at);
+                    mark_first_response_ms(&self.usage_collector, self.request_started_at);
                     let mapped = self.process_sse_frame(&frame);
                     if !mapped.is_empty() {
-                        mark_first_response_ms_on_usage(
-                            &self.usage_collector,
-                            self.request_started_at,
-                        );
+                        mark_first_response_ms(&self.usage_collector, self.request_started_at);
                         return Ok(mapped);
                     }
                     continue;
                 }
                 Ok(UpstreamSseFramePumpItem::Eof) => {
-                    self.last_upstream_activity = Instant::now();
-                    let finished = self.finish_stream();
-                    if !finished.is_empty() {
-                        mark_first_response_ms_on_usage(
-                            &self.usage_collector,
-                            self.request_started_at,
-                        );
-                    }
-                    return Ok(finished);
+                    return Ok(self.transport_error_chunk(
+                        "upstream_stream_incomplete",
+                        upstream_hint_or_stream_incomplete_message(None),
+                    ));
                 }
-                Ok(UpstreamSseFramePumpItem::Error(_err)) => {
-                    self.last_upstream_activity = Instant::now();
-                    let finished = self.finish_stream();
-                    if !finished.is_empty() {
-                        mark_first_response_ms_on_usage(
-                            &self.usage_collector,
-                            self.request_started_at,
-                        );
-                    }
-                    return Ok(finished);
+                Ok(UpstreamSseFramePumpItem::Error(err)) => {
+                    let classified = classify_upstream_stream_read_error(&err);
+                    let message = if err.trim().is_empty() || classified == err {
+                        classified
+                    } else {
+                        format!("{classified}: {err}")
+                    };
+                    return Ok(self.transport_error_chunk("upstream_stream_read_error", message));
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_upstream_activity = self.last_upstream_activity.max(
+                        self.upstream
+                            .last_activity()
+                            .unwrap_or(self.last_upstream_activity),
+                    );
                     if stream_idle_timed_out(self.last_upstream_activity) {
-                        let finished = self.finish_stream();
-                        if !finished.is_empty() {
-                            mark_first_response_ms_on_usage(
-                                &self.usage_collector,
-                                self.request_started_at,
-                            );
-                        }
-                        return Ok(finished);
+                        return Ok(self.transport_error_chunk(
+                            "upstream_stream_idle_timeout",
+                            stream_idle_timeout_message(),
+                        ));
                     }
                     if should_emit_keepalive_after_first_frame(self.saw_upstream_frame) {
                         return Ok(SseKeepAliveFrame::Anthropic.bytes().to_vec());
@@ -196,14 +191,10 @@ impl AnthropicSseReader {
                     continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    let finished = self.finish_stream();
-                    if !finished.is_empty() {
-                        mark_first_response_ms_on_usage(
-                            &self.usage_collector,
-                            self.request_started_at,
-                        );
-                    }
-                    return Ok(finished);
+                    return Ok(self.transport_error_chunk(
+                        "upstream_stream_disconnected",
+                        stream_reader_disconnected_message(),
+                    ));
                 }
             }
         }
@@ -222,26 +213,97 @@ impl AnthropicSseReader {
     /// # 返回
     /// 返回函数执行结果
     fn process_sse_frame(&mut self, lines: &[String]) -> Vec<u8> {
+        if self.state.finished {
+            return Vec::new();
+        }
         let mut data_lines = Vec::new();
+        let mut event_name = None;
         for line in lines {
             let trimmed = line.trim_end_matches(['\r', '\n']);
             if let Some(rest) = trimmed.strip_prefix("data:") {
                 data_lines.push(rest.trim_start().to_string());
+            } else if let Some(rest) = trimmed.strip_prefix("event:") {
+                event_name = Some(rest.trim());
             }
         }
-        if data_lines.is_empty() {
+        let data = data_lines.join("\n");
+        let value = serde_json::from_str::<Value>(&data).unwrap_or(Value::Null);
+        self.capture_response_meta(&value);
+        let payload_event = value.get("type").and_then(Value::as_str);
+        let event_type = event_name
+            .filter(|name| !name.is_empty() && *name != "message")
+            .or(payload_event);
+        if let Ok(mut collector) = self.usage_collector.lock() {
+            if let Some(event_type) = event_type {
+                collector.last_event_type = Some(event_type.to_string());
+            }
+        }
+        let inspection = inspect_sse_frame_for_protocol(lines, PassthroughSseProtocol::Generic);
+        let failure_event = [event_name, payload_event]
+            .into_iter()
+            .flatten()
+            .find(|name| Self::is_response_failure_event(name));
+        if failure_event.is_some() || matches!(inspection.terminal, Some(SseTerminal::Err(_))) {
+            let upstream_error = value
+                .pointer("/response/error")
+                .filter(|error| !error.is_null())
+                .or_else(|| {
+                    value
+                        .pointer("/response/status_details/error")
+                        .filter(|error| !error.is_null())
+                })
+                .or_else(|| value.get("error").filter(|error| !error.is_null()))
+                .or_else(|| (event_type == Some("error")).then_some(&value));
+            let incomplete = failure_event == Some("response.incomplete")
+                || value.pointer("/response/status").and_then(Value::as_str) == Some("incomplete");
+            let code = if incomplete {
+                "upstream_response_incomplete"
+            } else {
+                "upstream_response_failed"
+            };
+            let field = |name: &str| {
+                upstream_error
+                    .and_then(|error| error.get(name))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            };
+            let detail = value
+                .pointer("/response/incomplete_details/reason")
+                .and_then(Value::as_str)
+                .or_else(|| upstream_error.and_then(Value::as_str));
+            let fallback_message = match inspection.terminal {
+                Some(SseTerminal::Err(message)) => message,
+                _ => failure_event.unwrap_or(code).to_string(),
+            };
+            return self.error_chunk(json!({
+                "type": field("type").filter(|kind| kind != "error").unwrap_or_else(|| "api_error".to_string()),
+                "code": field("code").unwrap_or_else(|| code.to_string()),
+                "message": field("message").unwrap_or_else(|| detail.unwrap_or(&fallback_message).to_string()),
+                "param": field("param"),
+            }), true);
+        }
+        if data.trim() == "[DONE]" {
+            return self.transport_error_chunk(
+                "upstream_stream_incomplete",
+                upstream_hint_or_stream_incomplete_message(None),
+            );
+        }
+        if value.is_null() {
             return Vec::new();
         }
-        let data = data_lines.join("\n");
-        if data.trim() == "[DONE]" {
-            return self.finish_stream();
-        }
+        self.consume_openai_event(&value, event_type)
+    }
 
-        let value = match serde_json::from_str::<Value>(&data) {
-            Ok(value) => value,
-            Err(_) => return Vec::new(),
-        };
-        self.consume_openai_event(&value)
+    fn is_response_failure_event(name: &str) -> bool {
+        matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "error"
+                | "response.error"
+                | "response.failed"
+                | "response.incomplete"
+                | "response.cancelled"
+                | "response.canceled"
+        )
     }
 
     /// 函数 `consume_openai_event`
@@ -256,10 +318,9 @@ impl AnthropicSseReader {
     ///
     /// # 返回
     /// 返回函数执行结果
-    fn consume_openai_event(&mut self, value: &Value) -> Vec<u8> {
-        self.capture_response_meta(value);
+    fn consume_openai_event(&mut self, value: &Value, event_type: Option<&str>) -> Vec<u8> {
         let mut out = String::new();
-        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+        let Some(event_type) = event_type else {
             return Vec::new();
         };
         match event_type {
@@ -397,6 +458,9 @@ impl AnthropicSseReader {
                         self.state.stop_reason.get_or_insert("end_turn");
                     }
                 }
+                let mut completed = out.into_bytes();
+                completed.extend(self.finish_stream());
+                return completed;
             }
             _ => {}
         }
@@ -604,6 +668,53 @@ impl AnthropicSseReader {
         );
     }
 
+    fn persist_usage(&self) {
+        if let Ok(mut collector) = self.usage_collector.lock() {
+            let usage = &mut collector.usage;
+            usage.input_tokens = Some(self.state.input_tokens.max(0));
+            usage.cached_input_tokens = Some(self.state.cached_input_tokens.max(0));
+            usage.cache_write_tokens = Some(self.state.cache_write_tokens.max(0));
+            usage.output_tokens = Some(self.state.output_tokens.max(0));
+            usage.total_tokens = self.state.total_tokens.map(|value| value.max(0));
+            usage.reasoning_output_tokens = Some(self.state.reasoning_output_tokens.max(0));
+            if !self.state.output_text.trim().is_empty() {
+                usage.output_text = Some(self.state.output_text.clone());
+            }
+        }
+    }
+
+    fn error_chunk(&mut self, error: Value, saw_terminal: bool) -> Vec<u8> {
+        if self.state.finished {
+            return Vec::new();
+        }
+        self.state.finished = true;
+        self.persist_usage();
+        if let Ok(mut collector) = self.usage_collector.lock() {
+            collector.saw_terminal |= saw_terminal;
+            collector.usage.explicit_failure |= saw_terminal;
+            collector.terminal_error = error
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        let mut out = String::new();
+        append_sse_event(
+            &mut out,
+            "error",
+            &json!({ "type": "error", "error": error }),
+        );
+        out.into_bytes()
+    }
+
+    fn transport_error_chunk(&mut self, code: &str, message: String) -> Vec<u8> {
+        self.error_chunk(
+            json!({
+                "type": "api_error", "code": code, "message": message, "param": null,
+            }),
+            false,
+        )
+    }
+
     /// 函数 `finish_stream`
     ///
     /// 作者: gaohongshun
@@ -620,16 +731,11 @@ impl AnthropicSseReader {
             return Vec::new();
         }
         self.state.finished = true;
-        if let Ok(mut usage) = self.usage_collector.lock() {
-            usage.input_tokens = Some(self.state.input_tokens.max(0));
-            usage.cached_input_tokens = Some(self.state.cached_input_tokens.max(0));
-            usage.cache_write_tokens = Some(self.state.cache_write_tokens.max(0));
-            usage.output_tokens = Some(self.state.output_tokens.max(0));
-            usage.total_tokens = self.state.total_tokens.map(|value| value.max(0));
-            usage.reasoning_output_tokens = Some(self.state.reasoning_output_tokens.max(0));
-            if !self.state.output_text.trim().is_empty() {
-                usage.output_text = Some(self.state.output_text.clone());
-            }
+        self.persist_usage();
+        if let Ok(mut collector) = self.usage_collector.lock() {
+            collector.saw_terminal = true;
+            collector.usage.completed_successfully = true;
+            collector.usage.response_id = self.state.response_id.clone();
         }
         let mut out = String::new();
         self.ensure_message_start(&mut out);
@@ -667,6 +773,7 @@ impl crate::http::gateway_response_body::GatewayResponseBody for AnthropicSseRea
             loop {
                 let read = self.out_cursor.read(buf)?;
                 if read > 0 {
+                    mark_anthropic_terminal_delivered(&self.usage_collector, &buf[..read]);
                     return Ok(read);
                 }
                 if self.state.finished {

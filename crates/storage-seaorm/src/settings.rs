@@ -1,6 +1,6 @@
 use sea_orm::entity::prelude::*;
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, EntityTrait, QueryOrder, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryOrder, Set, TransactionTrait};
 
 /// HTTP-independent domain value for a persisted application setting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +27,58 @@ impl ActiveModelBehavior for ActiveModel {}
 
 pub struct SettingsRepository;
 
+fn setting_upsert(setting: AppSetting) -> sea_orm::Insert<ActiveModel> {
+    Entity::insert(ActiveModel {
+        key: Set(setting.key),
+        value: Set(setting.value),
+        updated_at: Set(setting.updated_at),
+    })
+    .on_conflict(
+        OnConflict::column(Column::Key)
+            .update_columns([Column::Value, Column::UpdatedAt])
+            .to_owned(),
+    )
+}
+
 impl SettingsRepository {
+    /// Save only the supplied changes, with the same commit boundary on every backend.
+    /// `None` removes a setting. The transaction finishes before this returns.
+    pub async fn save(
+        db: &(impl ConnectionTrait + TransactionTrait),
+        changes: &[(String, Option<String>)],
+        updated_at: i64,
+    ) -> Result<(), DbErr> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let tx = db.begin().await?;
+        for (key, value) in changes {
+            let result = match value {
+                Some(value) => {
+                    Self::set(
+                        &tx,
+                        AppSetting {
+                            key: key.clone(),
+                            value: value.clone(),
+                            updated_at,
+                        },
+                    )
+                    .await
+                }
+                None => Self::delete(&tx, key).await.map(|_| ()),
+            };
+            if let Err(error) = result {
+                tx.rollback().await.map_err(|rollback| {
+                    DbErr::Custom(format!(
+                        "save settings failed: {error}; rollback failed: {rollback}"
+                    ))
+                })?;
+                return Err(error);
+            }
+        }
+        tx.commit().await
+    }
+
     pub async fn list(db: &impl ConnectionTrait) -> Result<Vec<AppSetting>, DbErr> {
         Entity::find()
             .order_by_asc(Column::Key)
@@ -45,18 +96,10 @@ impl SettingsRepository {
     }
 
     pub async fn set(db: &impl ConnectionTrait, setting: AppSetting) -> Result<(), DbErr> {
-        let model = ActiveModel {
-            key: Set(setting.key),
-            value: Set(setting.value),
-            updated_at: Set(setting.updated_at),
-        };
-        Entity::insert(model)
-            .on_conflict(
-                OnConflict::column(Column::Key)
-                    .update_columns([Column::Value, Column::UpdatedAt])
-                    .to_owned(),
-            )
-            .exec(db)
+        // A settings write does not need the inserted ID. In particular, MySQL
+        // may report zero affected rows for an unchanged value, which is success.
+        setting_upsert(setting)
+            .exec_without_returning(db)
             .await
             .map(|_| ())
     }
@@ -82,7 +125,79 @@ impl From<Model> for AppSetting {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sea_orm::{ConnectionTrait, Database, Statement};
+    use sea_orm::{ConnectionTrait, Database, DbBackend, QueryTrait, Statement};
+
+    #[test]
+    fn settings_mysql_upsert_changes_only_the_supplied_value_and_timestamp() {
+        let statement = setting_upsert(AppSetting {
+            key: "theme".into(),
+            value: "dark".into(),
+            updated_at: 7,
+        })
+        .build(DbBackend::MySql);
+        assert_eq!(statement.sql,
+            "INSERT INTO `app_settings` (`key`, `value`, `updated_at`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), `updated_at` = VALUES(`updated_at`)");
+        assert_eq!(
+            statement.values.unwrap().0,
+            vec!["theme".into(), "dark".into(), 7_i64.into()]
+        );
+    }
+
+    #[test]
+    fn settings_postgres_upsert_changes_only_the_supplied_value_and_timestamp() {
+        let statement = setting_upsert(AppSetting {
+            key: "theme".into(),
+            value: "dark".into(),
+            updated_at: 7,
+        })
+        .build(DbBackend::Postgres);
+        assert_eq!(statement.sql,
+            "INSERT INTO \"app_settings\" (\"key\", \"value\", \"updated_at\") VALUES ($1, $2, $3) ON CONFLICT (\"key\") DO UPDATE SET \"value\" = \"excluded\".\"value\", \"updated_at\" = \"excluded\".\"updated_at\"");
+        assert_eq!(
+            statement.values.unwrap().0,
+            vec!["theme".into(), "dark".into(), 7_i64.into()]
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_batch_rolls_back_updates_and_removals() {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        db.execute(Statement::from_string(db.get_database_backend(),
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL CHECK(value != 'reject'), updated_at BIGINT NOT NULL)"))
+            .await
+            .unwrap();
+        SettingsRepository::save(
+            &db,
+            &[
+                ("changed".into(), Some("old".into())),
+                ("removed".into(), Some("old".into())),
+            ],
+            1,
+        )
+        .await
+        .unwrap();
+
+        let result = SettingsRepository::save(
+            &db,
+            &[
+                ("changed".into(), Some("new".into())),
+                ("removed".into(), None),
+                ("failed".into(), Some("reject".into())),
+            ],
+            2,
+        )
+        .await;
+
+        assert!(result.is_err());
+        let rows = SettingsRepository::list(&db).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .all(|row| row.value == "old" && row.updated_at == 1));
+        SettingsRepository::save(&db, &[("after".into(), Some("ok".into()))], 3)
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn settings_repository_round_trip() {

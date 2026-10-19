@@ -544,7 +544,7 @@ export function ApiKeyModal({
               />
               <p className="text-[11px] text-muted-foreground">
                 {t(
-                  "用于复用固定 OPENAI_API_KEY；填写后将按该值创建平台密钥，留空则继续随机生成。",
+                  "用于复用固定平台密钥；填写后将按该值创建平台密钥，留空则继续随机生成。",
                 )}
               </p>
             </div>

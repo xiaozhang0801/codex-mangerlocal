@@ -1,7 +1,11 @@
 #[path = "gateway_logs/anthropic.rs"]
 mod anthropic;
+#[path = "gateway_logs/anthropic_stream.rs"]
+mod anthropic_stream;
 #[path = "gateway_logs/basic.rs"]
 mod basic;
+#[path = "gateway_logs/chat_non_stream_tools.rs"]
+mod chat_non_stream_tools;
 #[path = "gateway_logs/fast_policy.rs"]
 mod fast_policy;
 #[path = "gateway_logs/hybrid_routing.rs"]
@@ -12,6 +16,8 @@ mod images;
 mod prompt_cache;
 #[path = "gateway_logs/retry_logging.rs"]
 mod retry_logging;
+#[path = "gateway_logs/stream_timeout_failover.rs"]
+mod stream_timeout_failover;
 #[path = "gateway_logs/support.rs"]
 mod support;
 #[path = "gateway_logs/usage_limit_failover.rs"]

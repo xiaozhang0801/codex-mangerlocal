@@ -34,7 +34,7 @@ async function probeRuntimeCapabilities(): Promise<RuntimeCapabilities | null> {
   }
 
   try {
-    const response = await fetchWithRetry(
+    const payload = await fetchWithRetry(
       runtimeProbeUrl(),
       {
         method: "GET",
@@ -48,13 +48,14 @@ async function probeRuntimeCapabilities(): Promise<RuntimeCapabilities | null> {
         retries: 2,
         retryDelayMs: 250,
         shouldRetryStatus: () => false,
-      }
+      },
+      async (response) => response.ok ? await response.json() as unknown : null
     );
-    if (!response.ok) {
+    if (payload === null) {
       return null;
     }
     return normalizeRuntimeCapabilities(
-      await response.json(),
+      payload,
       CONFIGURED_WEB_RPC_BASE_URL || DEFAULT_WEB_RPC_BASE_URL
     );
   } catch {

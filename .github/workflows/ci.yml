@@ -19,6 +19,19 @@ env:
   CARGO_NET_RETRY: "3"
 
 jobs:
+  appimage_metadata:
+    name: AppImage metadata portability
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install SquashFS tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends squashfs-tools
+
+      - name: Test AppImage icon portability repair
+        run: bash scripts/release/tests/ensure-appimage-diricon.test.sh
+
   rust_workspace:
     name: Rust workspace and WebSocket pin validation
     runs-on: ubuntu-22.04
@@ -49,10 +62,67 @@ jobs:
           cargo test -p codexmanager-core --no-fail-fast
           cargo test -p codexmanager-service --lib storage::maintenance -- --test-threads=1
 
+      - name: Test atomic application settings
+        run: |
+          cargo test -p codexmanager-core --lib storage::settings:: -- --test-threads=1
+          cargo test -p codexmanager-storage-seaorm --lib settings -- --test-threads=1
+          cargo test -p codexmanager-service --lib app_settings -- --test-threads=1
+          cargo test -p codexmanager-service --lib gateway::runtime_config::tests -- --test-threads=1
+          cargo test -p codexmanager-service --lib gateway::route_hint:: -- --test-threads=1
+          cargo test -p codexmanager-service --lib usage::refresh::refresh::settings::preparation_tests -- --test-threads=1
+          cargo test -p codexmanager-service --test app_settings -- --test-threads=1
+          cargo test -p codexmanager-service --test app_settings_atomic -- --test-threads=1
+          cargo test -p codexmanager-service --test rpc rpc_gateway_transport_ -- --test-threads=1
+          cargo test -p codexmanager-service --test rpc rpc_app_settings_ -- --test-threads=1
+
+      - name: Test timeout observations, fixture isolation and WAL restore
+        run: |
+          cargo test -p codexmanager-service --test gateway_logs -j 2 stream_timeout_failover::
+          cargo test -p codexmanager-service --lib -j 2 rpc_dispatch::network_async::tests::
+          cargo test -p codexmanager-storage-seaorm --lib -j 2 transfer::tests::concurrent_fixed_timestamp_paths_are_distinct_and_exclusively_reserved
+          cargo test -p codexmanager-storage-seaorm --lib -j 2 transfer::preflight_tests::
+
       - name: Test Responses WebSocket regressions
         run: |
           cargo test -p codexmanager-service --lib official_responses_websocket_ --no-fail-fast
           cargo test -p codexmanager-service --lib send_websocket_upstream_request_ --no-fail-fast
+
+      - name: Test Chat streaming tool call indices
+        env:
+          CM_REPAIR_FIXTURE_DIR: ${{ github.workspace }}/target/chat-tool-sdk-fixtures
+        run: cargo test -p codexmanager-service --lib stream_readers::chat_completions -- --test-threads=1
+
+      - name: Test non-streaming Chat tool calls against mock upstreams
+        env:
+          CM_REPAIR_FIXTURE_DIR: ${{ github.workspace }}/target/chat-non-stream-sdk-fixtures
+        run: "cargo test -p codexmanager-service --test gateway_logs chat_non_stream_tools:: -- --test-threads=1"
+
+      - name: Setup Python for Chat stream SDK regression
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Consume reader SSE with the official OpenAI SDK
+        run: |
+          python -m pip install openai==2.29.0 httpx==0.28.1
+          python -B scripts/chat-tool-indices-sdk-check.py target/chat-tool-sdk-fixtures
+
+      - name: Consume non-stream HTTP output with the official OpenAI SDK
+        run: python -B scripts/chat-non-stream-tools-sdk-check.py target/chat-non-stream-sdk-fixtures
+
+      - name: Consume public HTTP streams with the official OpenAI SDK
+        run: python -B scripts/public-stream-tools-sdk-check.py target/chat-non-stream-sdk-fixtures/stream-http
+
+      - name: Test bounded SSE readers and gateway regressions
+        run: |
+          cargo test -p codexmanager-service --lib gateway::http_bridge::stream_readers -- --test-threads=1
+          cargo test -p codexmanager-service --lib gateway::http_bridge::aggregate -- --test-threads=1
+          cargo test -p codexmanager-service --test gateway_logs -- --test-threads=1
+
+      - name: Test local proxy fixture isolation and multi-choice tools
+        run: |
+          cargo test -p codexmanager-service --lib loopback_proxy_test::
+          cargo test -p codexmanager-service --lib collect_non_stream_chat_sse_keeps_tools_isolated_per_choice
 
       - name: Test request payload storage, cleanup and detail
         run: |
@@ -136,11 +206,14 @@ jobs:
         working-directory: apps
         run: pnpm run build:desktop
 
+      - name: Test desktop settings publication
+        run: cargo test --manifest-path apps/src-tauri/Cargo.toml commands::settings::ui::tests -- --test-threads=1
+
       - name: Build Tauri app bundle
         uses: ./.github/actions/build-tauri-with-retry
         with:
           working-directory: apps
-          tauri-cli-version: 2.10.1
+          tauri-cli-version: 2.11.4
           bundles: app
           target: aarch64-apple-darwin
           shell-type: bash

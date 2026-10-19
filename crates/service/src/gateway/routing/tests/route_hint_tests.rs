@@ -11,7 +11,7 @@ use super::*;
 ///
 /// # 返回
 /// 返回函数执行结果
-fn candidate_list() -> Vec<(Account, Token)> {
+pub(super) fn candidate_list() -> Vec<(Account, Token)> {
     vec![
         (
             Account {
@@ -427,6 +427,120 @@ fn set_route_strategy_accepts_aliases_and_reports_canonical_name() {
         std::env::remove_var(ROUTE_STRATEGY_ENV);
     }
     reload_from_env();
+}
+
+#[test]
+fn same_normalized_route_strategy_preserves_all_scheduling_state() {
+    let _guard = crate::test_env_guard();
+    let previous = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    let _ = current_route_strategy();
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    for (strategy, aliases) in [
+        (
+            "balanced",
+            &["balanced", " BALANCED ", "round_robin", "round-robin", "rr"][..],
+        ),
+        (
+            "ordered",
+            &["ordered", " ORDERED ", "order", "priority", "sequential"][..],
+        ),
+    ] {
+        set_route_strategy(strategy).expect("set initial strategy");
+        let key = "gk-same-strategy";
+        let model = Some("gpt-5.3-codex");
+        let candidates = candidate_list();
+        assert_eq!(next_account_start_index(&candidates, key, model), 0);
+        assert_eq!(next_account_start_index(&candidates, key, model), 1);
+        assert_eq!(next_start_index(key, model, 3), 0);
+        assert_eq!(next_start_index(key, model, 3), 1);
+        assert!(p2c_challenger_index(key, model, 3).is_some());
+        assert!(p2c_challenger_index(key, model, 3).is_some());
+
+        for alias in aliases {
+            assert_eq!(set_route_strategy(alias).expect("set alias"), strategy);
+            std::env::set_var(ROUTE_STRATEGY_ENV, alias);
+            reload_from_env();
+        }
+        assert!(set_route_strategy("unsupported").is_err());
+        assert_eq!(current_route_strategy(), strategy);
+        {
+            let state = crate::lock_utils::lock_recover(ROUTE_STATE.get().unwrap(), "route_state");
+            let state_key = key_model_key(key, model);
+            assert_eq!(state.next_start_by_key_model[&state_key].value, 2);
+            assert_eq!(
+                state.account_cursor_by_key_model[&state_key]
+                    .value
+                    .last_selected_account_id,
+                "acc-b"
+            );
+            assert_eq!(state.p2c_nonce_by_key_model[&state_key].value, 2);
+            assert_eq!(state.maintenance_tick, 6);
+        }
+        assert_eq!(next_account_start_index(&candidates, key, model), 2);
+        assert_eq!(next_start_index(key, model, 3), 2);
+    }
+
+    if let Some(value) = previous {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    reload_from_env();
+}
+
+#[test]
+fn changed_route_strategy_clears_all_scheduling_state() {
+    let _guard = crate::test_env_guard();
+    let previous = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    let _ = current_route_strategy();
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    let key = "gk-changed-strategy";
+    let model = Some("gpt-5.3-codex");
+    let candidates = candidate_list();
+    assert_eq!(next_account_start_index(&candidates, key, model), 0);
+    assert_eq!(next_start_index(key, model, 3), 0);
+    assert!(p2c_challenger_index(key, model, 3).is_some());
+
+    assert_eq!(
+        set_route_strategy("ordered").expect("switch strategy"),
+        "ordered"
+    );
+    {
+        let state = crate::lock_utils::lock_recover(ROUTE_STATE.get().unwrap(), "route_state");
+        assert!(state.next_start_by_key_model.is_empty());
+        assert!(state.account_cursor_by_key_model.is_empty());
+        assert!(state.p2c_nonce_by_key_model.is_empty());
+        assert_eq!(state.maintenance_tick, 0);
+    }
+    assert_eq!(
+        set_route_strategy("balanced").expect("switch back"),
+        "balanced"
+    );
+    assert_eq!(next_account_start_index(&candidates, key, model), 0);
+    assert_eq!(next_start_index(key, model, 3), 0);
+
+    if let Some(value) = previous {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    reload_from_env();
+}
+
+#[test]
+fn normalize_route_strategy_does_not_publish() {
+    let _guard = crate::test_env_guard();
+    let original = current_route_strategy();
+    assert_eq!(normalize_route_strategy(" round_robin "), Ok("balanced"));
+    assert_eq!(normalize_route_strategy(" priority "), Ok("ordered"));
+    assert!(normalize_route_strategy("unsupported").is_err());
+    assert_eq!(current_route_strategy(), original);
 }
 
 /// 函数 `route_state_ttl_expires_per_key_state`

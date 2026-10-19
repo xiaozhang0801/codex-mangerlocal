@@ -73,20 +73,109 @@ fn build_refresh_token(account_id: &str, refresh_token: &str) -> Token {
     }
 }
 
+const AUTH_TEST_DB_PATH_ENV: &str = "CODEXMANAGER_DB_PATH";
+
+struct AuthTestDatabase {
+    path: std::path::PathBuf,
+    storage: Option<Storage>,
+}
+
+impl AuthTestDatabase {
+    fn new(label: &str) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let sequence = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut database = Self {
+            path: std::env::temp_dir().join(format!(
+                "codexmanager-auth-{label}-{}-{timestamp}-{sequence}.sqlite",
+                std::process::id()
+            )),
+            storage: None,
+        };
+        // Finish migrations while the path is still private to this fixture.
+        let storage = Storage::open(&database.path).expect("open storage");
+        storage.init().expect("init storage");
+        database.storage = Some(storage);
+        database
+    }
+
+    fn storage(&self) -> &Storage {
+        self.storage.as_ref().expect("initialized fixture storage")
+    }
+}
+
+impl Drop for AuthTestDatabase {
+    fn drop(&mut self) {
+        drop(self.storage.take());
+        for suffix in ["", "-wal", "-shm"] {
+            let mut path = self.path.as_os_str().to_os_string();
+            path.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(path));
+        }
+    }
+}
+
+struct DbPathEnvGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl DbPathEnvGuard {
+    fn publish(database: &AuthTestDatabase) -> Self {
+        let previous = std::env::var_os(AUTH_TEST_DB_PATH_ENV);
+        std::env::set_var(AUTH_TEST_DB_PATH_ENV, &database.path);
+        Self { previous }
+    }
+}
+
+impl Drop for DbPathEnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            std::env::set_var(AUTH_TEST_DB_PATH_ENV, previous);
+        } else {
+            std::env::remove_var(AUTH_TEST_DB_PATH_ENV);
+        }
+    }
+}
+
+#[test]
+fn auth_database_initializes_before_publication_and_restores_path_after_unwind() {
+    let _guard = crate::test_env_guard();
+    let previous = std::env::var_os(AUTH_TEST_DB_PATH_ENV);
+    let database = AuthTestDatabase::new("unwind");
+    assert!(
+        std::env::var_os(AUTH_TEST_DB_PATH_ENV) == previous,
+        "private initialization must not publish the fixture path"
+    );
+    assert!(database
+        .storage()
+        .find_account_by_id("fixture-probe")
+        .expect("account schema is ready before publication")
+        .is_none());
+
+    let db_path = DbPathEnvGuard::publish(&database);
+    assert!(std::env::var_os(AUTH_TEST_DB_PATH_ENV).as_deref() == Some(database.path.as_os_str()));
+    let outcome = std::panic::catch_unwind(move || {
+        let _db_path = db_path;
+        panic!("injected auth fixture failure after publication");
+    });
+    assert!(outcome.is_err(), "injected failure must unwind");
+    assert!(
+        std::env::var_os(AUTH_TEST_DB_PATH_ENV) == previous,
+        "unwinding must restore the original database path"
+    );
+}
+
 #[test]
 fn resolve_refresh_target_prefers_explicit_account_id_over_current_account() {
     let _guard = crate::test_env_guard();
-    let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
-    let db_path = std::env::temp_dir().join(format!(
-        "codexmanager-auth-target-{}-{}.sqlite",
-        std::process::id(),
-        now_ts()
-    ));
-    std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
+    let database = AuthTestDatabase::new("target");
+    let _db_path = DbPathEnvGuard::publish(&database);
 
     {
-        let storage = Storage::open(&db_path).expect("open storage");
-        storage.init().expect("init storage");
+        let storage = database.storage();
         storage
             .insert_account(&build_account("acc-current", Some("org-current"), None))
             .expect("insert current account");
@@ -113,28 +202,16 @@ fn resolve_refresh_target_prefers_explicit_account_id_over_current_account() {
         assert_eq!(token.refresh_token, "refresh-target");
         set_current_auth_account_id(None).expect("clear current account");
     }
-
-    match previous_db_path {
-        Some(value) => std::env::set_var("CODEXMANAGER_DB_PATH", value),
-        None => std::env::remove_var("CODEXMANAGER_DB_PATH"),
-    }
-    let _ = std::fs::remove_file(db_path);
 }
 
 #[test]
 fn refresh_all_chatgpt_auth_tokens_skips_accounts_without_refresh_token() {
     let _guard = crate::test_env_guard();
-    let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
-    let db_path = std::env::temp_dir().join(format!(
-        "codexmanager-auth-refresh-all-{}-{}.sqlite",
-        std::process::id(),
-        now_ts()
-    ));
-    std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
+    let database = AuthTestDatabase::new("refresh-all");
+    let _db_path = DbPathEnvGuard::publish(&database);
 
     {
-        let storage = Storage::open(&db_path).expect("open storage");
-        storage.init().expect("init storage");
+        let storage = database.storage();
         storage
             .insert_account(&build_account("missing-token", None, None))
             .expect("insert missing token account");
@@ -163,12 +240,6 @@ fn refresh_all_chatgpt_auth_tokens_skips_accounts_without_refresh_token() {
             .any(|item| item.account_id == "missing-refresh"
                 && item.message.as_deref() == Some("missing refresh_token")));
     }
-
-    match previous_db_path {
-        Some(value) => std::env::set_var("CODEXMANAGER_DB_PATH", value),
-        None => std::env::remove_var("CODEXMANAGER_DB_PATH"),
-    }
-    let _ = std::fs::remove_file(db_path);
 }
 
 /// 函数 `resolve_plan_type_prefers_latest_access_token_claims`

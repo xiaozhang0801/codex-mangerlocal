@@ -90,6 +90,7 @@ fn restore_request_gate_wait_timeout(previous: Option<String>) {
 #[tokio::test(flavor = "current_thread")]
 async fn account_request_gate_times_out_when_the_account_is_at_capacity() {
     let _guard = crate::test_env_guard();
+    let previous_limit = crate::gateway::account_max_concurrent_limit();
     let previous = std::env::var(ENV_REQUEST_GATE_WAIT_TIMEOUT_MS).ok();
     std::env::set_var(ENV_REQUEST_GATE_WAIT_TIMEOUT_MS, "30");
     crate::gateway::reload_runtime_config_from_env();
@@ -112,6 +113,7 @@ async fn account_request_gate_times_out_when_the_account_is_at_capacity() {
 
     drop(occupied);
     restore_request_gate_wait_timeout(previous);
+    crate::gateway::set_account_max_concurrent_limit(previous_limit);
 
     assert!(matches!(result, Err(AccountRequestGateError::Timeout)));
     assert!(waited >= Duration::from_millis(20));

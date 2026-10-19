@@ -7,18 +7,21 @@
         "cost": { "input": 9, "output": 18 }
       },
       "fallback-candidate": {
+        "canonical_model_id": "openai/fallback-fixture",
         "cost": { "input": 0.2, "output": 1 }
       },
       "cny-model": {
+        "canonical_model_id": "openai/currency-fixture",
         "cost": { "input": 99, "output": 199 }
       }
     }
   },
-  "aggregator": {
-    "id": "aggregator",
-    "name": "Aggregator",
+  "moonshotai": {
+    "id": "moonshotai",
+    "name": "Moonshot AI",
     "models": {
       "gpt-alpha": {
+        "canonical_model_id": "moonshotai/kimi-fixture",
         "cost": { "input": 7, "output": 14 }
       }
     }
@@ -28,6 +31,7 @@
     "name": "Mistral AI",
     "models": {
       "route-only": {
+        "canonical_model_id": "mistral/route-fixture",
         "cost": { "input": 0.4, "output": 2, "cache_read": 0.1 }
       }
     }

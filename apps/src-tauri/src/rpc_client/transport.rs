@@ -5,9 +5,11 @@ use std::time::Duration;
 
 use super::address::{resolve_service_addr, resolve_socket_addrs};
 use super::http::parse_http_body;
+use super::retry_policy::{rpc_replay_safety, RpcReplaySafety};
 
 const RPC_CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const RPC_DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const RPC_MANAGED_MODEL_PRICE_SYNC_IO_TIMEOUT: Duration = Duration::from_secs(60);
 const RPC_BULK_USAGE_REFRESH_IO_TIMEOUT: Duration = Duration::from_secs(600);
 const RPC_ACCOUNT_IMPORT_IO_TIMEOUT: Duration = Duration::from_secs(600);
 const RPC_CODEX_SKILLS_MUTATION_IO_TIMEOUT: Duration = Duration::from_secs(600);
@@ -33,8 +35,34 @@ impl RpcAttemptError {
     }
 }
 
-fn rpc_must_not_replay_after_send(method: &str) -> bool {
-    method == RPC_RESET_CREDIT_CONSUME_METHOD
+fn unknown_result_error(method: &str, message: &str) -> String {
+    let refresh_hint = if method == RPC_RESET_CREDIT_CONSUME_METHOD {
+        "Refresh usage and reset-credit status before trying again"
+    } else {
+        "Refresh and verify the current state before trying again"
+    };
+    format!(
+        "rpc_result_unknown: RPC {method} may have completed, but its response was unavailable. The result is unknown and the request was not retried. {refresh_hint} (结果未知，请先刷新核实): {message}"
+    )
+}
+
+fn validate_http_status(response: &str) -> Result<(), RpcAttemptError> {
+    let status_line = response.lines().next().unwrap_or_default();
+    let mut parts = status_line.split_whitespace();
+    let version = parts.next().unwrap_or_default();
+    let status = parts.next().and_then(|part| part.parse::<u16>().ok());
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") || status.is_none() {
+        return Err(RpcAttemptError::MayHaveBeenSent(
+            "Unexpected RPC response (invalid HTTP status)".to_owned(),
+        ));
+    }
+    let status = status.expect("status was checked");
+    if !(200..300).contains(&status) {
+        return Err(RpcAttemptError::MayHaveBeenSent(format!(
+            "RPC HTTP request failed with status {status}"
+        )));
+    }
+    Ok(())
 }
 
 /// 函数 `rpc_io_timeout`
@@ -52,6 +80,12 @@ fn rpc_must_not_replay_after_send(method: &str) -> bool {
 fn rpc_io_timeout(method: &str, params: Option<&serde_json::Value>) -> Duration {
     if method == "account/import" {
         return RPC_ACCOUNT_IMPORT_IO_TIMEOUT;
+    }
+
+    // Price sources can each take twenty seconds; allow their concurrent fetches,
+    // parsing, and persistence to finish before declaring the update result unknown.
+    if method == "apikey/managedModelPriceSyncV2" {
+        return RPC_MANAGED_MODEL_PRICE_SYNC_IO_TIMEOUT;
     }
 
     // A redemption can include the provider request followed by usage and credit refreshes.
@@ -170,6 +204,7 @@ fn rpc_call_on_socket(
         );
         RpcAttemptError::MayHaveBeenSent(msg)
     })?;
+    validate_http_status(&buf)?;
     let body = parse_http_body(&buf).map_err(|msg| {
         log::warn!(
             "rpc parse failed ({} -> {} via {}): {}",
@@ -198,6 +233,11 @@ fn rpc_call_on_socket(
         );
         RpcAttemptError::MayHaveBeenSent(msg)
     })?;
+    if !v.is_object() || (v.get("result").is_none() && v.get("error").is_none()) {
+        return Err(RpcAttemptError::MayHaveBeenSent(
+            "Unexpected RPC response (missing result or error)".to_owned(),
+        ));
+    }
     if let Some(err) = v.get("error") {
         log::warn!("rpc error ({} -> {} via {}): {}", method, addr, sock, err);
     }
@@ -239,6 +279,7 @@ fn rpc_call_with_sockets_and_timeout(
     }
     let mut last_err =
         "Empty response from service (service not ready, exited, or port occupied)".to_string();
+    let replay_safety = rpc_replay_safety(method);
     for attempt in 0..=1 {
         for sock in socket_addrs {
             match rpc_call_on_socket(method, addr, *sock, params.clone(), io_timeout) {
@@ -246,7 +287,7 @@ fn rpc_call_with_sockets_and_timeout(
                 Err(err) => {
                     let may_have_been_sent = err.may_have_been_sent();
                     let message = err.into_message();
-                    if may_have_been_sent && rpc_must_not_replay_after_send(method) {
+                    if may_have_been_sent && replay_safety == RpcReplaySafety::NonIdempotentWrite {
                         log::warn!(
                             "rpc replay suppressed after request send ({} -> {} via {}): {}",
                             method,
@@ -254,9 +295,7 @@ fn rpc_call_with_sockets_and_timeout(
                             sock,
                             message
                         );
-                        return Err(format!(
-                            "Reset credit request may have completed, but its response was unavailable. The result is unknown and the request was not retried. Refresh usage and reset-credit status before trying again: {message}"
-                        ));
+                        return Err(unknown_result_error(method, &message));
                     }
                     last_err = message;
                 }
@@ -268,6 +307,10 @@ fn rpc_call_with_sockets_and_timeout(
     }
     Err(last_err)
 }
+
+#[cfg(test)]
+#[path = "transport_retry_tests.rs"]
+mod retry_tests;
 
 /// 函数 `rpc_call`
 ///
